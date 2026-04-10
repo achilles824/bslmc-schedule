@@ -44,90 +44,76 @@ exports.handler = async function(event) {
     return { statusCode: 400, body: JSON.stringify({ error: "Bad request: " + e.message }) };
   }
 
-  console.log(`Received ${pages.length} pages, total base64 size: ${Math.round(pages.reduce((s,p) => s+p.length, 0)/1024)}KB`);
+  console.log(`Received ${pages.length} pages, total size: ${Math.round(pages.reduce((s,p) => s+p.length,0)/1024)}KB`);
 
-  // Process in batches of 3 pages to stay under API limits
-  // then merge the results
-  const BATCH_SIZE = 3;
-  const allRooms = {};
+  // Send all pages in a single API call — much faster than batching
+  const content = pages.map(b64 => ({
+    type: "image",
+    source: { type: "base64", media_type: "image/jpeg", data: b64 }
+  }));
 
-  for (let i = 0; i < pages.length; i += BATCH_SIZE) {
-    const batch = pages.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i/BATCH_SIZE) + 1;
-    console.log(`Processing batch ${batchNum}: pages ${i+1}-${Math.min(i+BATCH_SIZE, pages.length)}`);
+  content.push({
+    type: "text",
+    text: `This is an Epic OR surgery schedule with a "Pt Dept" column. Extract every room with a surgical case across ALL pages.
 
-    const content = batch.map(b64 => ({
-      type: "image",
-      source: { type: "base64", media_type: "image/jpeg", data: b64 }
-    }));
-
-    content.push({
-      type: "text",
-      text: `This is part of an Epic OR surgery schedule. Extract every room with a surgical case.
-For each room, return the exact room name from the Room column and the surgeon last name from Providers column.
-This schedule has a "Pt Dept" column that identifies the location. Use it to determine the correct room name:
-This schedule has a "Pt Dept" column. Use it to determine the correct room name format:
-
-ROOM MAPPING RULES (use Pt Dept to determine location):
-- Pt Dept "SLEH PERIOPERATIVE SERVICES" → Main OR. Return room as-is (e.g. "OR 3", "OR 14")
-- Pt Dept "BSLMC OPSC PERIOPERATIVE SERVICES" → Jamail OR. Prefix room with "Jamail" (e.g. "OR 3" → "Jamail OR 3")
+ROOM MAPPING RULES — use Pt Dept to determine location:
+- Pt Dept "SLEH PERIOPERATIVE SERVICES" → Main OR. Return room as-is (e.g. "OR 3")
+- Pt Dept "BSLMC OPSC PERIOPERATIVE SERVICES" → Jamail OR. Prefix with "Jamail" (e.g. "OR 3" → "Jamail OR 3")
 - Pt Dept "BSLMC MCNAIR OR PERIOPERATIVE SERVICES" → McNair OR. Return room as-is (e.g. "Mc OR 1")
 - Pt Dept "BSLMC OTM PERIOPERATIVE SERVICES" → OTM OR. Return room as-is (e.g. "OTM OR 11")
-- Pt Dept "BSLMC OTM ENDOSCOPY SERVICES" + Room "Endo 01" → return "Endo 01" (mixed case = OTM Endo)
-- Pt Dept "SLEH ENDOSCOPY SERVICES" + Room "ENDO 01" → return "ENDO 01" (ALL CAPS = Main Endo)
-- Skip rows where Room says "Motility 1", "Motility 2", or Pt Dept contains "ICU"
-- Skip rows where Providers says "Virtual, Surgeon"
-- Skip rows where Pt Dept contains "RAD" or "SEDATION"
+- Pt Dept "BSLMC OTM ENDOSCOPY SERVICES" + Room "Endo 01" (mixed case) → return "Endo 01"
+- Pt Dept "SLEH ENDOSCOPY SERVICES" + Room "ENDO 01" (ALL CAPS) → return "ENDO 01"
+- Skip: "Motility 1", "Motility 2", any Pt Dept with "ICU", "RAD", "SEDATION"
+- Skip: Providers column says "Virtual, Surgeon"
 
-Return the room name EXACTLY as specified above (preserve capitalization — it matters for Endo rooms).
-For each room also extract the first procedure name (shortened to key words, max 40 chars).
-Return ONLY valid JSON, nothing else — each room maps to an object with surgeon and procedure:
-{"rooms": {"OR 22": {"surgeon": "Ongkasuwan", "procedure": "MICROLARYNGOSCOPY"}, "OTM OR 10": {"surgeon": "Ahmed", "procedure": "ARTHROSCOPY SHOULDER"}, "Jamail OR 3": {"surgeon": "Chang", "procedure": "AQUEOUS DRAINAGE DEVICE"}}}`
-    });
+For each unique room (first occurrence only), also return the surgeon last name and first procedure (max 40 chars).
 
+Return ONLY valid JSON, no markdown:
+{"rooms": {"OR 22": {"surgeon": "Ongkasuwan", "procedure": "MICROLARYNGOSCOPY"}, "OTM OR 10": {"surgeon": "Ahmed", "procedure": "ARTHROSCOPY SHOULDER"}, "Jamail OR 3": {"surgeon": "Chang", "procedure": "AQUEOUS DRAINAGE DEVICE"}, "ENDO 01": {"surgeon": "Abidi", "procedure": "COLONOSCOPY"}}}`
+  });
+
+  try {
     const reqBody = JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
+      max_tokens: 2000,
       messages: [{ role: "user", content }]
     });
 
-    try {
-      const result = await httpsPost(
-        "api.anthropic.com",
-        "/v1/messages",
-        {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01"
-        },
-        reqBody
-      );
+    console.log(`Single API call, body size: ${Math.round(reqBody.length/1024)}KB`);
 
-      if (result.body.error) {
-        console.error(`Batch ${batchNum} error:`, result.body.error.message);
-        continue;
-      }
+    const result = await httpsPost(
+      "api.anthropic.com",
+      "/v1/messages",
+      {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      reqBody
+    );
 
-      const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(raw);
-      const batchRooms = parsed.rooms || {};
-      console.log(`Batch ${batchNum} found ${Object.keys(batchRooms).length} rooms`);
+    console.log("Anthropic response status:", result.status);
 
-      // Merge — don't overwrite existing surgeon assignments
-      for (const [room, surgeon] of Object.entries(batchRooms)) {
-        if (!allRooms[room]) allRooms[room] = surgeon;
-      }
-    } catch(e) {
-      console.error(`Batch ${batchNum} failed:`, e.message);
+    if (result.body.error) {
+      console.error("Anthropic error:", result.body.error.message);
+      return { statusCode: 500, body: JSON.stringify({ error: result.body.error.message }) };
     }
+
+    const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
+    console.log("Raw response preview:", raw.slice(0, 300));
+
+    const parsed = JSON.parse(raw);
+    console.log(`Rooms found: ${Object.keys(parsed.rooms || {}).length}`);
+    console.log("Rooms:", JSON.stringify(Object.keys(parsed.rooms || {})));
+
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed)
+    };
+
+  } catch(e) {
+    console.error("Function error:", e.message);
+    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
-
-  console.log(`Total rooms found: ${Object.keys(allRooms).length}`);
-  console.log("Rooms:", JSON.stringify(allRooms));
-
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rooms: allRooms })
-  };
 };
