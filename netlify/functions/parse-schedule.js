@@ -65,9 +65,23 @@ exports.handler = async function(event) {
       type: "text",
       text: `This is part of an Epic OR surgery schedule. Extract every room with a surgical case.
 For each room, return the exact room name from the Room column and the surgeon last name from Providers column.
-Skip: "Rad Mod Sedation", "OTM Rad Mod Sedation", non-OR settings, "Virtual, Surgeon" providers.
+This schedule has a "Pt Dept" column that identifies the location. Use it to determine the correct room name:
+This schedule has a "Pt Dept" column. Use it to determine the correct room name format:
+
+ROOM MAPPING RULES (use Pt Dept to determine location):
+- Pt Dept "SLEH PERIOPERATIVE SERVICES" → Main OR. Return room as-is (e.g. "OR 3", "OR 14")
+- Pt Dept "BSLMC OPSC PERIOPERATIVE SERVICES" → Jamail OR. Prefix room with "Jamail" (e.g. "OR 3" → "Jamail OR 3")
+- Pt Dept "BSLMC MCNAIR OR PERIOPERATIVE SERVICES" → McNair OR. Return room as-is (e.g. "Mc OR 1")
+- Pt Dept "BSLMC OTM PERIOPERATIVE SERVICES" → OTM OR. Return room as-is (e.g. "OTM OR 11")
+- Pt Dept "BSLMC OTM ENDOSCOPY SERVICES" + Room "Endo 01" → return "Endo 01" (mixed case = OTM Endo)
+- Pt Dept "SLEH ENDOSCOPY SERVICES" + Room "ENDO 01" → return "ENDO 01" (ALL CAPS = Main Endo)
+- Skip rows where Room says "Motility 1", "Motility 2", or Pt Dept contains "ICU"
+- Skip rows where Providers says "Virtual, Surgeon"
+- Skip rows where Pt Dept contains "RAD" or "SEDATION"
+
+Return the room name EXACTLY as specified above (preserve capitalization — it matters for Endo rooms).
 Return ONLY valid JSON, nothing else:
-{"rooms": {"OR 22": "Ongkasuwan", "OTM OR 10": "Ahmed", "Endo 05": "Mansour"}}`
+{"rooms": {"OR 22": "Ongkasuwan", "OTM OR 10": "Ahmed", "Endo 01": "Keihanian", "ENDO 01": "Abidi", "Mc OR 1": "Martin", "Jamail OR 3": "Chang"}}`
     });
 
     const reqBody = JSON.stringify({
