@@ -1640,7 +1640,18 @@ async function lookupAssignment() {
             const parts = roomKey.split("|");
             const roomLabel = parts[1] === "" ? parts[0] : parts[0] + " " + parts[1];
             const floatSurgeon = (assignments[roomKey] && assignments[roomKey]["surgeon"]) || null;
-        foundRooms.push({ room: roomLabel, slot: "Float", partner: null, partnerCred: null, surgeon: floatSurgeon });
+            // Find other people in same float room as partners
+            const floatPartners = person.filter(p => p && p.name && p.name.toLowerCase() !== nameLower);
+            const floatPartner = floatPartners.length > 0 ? floatPartners[0] : null;
+            foundRooms.push({
+              room: roomLabel,
+              slot: "Float",
+              isFloat: true,
+              partner: floatPartner ? floatPartner.name : null,
+              partnerCred: floatPartner ? floatPartner.credential : null,
+              surgeon: floatSurgeon,
+              floatCount: person.filter(p => p && p.name).length
+            });
           }
         });
       } else if (person && person.name && person.name.toLowerCase() === nameLower) {
@@ -1679,13 +1690,15 @@ async function lookupAssignment() {
     const roomsHtml = foundRooms.map((r, i) => `
       <div style="border:1px solid var(--border);border-radius:10px;padding:20px 24px;text-align:center;${i > 0 ? "margin-top:12px;" : ""}">
         ${foundRooms.length > 1 ? `<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:6px;">Assignment ${i+1}</div>` : `<div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Assignment</div>`}
-        <div class="assignment-room">${r.room}</div>
+        <div class="assignment-room" style="${r.isFloat ? "font-size:32px;" : ""}">${r.room}</div>
+        ${r.isFloat ? `<div style="font-size:12px;background:rgba(122,130,160,0.12);color:var(--muted);border-radius:5px;padding:3px 10px;display:inline-block;margin-bottom:8px;font-weight:600;">FLOAT</div>` : ""}
         ${r.surgeon ? `<div style="font-size:14px;color:var(--muted);margin-bottom:8px;">Dr. ${r.surgeon}</div>` : ""}
         ${r.partner ? `<div class="assignment-partner">
-          <span style="color:var(--muted);font-size:12px;">With:</span>
+          <span style="color:var(--muted);font-size:12px;">${r.isFloat ? "Also floating:" : "With:"}</span>
           <strong>${r.partner}</strong>
           ${r.partnerCred ? `<span class="badge badge-cred">${r.partnerCred}</span>` : ""}
-        </div>` : '<div style="color:var(--muted);font-size:13px;">Solo assignment</div>'}
+          ${r.floatCount > 2 ? `<span style="color:var(--muted);font-size:12px;">+${r.floatCount - 2} more</span>` : ""}
+        </div>` : `<div style="color:var(--muted);font-size:13px;">${r.isFloat ? "No other float staff assigned" : "Solo assignment"}</div>`}
       </div>`).join("");
 
     area.innerHTML = `
