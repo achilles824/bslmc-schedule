@@ -717,6 +717,7 @@
         <button class="view-btn" onclick="loadAdminDay()">Load Day</button>
         <button class="view-btn" style="background:linear-gradient(135deg,var(--day),#16a34a);" onclick="saveAssignments()">Save Assignments</button>
         <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="lockAdmin()">Lock</button>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
       <div class="upload-section">
         <h4>📄 OR Schedule</h4>
@@ -1755,6 +1756,9 @@ let currentAssignments = {};
 let draggingPerson = null;
 let staffFilterMD = true;
 let staffFilterAPP = true;
+let autoSaveInterval = null;
+let autoLockTimeout = null;
+const AUTO_LOCK_MINUTES = 30;
 
 // PIN input handling
 const pinInputs = [0,1,2,3].map(i => document.getElementById("pin" + i));
@@ -1778,6 +1782,8 @@ function checkPin() {
     document.getElementById("adminLock").style.display = "none";
     document.getElementById("adminContent").classList.add("unlocked");
     loadAdminDay();
+    startAutoSave();
+    startAutoLock();
   } else {
     document.getElementById("pinError").textContent = "Incorrect PIN. Try again.";
     pinInputs.forEach(i => i.value = "");
@@ -1792,6 +1798,56 @@ function lockAdmin() {
   document.getElementById("adminLock").style.display = "block";
   document.getElementById("adminContent").classList.remove("unlocked");
   pinInputs[0].focus();
+  stopAutoSave();
+  stopAutoLock();
+}
+
+function startAutoSave() {
+  stopAutoSave();
+  autoSaveInterval = setInterval(async () => {
+    if (!adminUnlocked || !currentAdminDate) return;
+    try {
+      const saveData = Object.assign({}, currentAssignments);
+      if (window.closedRooms && Object.keys(window.closedRooms).length > 0) {
+        saveData.__closed = window.closedRooms;
+      }
+      await window.fbSet("assignments/" + currentAdminDate, saveData);
+      // Show subtle autosave indicator
+      const btn = document.querySelector(".view-btn[onclick='saveAssignments()']");
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = "✓ Autosaved";
+        btn.style.opacity = "0.7";
+        setTimeout(() => { btn.textContent = orig; btn.style.opacity = ""; }, 2000);
+      }
+    } catch(e) {
+      console.warn("Autosave failed:", e.message);
+    }
+  }, 30000); // every 30 seconds
+}
+
+function stopAutoSave() {
+  if (autoSaveInterval) { clearInterval(autoSaveInterval); autoSaveInterval = null; }
+}
+
+function resetAutoLock() {
+  if (!adminUnlocked) return;
+  stopAutoLock();
+  startAutoLock();
+}
+
+function startAutoLock() {
+  stopAutoLock();
+  autoLockTimeout = setTimeout(() => {
+    if (adminUnlocked) {
+      alert("Admin session timed out after " + AUTO_LOCK_MINUTES + " minutes of inactivity.");
+      lockAdmin();
+    }
+  }, AUTO_LOCK_MINUTES * 60 * 1000);
+}
+
+function stopAutoLock() {
+  if (autoLockTimeout) { clearTimeout(autoLockTimeout); autoLockTimeout = null; }
 }
 
 async function loadAdminDay() {
@@ -2055,6 +2111,10 @@ function renderAdminDay(dateVal) {
 }
 
 // Drag and drop
+// Reset auto-lock on admin activity
+document.addEventListener("click", () => { if (adminUnlocked) resetAutoLock(); });
+document.addEventListener("keydown", () => { if (adminUnlocked) resetAutoLock(); });
+
 function onDragStart(e) {
   const chip = e.currentTarget;
   draggingPerson = { name: chip.dataset.name, credential: chip.dataset.cred, agency: chip.dataset.agency };
