@@ -44,25 +44,29 @@ exports.handler = async function(event) {
     return { statusCode: 400, body: JSON.stringify({ error: "Bad request: " + e.message }) };
   }
 
-  // Check total size - Netlify limit is ~6MB
-  const totalSize = pages.reduce((sum, p) => sum + p.length, 0);
-  console.log(`Received ${pages.length} pages, total base64 size: ${Math.round(totalSize/1024)}KB`);
+  console.log(`Received ${pages.length} pages, total base64 size: ${Math.round(pages.reduce((s,p) => s+p.length, 0)/1024)}KB`);
 
-  // Only send first 3 pages to stay under limits (room schedule is usually on first few pages)
-  const pagesToSend = pages.slice(0, 3);
+  // Process in batches of 3 pages to stay under API limits
+  // then merge the results
+  const BATCH_SIZE = 3;
+  const allRooms = {};
 
-  try {
-    const content = pagesToSend.map(b64 => ({
+  for (let i = 0; i < pages.length; i += BATCH_SIZE) {
+    const batch = pages.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i/BATCH_SIZE) + 1;
+    console.log(`Processing batch ${batchNum}: pages ${i+1}-${Math.min(i+BATCH_SIZE, pages.length)}`);
+
+    const content = batch.map(b64 => ({
       type: "image",
       source: { type: "base64", media_type: "image/jpeg", data: b64 }
     }));
 
     content.push({
       type: "text",
-      text: `This is an Epic OR surgery schedule. Extract every room with a surgical case.
+      text: `This is part of an Epic OR surgery schedule. Extract every room with a surgical case.
 For each room, return the exact room name from the Room column and the surgeon last name from Providers column.
-Skip: "Rad Mod Sedation", "OTM Rad Mod Sedation", non-OR rooms, "Virtual, Surgeon" providers.
-Return ONLY this JSON format, nothing else:
+Skip: "Rad Mod Sedation", "OTM Rad Mod Sedation", non-OR settings, "Virtual, Surgeon" providers.
+Return ONLY valid JSON, nothing else:
 {"rooms": {"OR 22": "Ongkasuwan", "OTM OR 10": "Ahmed", "Endo 05": "Mansour"}}`
     });
 
@@ -72,40 +76,43 @@ Return ONLY this JSON format, nothing else:
       messages: [{ role: "user", content }]
     });
 
-    console.log(`Sending request to Anthropic, body size: ${Math.round(reqBody.length/1024)}KB`);
+    try {
+      const result = await httpsPost(
+        "api.anthropic.com",
+        "/v1/messages",
+        {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01"
+        },
+        reqBody
+      );
 
-    const result = await httpsPost(
-      "api.anthropic.com",
-      "/v1/messages",
-      {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01"
-      },
-      reqBody
-    );
+      if (result.body.error) {
+        console.error(`Batch ${batchNum} error:`, result.body.error.message);
+        continue;
+      }
 
-    console.log("Anthropic response status:", result.status);
+      const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(raw);
+      const batchRooms = parsed.rooms || {};
+      console.log(`Batch ${batchNum} found ${Object.keys(batchRooms).length} rooms`);
 
-    if (result.body.error) {
-      console.error("Anthropic error:", JSON.stringify(result.body.error));
-      return { statusCode: 500, body: JSON.stringify({ error: result.body.error.message }) };
+      // Merge — don't overwrite existing surgeon assignments
+      for (const [room, surgeon] of Object.entries(batchRooms)) {
+        if (!allRooms[room]) allRooms[room] = surgeon;
+      }
+    } catch(e) {
+      console.error(`Batch ${batchNum} failed:`, e.message);
     }
-
-    const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
-    console.log("Raw response:", raw.slice(0, 200));
-
-    const parsed = JSON.parse(raw);
-    console.log("Rooms found:", Object.keys(parsed.rooms || {}).length);
-
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(parsed)
-    };
-
-  } catch(e) {
-    console.error("Function error:", e.message);
-    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
+
+  console.log(`Total rooms found: ${Object.keys(allRooms).length}`);
+  console.log("Rooms:", JSON.stringify(allRooms));
+
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rooms: allRooms })
+  };
 };
