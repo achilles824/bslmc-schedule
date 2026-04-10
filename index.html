@@ -489,6 +489,26 @@
   }
   .room-slot:hover .slot-remove { opacity: 1; }
   .slot-remove:hover { color: var(--cancel); }
+  /* Surgeon tooltip */
+  .surgeon-tooltip-wrap {
+    position: relative; display: inline-block;
+  }
+  .surgeon-tooltip-wrap .tooltip {
+    display: none; position: absolute; bottom: 125%; left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px; min-width: 200px; max-width: 300px;
+    font-size: 12px; color: var(--text); z-index: 100;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    text-align: left; line-height: 1.5;
+  }
+  .surgeon-tooltip-wrap:hover .tooltip { display: block; }
+  .surgeon-tooltip-wrap .tooltip::after {
+    content: ""; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%); border: 6px solid transparent;
+    border-top-color: var(--border);
+  }
+
   .surgeon-input {
     width: 100%; background: none; border: none; border-top: 1px solid var(--border);
     color: var(--muted); font-family: "DM Sans", sans-serif; font-size: 10px;
@@ -1382,14 +1402,18 @@ function applyRoomChecklist() {
     }
   });
 
-  // Apply parsed surgeons to room assignments
+  // Apply parsed surgeons and procedures to room assignments
   if (window.parsedSurgeons) {
-    for (const [roomLabel, lastName] of Object.entries(window.parsedSurgeons)) {
-      // Find the room key matching this label
+    for (const [roomLabel, data] of Object.entries(window.parsedSurgeons)) {
       for (const r of ALL_ROOMS_FLAT) {
         if (r.label === roomLabel) {
           if (!currentAssignments[r.key]) currentAssignments[r.key] = {};
-          currentAssignments[r.key]["surgeon"] = lastName;
+          if (typeof data === "string") {
+            currentAssignments[r.key]["surgeon"] = data;
+          } else {
+            if (data.surgeon) currentAssignments[r.key]["surgeon"] = data.surgeon;
+            if (data.procedure) currentAssignments[r.key]["procedure"] = data.procedure;
+          }
           break;
         }
       }
@@ -1464,11 +1488,14 @@ Return ONLY a JSON object like this, no other text:
     const rooms = new Set();
     const surgeons = {};
 
-    for (const [rawRoom, lastName] of Object.entries(roomsRaw)) {
+    for (const [rawRoom, data] of Object.entries(roomsRaw)) {
       const normalized = normalizeRoomName(rawRoom);
       if (normalized) {
         rooms.add(normalized);
-        if (!surgeons[normalized]) surgeons[normalized] = lastName;
+        if (!surgeons[normalized]) {
+          // Handle both old string format and new object format
+          surgeons[normalized] = typeof data === "string" ? data : data;
+        }
       }
     }
 
@@ -1509,9 +1536,8 @@ function loadPdfJs() {
 
 function normalizeRoomName(raw) {
   raw = raw.trim();
-  // OTM OR
-  let m = raw.match(/^OTM\s+OR\s*(\d{1,2})/i);
-  if (m) return "OTM OR " + parseInt(m[1]);
+  // OTM OR - handled below after Endo checks
+  let m;
   // McNair / Mc OR
   m = raw.match(/^Mc(?:Nair)?\s+OR\s*(\d{1,2})/i);
   if (m) return "McNair OR " + parseInt(m[1]);
@@ -1524,12 +1550,14 @@ function normalizeRoomName(raw) {
   // OTM Endo
   m = raw.match(/^OTM\s+Endo\s*(\d{1,2})/i);
   if (m) return "OTM Endo " + parseInt(m[1]);
-  // Endo rooms: 1-3 = Main Endo, 4-10 = OTM Endo
-  m = raw.match(/^Endo\s+(\d{1,2})/i);
-  if (m) {
-    const num = parseInt(m[1]);
-    return num <= 3 ? "Main Endo " + num : "OTM Endo " + num;
-  }
+  // ENDO (uppercase) = Main Endo (SLEH), Endo (mixed) = OTM Endo (BSLMC OTM)
+  m = raw.match(/^ENDO\s+(\d{1,2})$/);
+  if (m) return "Main Endo " + parseInt(m[1]);
+  m = raw.match(/^Endo\s+(\d{1,2})$/i);
+  if (m) return "OTM Endo " + parseInt(m[1]);
+  // OTM OR with space: "OTM OR 11"
+  m = raw.match(/^OTM\s+OR\s*(\d{1,2})$/i);
+  if (m) return "OTM OR " + parseInt(m[1]);
   // OTM IR
   m = raw.match(/^OTM\s+IR\s*(\d)/i);
   if (m) return "OTM IR " + parseInt(m[1]);
@@ -1641,6 +1669,7 @@ async function lookupAssignment() {
             const parts = roomKey.split("|");
             const roomLabel = parts[1] === "" ? parts[0] : parts[0] + " " + parts[1];
             const floatSurgeon = (assignments[roomKey] && assignments[roomKey]["surgeon"]) || null;
+            const floatProcedure = (assignments[roomKey] && assignments[roomKey]["procedure"]) || null;
             // Find other people in same float room as partners
             const floatPartners = person.filter(p => p && p.name && p.name.toLowerCase() !== nameLower);
             const floatPartner = floatPartners.length > 0 ? floatPartners[0] : null;
@@ -1651,6 +1680,7 @@ async function lookupAssignment() {
               partner: floatPartner ? floatPartner.name : null,
               partnerCred: floatPartner ? floatPartner.credential : null,
               surgeon: floatSurgeon,
+              procedure: floatProcedure,
               floatCount: person.filter(p => p && p.name).length
             });
           }
@@ -1667,7 +1697,8 @@ async function lookupAssignment() {
           }
         }
         const surgeon = (assignments[roomKey] && assignments[roomKey]["surgeon"]) || null;
-        foundRooms.push({ room: roomLabel, slot: slot.toUpperCase(), partner: partnerName, partnerCred, surgeon });
+        const procedure = (assignments[roomKey] && assignments[roomKey]["procedure"]) || null;
+        foundRooms.push({ room: roomLabel, slot: slot.toUpperCase(), partner: partnerName, partnerCred, surgeon, procedure });
       }
     }
   }
@@ -1693,7 +1724,16 @@ async function lookupAssignment() {
         ${foundRooms.length > 1 ? `<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:6px;">Assignment ${i+1}</div>` : `<div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Assignment</div>`}
         <div class="assignment-room" style="${r.isFloat ? "font-size:32px;" : ""}">${r.room}</div>
         ${r.isFloat ? `<div style="font-size:12px;background:rgba(122,130,160,0.12);color:var(--muted);border-radius:5px;padding:3px 10px;display:inline-block;margin-bottom:8px;font-weight:600;">FLOAT</div>` : ""}
-        ${r.surgeon ? `<div style="font-size:14px;color:var(--muted);margin-bottom:8px;">Dr. ${r.surgeon}</div>` : ""}
+        ${r.surgeon ? `<div class="surgeon-tooltip-wrap" style="margin-bottom:8px;">
+          <div style="font-size:14px;color:var(--muted);cursor:${r.procedure ? "help" : "default"};">
+            Dr. ${r.surgeon}
+            ${r.procedure ? `<span style="font-size:10px;color:var(--accent);margin-left:4px;">ⓘ</span>` : ""}
+          </div>
+          ${r.procedure ? `<div class="tooltip">
+            <div style="font-weight:700;margin-bottom:4px;color:var(--accent);">Procedure</div>
+            <div>${r.procedure}</div>
+          </div>` : ""}
+        </div>` : ""}
         ${r.partner ? `<div class="assignment-partner">
           <span style="color:var(--muted);font-size:12px;">${r.isFloat ? "Also floating:" : "With:"}</span>
           <strong>${r.partner}</strong>
@@ -1881,6 +1921,15 @@ function toggleStaffFilter(type) {
   if (type === "MD") staffFilterMD = !staffFilterMD;
   else staffFilterAPP = !staffFilterAPP;
   renderAdminDay(currentAdminDate);
+}
+
+function updateProcedure(roomKey, value) {
+  if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
+  if (value.trim()) {
+    currentAssignments[roomKey]["procedure"] = value.trim();
+  } else {
+    delete currentAssignments[roomKey]["procedure"];
+  }
 }
 
 function updateSurgeon(roomKey, value) {
@@ -2097,6 +2146,11 @@ function renderAdminDay(dateVal) {
             value="${surgeonVal}"
             onchange="updateSurgeon('${roomKey}', this.value)"
             onclick="event.stopPropagation()" />
+          <input class="surgeon-input" placeholder="Procedure (optional)..." 
+            value="${(currentAssignments[roomKey] && currentAssignments[roomKey]['procedure']) || ''}"
+            onchange="updateProcedure('${roomKey}', this.value)"
+            onclick="event.stopPropagation()"
+            style="color:var(--muted);font-size:9px;" />
         </div>`;
       }
     });
