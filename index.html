@@ -728,14 +728,22 @@
         <span id="uploadStatus" style="font-size:13px;color:var(--muted);"></span>
       </div>
       <div class="room-checklist" id="roomChecklist">
-        <h4>Active Rooms Today</h4>
-        <p>Check the rooms that have cases scheduled today. Unchecked rooms will be closed automatically.</p>
-        <div class="select-all-row">
-          <span class="select-link" onclick="checklistSelectAll(true)">Select all</span>
-          <span class="select-link" onclick="checklistSelectAll(false)">Deselect all</span>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <h4 style="margin:0;">Active Rooms Today</h4>
+          <button onclick="toggleChecklist()" id="checklistToggleBtn"
+            style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer;font-size:12px;padding:4px 10px;font-family:'DM Sans',sans-serif;">
+            Minimize ▲
+          </button>
         </div>
-        <div class="checklist-groups" id="checklistGroups"></div>
-        <button class="apply-btn" onclick="applyRoomChecklist()">Apply — Close Inactive Rooms</button>
+        <div id="checklistBody">
+          <p>Check the rooms that have cases scheduled today. Unchecked rooms will be closed automatically.</p>
+          <div class="select-all-row">
+            <span class="select-link" onclick="checklistSelectAll(true)">Select all</span>
+            <span class="select-link" onclick="checklistSelectAll(false)">Deselect all</span>
+          </div>
+          <div class="checklist-groups" id="checklistGroups"></div>
+          <button class="apply-btn" onclick="applyRoomChecklist()">Apply — Close Inactive Rooms</button>
+        </div>
       </div>
       <div class="admin-grid-wrap">
         <div class="admin-staff-panel">
@@ -1346,6 +1354,14 @@ function buildChecklist(activeRooms) {
   document.getElementById("roomChecklist").classList.add("visible");
 }
 
+function toggleChecklist() {
+  const body = document.getElementById("checklistBody");
+  const btn = document.getElementById("checklistToggleBtn");
+  const isHidden = body.style.display === "none";
+  body.style.display = isHidden ? "block" : "none";
+  btn.textContent = isHidden ? "Minimize ▲" : "Expand ▼";
+}
+
 function checklistSelectAll(checked) {
   document.querySelectorAll("#checklistGroups input[type=checkbox]").forEach(cb => {
     cb.checked = checked;
@@ -1507,9 +1523,12 @@ function normalizeRoomName(raw) {
   // OTM Endo
   m = raw.match(/^OTM\s+Endo\s*(\d{1,2})/i);
   if (m) return "OTM Endo " + parseInt(m[1]);
-  // Main Endo
+  // Endo rooms: 1-3 = Main Endo, 4-10 = OTM Endo
   m = raw.match(/^Endo\s+(\d{1,2})/i);
-  if (m) return "Main Endo " + parseInt(m[1]);
+  if (m) {
+    const num = parseInt(m[1]);
+    return num <= 3 ? "Main Endo " + num : "OTM Endo " + num;
+  }
   // OTM IR
   m = raw.match(/^OTM\s+IR\s*(\d)/i);
   if (m) return "OTM IR " + parseInt(m[1]);
@@ -1640,6 +1659,18 @@ async function lookupAssignment() {
       }
     }
   }
+
+  // Sort rooms numerically (e.g. OTM Endo 2 before OTM Endo 10)
+  foundRooms.sort((a, b) => {
+    const parseRoom = r => {
+      const m = r.room.match(/^(.*?)\s*(\d+)$/);
+      return m ? [m[1].trim(), parseInt(m[2])] : [r.room, 0];
+    };
+    const [aPrefix, aNum] = parseRoom(a);
+    const [bPrefix, bNum] = parseRoom(b);
+    if (aPrefix !== bPrefix) return aPrefix.localeCompare(bPrefix);
+    return aNum - bNum;
+  });
 
   const dt = parseDate(dateVal);
   const dayLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
