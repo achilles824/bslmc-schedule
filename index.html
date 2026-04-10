@@ -1434,50 +1434,43 @@ async function handleScheduleUpload(event) {
   status.textContent = "Loading PDF...";
 
   try {
-    // Load PDF.js to render pages as images
+    // Load PDF.js
     if (!window.pdfjsLib) await loadPdfJs();
-
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-    status.textContent = `Reading ${pdf.numPages} pages with AI...`;
+    // Load Tesseract.js for OCR
+    status.textContent = "Loading OCR engine...";
+    if (!window.Tesseract) await loadTesseract();
+    const worker = await Tesseract.createWorker("eng");
 
-    // Render each page to a base64 image and send to Claude API
-    const pageImages = [];
+    // OCR each page and collect plain text
+    let allText = "";
     for (let i = 1; i <= pdf.numPages; i++) {
-      status.textContent = `Rendering page ${i} of ${pdf.numPages}...`;
+      status.textContent = `Reading page ${i} of ${pdf.numPages}...`;
       const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 1.0 });
+      const viewport = page.getViewport({ scale: 1.5 });
       const canvas = document.createElement("canvas");
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-      pageImages.push(canvas.toDataURL("image/jpeg", 0.6).split(",")[1]);
+      try {
+        const { data: { text } } = await worker.recognize(canvas);
+        allText += text + "\n";
+      } catch(e) {
+        console.warn("Page " + i + " OCR failed:", e.message);
+      }
     }
+    await worker.terminate();
 
-    const totalKB = Math.round(pageImages.reduce((s,p) => s + p.length, 0) * 0.75 / 1024);
-    status.textContent = `Analyzing schedule with AI (${totalKB}KB)...`;
+    status.textContent = "Parsing schedule...";
+    console.log("OCR text sample:", allText.slice(0, 400));
 
-    // Build message content with all pages as images
-    const content = pageImages.map(b64 => ({
-      type: "image",
-      source: { type: "base64", media_type: "image/jpeg", data: b64 }
-    }));
-
-    content.push({
-      type: "text",
-      text: `This is an Epic OR surgery schedule. Extract every room that has a case scheduled.
-For each room, extract the room name exactly as shown and the surgeon last name (from the Providers column, format is "LastName, FirstName").
-Ignore rows for "Rad Mod Sedation", "OTM Rad Mod Sedation", or any non-operating room settings.
-Return ONLY a JSON object like this, no other text:
-{"rooms": {"OR 22": "Ongkasuwan", "OTM OR 10": "Ahmed", "Endo 05": "Mansour"}}`
-    });
-
-    // Call Netlify serverless function (avoids CORS)
+    // Send OCR text (tiny vs images) to Netlify function
     const response = await fetch("/.netlify/functions/parse-schedule", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pages: pageImages })
+      body: JSON.stringify({ ocrText: allText })
     });
 
     if (!response.ok) throw new Error("Server error: " + response.status);
@@ -1488,14 +1481,10 @@ Return ONLY a JSON object like this, no other text:
     const rooms = new Set();
     const surgeons = {};
 
-    for (const [rawRoom, data] of Object.entries(roomsRaw)) {
-      const normalized = normalizeRoomName(rawRoom);
-      if (normalized) {
-        rooms.add(normalized);
-        if (!surgeons[normalized]) {
-          // Handle both old string format and new object format
-          surgeons[normalized] = typeof data === "string" ? data : data;
-        }
+    for (const [roomLabel, data] of Object.entries(roomsRaw)) {
+      rooms.add(roomLabel);
+      if (!surgeons[roomLabel]) {
+        surgeons[roomLabel] = typeof data === "string" ? { surgeon: data } : data;
       }
     }
 
@@ -1518,6 +1507,16 @@ Return ONLY a JSON object like this, no other text:
   }
 
   event.target.value = "";
+}
+
+function loadTesseract() {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js";
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
 }
 
 function loadPdfJs() {
