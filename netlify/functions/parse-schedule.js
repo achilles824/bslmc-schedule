@@ -80,8 +80,9 @@ ROOM MAPPING RULES (use Pt Dept to determine location):
 - Skip rows where Pt Dept contains "RAD" or "SEDATION"
 
 Return the room name EXACTLY as specified above (preserve capitalization — it matters for Endo rooms).
-Return ONLY valid JSON, nothing else:
-{"rooms": {"OR 22": "Ongkasuwan", "OTM OR 10": "Ahmed", "Endo 01": "Keihanian", "ENDO 01": "Abidi", "Mc OR 1": "Martin", "Jamail OR 3": "Chang"}}`
+For each room also extract the first procedure name (shortened to key words, max 40 chars).
+Return ONLY valid JSON, nothing else — each room maps to an object with surgeon and procedure:
+{"rooms": {"OR 22": {"surgeon": "Ongkasuwan", "procedure": "MICROLARYNGOSCOPY"}, "OTM OR 10": {"surgeon": "Ahmed", "procedure": "ARTHROSCOPY SHOULDER"}, "Jamail OR 3": {"surgeon": "Chang", "procedure": "AQUEOUS DRAINAGE DEVICE"}}}`
     });
 
     const reqBody = JSON.stringify({
