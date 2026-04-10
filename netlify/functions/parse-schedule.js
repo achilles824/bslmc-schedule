@@ -1,12 +1,10 @@
 const https = require("https");
 
-function httpsPost(url, headers, body) {
+function httpsPost(hostname, path, headers, bodyStr) {
   return new Promise((resolve, reject) => {
-    const bodyStr = JSON.stringify(body);
-    const urlObj = new URL(url);
     const options = {
-      hostname: urlObj.hostname,
-      path: urlObj.pathname,
+      hostname,
+      path,
       method: "POST",
       headers: {
         ...headers,
@@ -17,8 +15,8 @@ function httpsPost(url, headers, body) {
       let data = "";
       res.on("data", chunk => data += chunk);
       res.on("end", () => {
-        try { resolve(JSON.parse(data)); }
-        catch(e) { reject(new Error("Invalid JSON response: " + data.slice(0, 200))); }
+        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+        catch(e) { reject(new Error("Invalid JSON: " + data.slice(0, 300))); }
       });
     });
     req.on("error", reject);
@@ -34,10 +32,7 @@ exports.handler = async function(event) {
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: "ANTHROPIC_API_KEY environment variable not set" })
-    };
+    return { statusCode: 500, body: JSON.stringify({ error: "ANTHROPIC_API_KEY not set" }) };
   }
 
   let pages;
@@ -46,44 +41,62 @@ exports.handler = async function(event) {
     pages = body.pages;
     if (!pages || !pages.length) throw new Error("No pages provided");
   } catch(e) {
-    return { statusCode: 400, body: JSON.stringify({ error: "Invalid request: " + e.message }) };
+    return { statusCode: 400, body: JSON.stringify({ error: "Bad request: " + e.message }) };
   }
 
+  // Check total size - Netlify limit is ~6MB
+  const totalSize = pages.reduce((sum, p) => sum + p.length, 0);
+  console.log(`Received ${pages.length} pages, total base64 size: ${Math.round(totalSize/1024)}KB`);
+
+  // Only send first 3 pages to stay under limits (room schedule is usually on first few pages)
+  const pagesToSend = pages.slice(0, 3);
+
   try {
-    const content = pages.map(b64 => ({
+    const content = pagesToSend.map(b64 => ({
       type: "image",
       source: { type: "base64", media_type: "image/jpeg", data: b64 }
     }));
 
     content.push({
       type: "text",
-      text: `This is an Epic OR surgery schedule printout. Extract every room that has a surgical case scheduled.
-For each room, get the room name exactly as shown in the Room column, and the surgeon last name from the Providers column (format is "LastName, FirstName" - just return the last name).
-Ignore rows for "Rad Mod Sedation", "OTM Rad Mod Sedation", or any non-operating room settings. Ignore "Virtual, Surgeon" providers.
-Return ONLY valid JSON, no markdown, no explanation:
+      text: `This is an Epic OR surgery schedule. Extract every room with a surgical case.
+For each room, return the exact room name from the Room column and the surgeon last name from Providers column.
+Skip: "Rad Mod Sedation", "OTM Rad Mod Sedation", non-OR rooms, "Virtual, Surgeon" providers.
+Return ONLY this JSON format, nothing else:
 {"rooms": {"OR 22": "Ongkasuwan", "OTM OR 10": "Ahmed", "Endo 05": "Mansour"}}`
     });
 
-    const data = await httpsPost(
-      "https://api.anthropic.com/v1/messages",
+    const reqBody = JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      messages: [{ role: "user", content }]
+    });
+
+    console.log(`Sending request to Anthropic, body size: ${Math.round(reqBody.length/1024)}KB`);
+
+    const result = await httpsPost(
+      "api.anthropic.com",
+      "/v1/messages",
       {
         "Content-Type": "application/json",
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01"
       },
-      {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        messages: [{ role: "user", content }]
-      }
+      reqBody
     );
 
-    if (data.error) {
-      return { statusCode: 500, body: JSON.stringify({ error: "Anthropic API error: " + data.error.message }) };
+    console.log("Anthropic response status:", result.status);
+
+    if (result.body.error) {
+      console.error("Anthropic error:", JSON.stringify(result.body.error));
+      return { statusCode: 500, body: JSON.stringify({ error: result.body.error.message }) };
     }
 
-    const raw = data.content[0].text.trim().replace(/```json|```/g, "").trim();
+    const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
+    console.log("Raw response:", raw.slice(0, 200));
+
     const parsed = JSON.parse(raw);
+    console.log("Rooms found:", Object.keys(parsed.rooms || {}).length);
 
     return {
       statusCode: 200,
@@ -92,9 +105,7 @@ Return ONLY valid JSON, no markdown, no explanation:
     };
 
   } catch(e) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: e.message })
-    };
+    console.error("Function error:", e.message);
+    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
 };
