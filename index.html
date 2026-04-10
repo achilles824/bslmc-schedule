@@ -1406,15 +1406,16 @@ async function handleScheduleUpload(event) {
     for (let i = 1; i <= pdf.numPages; i++) {
       status.textContent = `Rendering page ${i} of ${pdf.numPages}...`;
       const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 2.0 });
+      const viewport = page.getViewport({ scale: 1.5 });
       const canvas = document.createElement("canvas");
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-      pageImages.push(canvas.toDataURL("image/jpeg", 0.85).split(",")[1]);
+      pageImages.push(canvas.toDataURL("image/jpeg", 0.7).split(",")[1]);
     }
 
-    status.textContent = "Analyzing schedule with AI...";
+    const totalKB = Math.round(pageImages.reduce((s,p) => s + p.length, 0) * 0.75 / 1024);
+    status.textContent = `Analyzing schedule with AI (${totalKB}KB)...`;
 
     // Build message content with all pages as images
     const content = pageImages.map(b64 => ({
