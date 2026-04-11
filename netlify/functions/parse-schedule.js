@@ -1,4 +1,4 @@
-// parse-schedule v4
+// parse-schedule v6
 const https = require("https");
 
 function httpsPost(hostname, path, headers, bodyStr) {
@@ -50,25 +50,30 @@ exports.handler = async function(event) {
 
   content.push({
     type: "text",
-    text: `This is part of an Epic OR surgery schedule. It has a "Room" column and a "Pt Dept" column.
+    text: `This is part of an Epic OR surgery schedule with "Room", "Pt Dept", "Anes. Type", and "Providers" columns.
 
-CRITICAL ROOM MAPPING RULES - use BOTH columns together:
-1. "SLEH PERIOPERATIVE" dept → Main OR. Return room exactly e.g. "OR 04", "OR 16"
-2. "BSLMC OPSC PERIOPERATIVE" dept → Jamail OR. ALWAYS prefix with "Jamail": "OR 2" → "Jamail OR 2", "OR 3" → "Jamail OR 3". NEVER return OPSC rooms as plain "OR N"
-3. "BSLMC MCNAIR OR PERIOPERATIVE" dept → McNair OR. Return as-is e.g. "Mc OR 1"
-4. "BSLMC OTM PERIOPERATIVE" dept → OTM OR. Return as-is e.g. "OTM OR 5"
-5. "BSLMC OTM ENDOSCOPY" dept + mixed-case room "Endo 01" → return "Endo 01"
-6. "SLEH ENDOSCOPY" dept + ALL-CAPS room "ENDO 01" → return "ENDO 01"
-7. MRI room (may appear as "RM-IR MRI", "MRI", or similar) → return "MRI"
-8. NIR room (Neuro IR) → return "NIR 1" or "NIR 2"
-9. IR room → return "IR 1" or "IR 2"
-10. SKIP: Motility rooms, ICU, RAD/SEDATION rows, "Virtual, Surgeon" providers, OTM Rad Mod Sedation
+DEPARTMENT RULES (use Pt Dept column to determine location):
+- Pt Dept contains "BSLMC OPSC" → ALWAYS Jamail OR. Prefix room with "Jamail": "OR 2" → "Jamail OR 2", "OR 3" → "Jamail OR 3". No exceptions.
+- Pt Dept contains "SLEH PERIOPERATIVE" → ALWAYS Main OR. Return room as-is: "OR 04", "OR 16". No exceptions.
+- Pt Dept contains "BSLMC MCNAIR OR PERIOPERATIVE" → McNair OR, return as-is: "Mc OR 1"
+- Pt Dept contains "BSLMC OTM PERIOPERATIVE" → OTM OR, return as-is: "OTM OR 5"
+- Pt Dept contains "BSLMC OTM ENDOSCOPY" + mixed-case room "Endo 01" → return "Endo 01" (OTM Endo)
+- Pt Dept contains "SLEH ENDOSCOPY" + ALL-CAPS room "ENDO 01" → return "ENDO 01" (Main Endo)
+- NIR rooms → return "NIR 1" or "NIR 2"
+- IR rooms → return "IR 1" or "IR 2"
+- MRI room (may appear as "RM-IR MRI") → return "MRI"
 
-IMPORTANT: A room labeled "OR 2" or "OR 3" with BSLMC OPSC dept is a JAMAIL room, NOT a Main OR. Always check the Pt Dept column.
+SKIP RULES — skip a row if ALL of these are true:
+- Providers column says "Virtual, Surgeon" AND
+- The room is NOT an MRI room AND
+- Anes. Type is NOT "General"
 
-For each unique room (first case only), return the surgeon last name and first procedure (max 40 chars).
+Also always skip: Motility rooms, ICU rows, Rad Mod Sedation rows, OTM Rad Mod Sedation rows.
+
+For each unique room (first occurrence only), return surgeon last name from Providers column and first procedure (max 40 chars).
+If Providers says "Virtual, Surgeon" but you are including the row (because it's MRI or Anes. Type is General), return surgeon as "Unknown".
 Return ONLY valid JSON, no markdown:
-{"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY"},"Jamail OR 3":{"surgeon":"Chang","procedure":"AQUEOUS DRAINAGE"},"MRI":{"surgeon":"Smith","procedure":"MRI GUIDED PROCEDURE"},"NIR 1":{"surgeon":"Jones","procedure":"EMBOLIZATION"}}}`
+{"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY"},"Jamail OR 2":{"surgeon":"Weng","procedure":"REPAIR RETINAL DETACHMENT"},"MRI":{"surgeon":"Unknown","procedure":"PROCEDURE IN NON-OPERATING ROOM"}}}`
   });
 
   try {
