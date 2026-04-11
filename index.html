@@ -362,6 +362,27 @@
   .select-all-row { display: flex; gap: 10px; margin-bottom: 12px; }
   .select-link { font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: underline; }
 
+  /* Mobile responsive */
+  @media (max-width: 768px) {
+    .tab-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; gap: 4px; padding: 8px; }
+    .tab-btn { font-size: 11px; padding: 6px 10px; white-space: nowrap; flex-shrink: 0; }
+    .admin-grid-wrap { flex-direction: column; }
+    .admin-staff-panel { width: 100%; position: static; max-height: 200px; }
+    .staff-pool { max-height: 150px; }
+    .room-cards { gap: 6px; }
+    .room-card { width: 120px; }
+    .room-card.float-room { width: 140px; }
+    .search-row { flex-wrap: wrap; gap: 8px; }
+    .search-wrap { min-width: 0; }
+    .assignment-room { font-size: 32px; }
+    #themeToggleBtn { position: static; margin-left: auto; transform: none; }
+    .tab-bar { justify-content: flex-start; }
+    .admin-toolbar { flex-wrap: wrap; gap: 8px; }
+    main { padding: 12px; }
+    .checklist-groups { gap: 12px; }
+    .checklist-group { min-width: 120px; }
+  }
+
   /* My Assignment tab */
   .assignment-card {
     background: var(--surface); border: 1px solid var(--border);
@@ -619,7 +640,12 @@
   </div>
 </header>
 
-<div class="tab-bar">
+<div class="tab-bar" style="position:relative;">
+  <button onclick="toggleTheme()" id="themeToggleBtn" title="Toggle theme"
+    style="position:absolute;right:12px;top:50%;transform:translateY(-50%);
+    background:none;border:1px solid var(--border);border-radius:20px;
+    color:var(--muted);cursor:pointer;font-size:14px;padding:4px 10px;
+    transition:all 0.2s;z-index:10;">🌙</button>
   <button class="tab-btn active" onclick="switchTab('my-assignment')">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
     My Assignment
@@ -763,6 +789,7 @@
         <button class="view-btn" onclick="loadAdminDay()">Load Day</button>
         <button class="view-btn" style="background:linear-gradient(135deg,var(--day),#16a34a);" onclick="saveAssignments()">Save Assignments</button>
         <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="lockAdmin()">Lock</button>
+        <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearDay()">Clear Day</button>
         <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
       <div class="upload-section">
@@ -801,6 +828,24 @@
       </div>
     </div>
   </div>
+  <!-- Manual Staff Entry Modal -->
+  <div class="transfer-overlay" id="manualEntryOverlay" style="display:none;" onclick="if(event.target===this)closeManualEntry()">
+    <div class="transfer-modal">
+      <h4 id="manualEntryTitle">Manually Add Staff</h4>
+      <p id="manualEntryDesc">Enter the name of the staff member to assign.</p>
+      <input type="text" id="manualEntryName" class="transfer-select" placeholder="Last name, First name..." style="margin-bottom:8px;" />
+      <select id="manualEntryCred" class="transfer-select">
+        <option value="MD">MD</option>
+        <option value="CRNA">CRNA</option>
+        <option value="CAA">CAA</option>
+      </select>
+      <div class="transfer-btn-row">
+        <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="closeManualEntry()">Cancel</button>
+        <button class="view-btn" onclick="executeManualEntry()">Assign</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Transfer Room Modal -->
   <div class="transfer-overlay" id="transferOverlay" style="display:none;" onclick="if(event.target===this)closeTransferModal()">
     <div class="transfer-modal">
@@ -1451,6 +1496,7 @@ function applyRoomChecklist() {
           } else {
             if (data.surgeon) currentAssignments[r.key]["surgeon"] = data.surgeon;
             if (data.procedure) currentAssignments[r.key]["procedure"] = data.procedure;
+            if (data.time) currentAssignments[r.key]["caseTime"] = data.time;
           }
           break;
         }
@@ -1715,6 +1761,7 @@ async function lookupAssignment() {
             // Find other people in same float room as partners
             const floatPartners = person.filter(p => p && p.name && p.name.toLowerCase() !== nameLower);
             const floatPartner = floatPartners.length > 0 ? floatPartners[0] : null;
+            const floatCaseTime = (assignments[roomKey] && assignments[roomKey]["caseTime"]) || null;
             foundRooms.push({
               room: roomLabel,
               slot: "Float",
@@ -1723,6 +1770,7 @@ async function lookupAssignment() {
               partnerCred: floatPartner ? floatPartner.credential : null,
               surgeon: floatSurgeon,
               procedure: floatProcedure,
+              caseTime: floatCaseTime,
               floatCount: person.filter(p => p && p.name).length
             });
           }
@@ -1740,7 +1788,8 @@ async function lookupAssignment() {
         }
         const surgeon = (assignments[roomKey] && assignments[roomKey]["surgeon"]) || null;
         const procedure = (assignments[roomKey] && assignments[roomKey]["procedure"]) || null;
-        foundRooms.push({ room: roomLabel, slot: slot.toUpperCase(), partner: partnerName, partnerCred, surgeon, procedure });
+        const caseTime = (assignments[roomKey] && assignments[roomKey]["caseTime"]) || null;
+        foundRooms.push({ room: roomLabel, slot: slot.toUpperCase(), partner: partnerName, partnerCred, surgeon, procedure, caseTime });
       }
     }
   }
@@ -1884,6 +1933,18 @@ function lockAdmin() {
   stopAutoLock();
 }
 
+function confirmClearDay() {
+  if (!currentAdminDate) return;
+  const dt = parseDate(currentAdminDate);
+  const label = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate();
+  if (confirm("⚠️ Clear ALL assignments, surgeons, procedures, and times for " + label + "?\n\nThis cannot be undone.")) {
+    currentAssignments = {};
+    window.closedRooms = {};
+    window.fbSet("assignments/" + currentAdminDate, null);
+    renderAdminDay(currentAdminDate);
+  }
+}
+
 function startAutoSave() {
   stopAutoSave();
   autoSaveInterval = setInterval(async () => {
@@ -1966,6 +2027,43 @@ function toggleStaffFilter(type) {
 }
 
 let transferSourceKey = null;
+let manualEntryRoomKey = null;
+let manualEntrySlot = null;
+
+function openManualEntry(roomKey, slot) {
+  manualEntryRoomKey = roomKey;
+  manualEntrySlot = slot;
+  const parts = roomKey.split("|");
+  const roomLabel = parts[1] === "" ? parts[0] : parts[0] + " " + parts[1];
+  document.getElementById("manualEntryTitle").textContent = "Manually Assign to " + roomLabel;
+  document.getElementById("manualEntryDesc").textContent = "Enter any " + (slot === "md" ? "MD" : "APP (CRNA/CAA)") + " — not limited to today's OR staff.";
+  document.getElementById("manualEntryName").value = "";
+  // Pre-select credential type
+  document.getElementById("manualEntryCred").value = slot === "md" ? "MD" : "CRNA";
+  if (slot === "app") {
+    document.getElementById("manualEntryCred").innerHTML = '<option value="CRNA">CRNA</option><option value="CAA">CAA</option>';
+  } else {
+    document.getElementById("manualEntryCred").innerHTML = '<option value="MD">MD</option>';
+  }
+  document.getElementById("manualEntryOverlay").style.display = "flex";
+  setTimeout(() => document.getElementById("manualEntryName").focus(), 100);
+}
+
+function closeManualEntry() {
+  document.getElementById("manualEntryOverlay").style.display = "none";
+  manualEntryRoomKey = null;
+  manualEntrySlot = null;
+}
+
+function executeManualEntry() {
+  const name = document.getElementById("manualEntryName").value.trim();
+  const cred = document.getElementById("manualEntryCred").value;
+  if (!name || !manualEntryRoomKey) return;
+  if (!currentAssignments[manualEntryRoomKey]) currentAssignments[manualEntryRoomKey] = {};
+  currentAssignments[manualEntryRoomKey][manualEntrySlot] = { name, credential: cred, agency: "Manual" };
+  closeManualEntry();
+  renderAdminDay(currentAdminDate);
+}
 
 function openTransferModal(roomKey, roomLabel) {
   transferSourceKey = roomKey;
@@ -2020,6 +2118,15 @@ function executeTransfer() {
 
   closeTransferModal();
   renderAdminDay(currentAdminDate);
+}
+
+function updateCaseTime(roomKey, value) {
+  if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
+  if (value.trim()) {
+    currentAssignments[roomKey]["caseTime"] = value.trim();
+  } else {
+    delete currentAssignments[roomKey]["caseTime"];
+  }
 }
 
 function updateProcedure(roomKey, value) {
@@ -2219,7 +2326,7 @@ function renderAdminDay(dateVal) {
         const surgeonVal = (currentAssignments[roomKey] && currentAssignments[roomKey]["surgeon"]) || "";
         gridHtml += `<div class="room-card${isClosed?" closed":""}">
           <div class="room-card-title" style="gap:4px;">
-            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">${roomLabel}</span>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">${roomLabel}${(currentAssignments[roomKey] && currentAssignments[roomKey]['caseTime']) ? '<span style="font-size:9px;color:var(--accent);margin-left:4px;">' + currentAssignments[roomKey]['caseTime'] + '</span>' : ''}</span>
             <button class="room-transfer-btn" onclick="event.stopPropagation();openTransferModal('${roomKey}','${roomLabel}')">⇄</button>
             <button class="room-close-btn${isClosed?" closed":""}"
               style="pointer-events:all;"
@@ -2227,19 +2334,23 @@ function renderAdminDay(dateVal) {
           </div>
           <div class="room-slot slot-md"
             ondragover="onDragOver(event)" ondrop="onDrop(event,'${roomKey}','md')"
-            ondragleave="onDragLeave(event)">
+            ondragleave="onDragLeave(event)"
+            ondblclick="${!mdPerson ? `openManualEntry('${roomKey}','md')` : ''}"
+            title="${!mdPerson ? 'Double-click to manually assign MD' : ''}">
             <div style="display:flex;flex-direction:column;flex:1;min-width:0;">
               <span class="slot-label">MD</span>
-              ${mdPerson ? `<span class="slot-name">${mdPerson.name}</span>` : `<span style="color:var(--muted);font-size:10px;">Drop MD here</span>`}
+              ${mdPerson ? `<span class="slot-name">${mdPerson.name}</span>` : `<span style="color:var(--muted);font-size:10px;">Drop or double-click</span>`}
             </div>
             ${mdPerson ? `<span class="slot-remove" onclick="removeFromSlot('${roomKey}','md')">×</span>` : ""}
           </div>
           <div class="room-slot slot-app"
             ondragover="onDragOver(event)" ondrop="onDrop(event,'${roomKey}','app')"
-            ondragleave="onDragLeave(event)">
+            ondragleave="onDragLeave(event)"
+            ondblclick="${!appPerson ? `openManualEntry('${roomKey}','app')` : ''}"
+            title="${!appPerson ? 'Double-click to manually assign APP' : ''}">
             <div style="display:flex;flex-direction:column;flex:1;min-width:0;">
               <span class="slot-label">APP</span>
-              ${appPerson ? `<span class="slot-name">${appPerson.name}</span>` : `<span style="color:var(--muted);font-size:10px;">Drop APP here</span>`}
+              ${appPerson ? `<span class="slot-name">${appPerson.name}</span>` : `<span style="color:var(--muted);font-size:10px;">Drop or double-click</span>`}
             </div>
             ${appPerson ? `<span class="slot-remove" onclick="removeFromSlot('${roomKey}','app')">×</span>` : ""}
           </div>
@@ -2250,6 +2361,11 @@ function renderAdminDay(dateVal) {
           <input class="surgeon-input" placeholder="Procedure (optional)..." 
             value="${(currentAssignments[roomKey] && currentAssignments[roomKey]['procedure']) || ''}"
             onchange="updateProcedure('${roomKey}', this.value)"
+            onclick="event.stopPropagation()"
+            style="color:var(--muted);font-size:9px;" />
+          <input class="surgeon-input" placeholder="First case time (e.g. 07:30)..." 
+            value="${(currentAssignments[roomKey] && currentAssignments[roomKey]['caseTime']) || ''}"
+            onchange="updateCaseTime('${roomKey}', this.value)"
             onclick="event.stopPropagation()"
             style="color:var(--muted);font-size:9px;" />
         </div>`;
@@ -2349,6 +2465,47 @@ async function saveAssignments() {
     alert("Failed to save: " + e.message);
   }
 }
+
+// ── THEME TOGGLE ──
+function toggleTheme() {
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  document.documentElement.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  document.getElementById('themeToggleBtn').textContent = isDark ? '☀️' : '🌙';
+  localStorage.setItem('theme', isDark ? 'light' : 'dark');
+}
+// Restore saved theme
+(function() {
+  const saved = localStorage.getItem('theme');
+  if (saved === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+    setTimeout(() => {
+      const btn = document.getElementById('themeToggleBtn');
+      if (btn) btn.textContent = '☀️';
+    }, 100);
+  }
+})();
+
+// ── LIGHT THEME VARS ──
+// Add light theme CSS overrides
+const lightStyle = document.createElement('style');
+lightStyle.textContent = `
+  [data-theme="light"] {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --surface2: #f0f1f3;
+    --border: #d1d5db;
+    --text: #111827;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent2: #4f46e5;
+    --day: #16a34a;
+    --night: #7c3aed;
+    --call: #b45309;
+    --special: #d97706;
+    --cancel: #dc2626;
+  }
+`;
+document.head.appendChild(lightStyle);
 
 // Wait for Firebase to be ready before initializing
 function initApp() {
