@@ -1439,48 +1439,26 @@ async function handleScheduleUpload(event) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-    // Load Tesseract.js for OCR
-    status.textContent = "Loading OCR engine...";
-    if (!window.Tesseract) await loadTesseract();
-    const worker = await Tesseract.createWorker("eng");
-
-    // OCR each page and collect plain text
-    let allText = "";
+    // Render pages as images and send to Netlify for server-side OCR
+    const pageImages = [];
     for (let i = 1; i <= pdf.numPages; i++) {
-      status.textContent = `Reading page ${i} of ${pdf.numPages}...`;
+      status.textContent = `Rendering page ${i} of ${pdf.numPages}...`;
       const page = await pdf.getPage(i);
       const viewport = page.getViewport({ scale: 1.5 });
       const canvas = document.createElement("canvas");
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-      try {
-        const { data: { text } } = await worker.recognize(canvas);
-        allText += text + "\n";
-      } catch(e) {
-        console.warn("Page " + i + " OCR failed:", e.message);
-      }
-    }
-    await worker.terminate();
-
-    console.log("OCR complete. Text length:", allText.length);
-    console.log("OCR text sample:", allText.slice(0, 400));
-
-    // If OCR produced no text, fall back to manual checklist
-    if (allText.trim().length < 50) {
-      status.textContent = "⚠️ OCR produced no text — showing manual checklist";
-      buildChecklist(null);
-      event.target.value = "";
-      return;
+      pageImages.push(canvas.toDataURL("image/jpeg", 0.7).split(",")[1]);
     }
 
-    status.textContent = "Parsing schedule...";
+    status.textContent = `Running OCR on ${pageImages.length} pages...`;
 
-    // Send OCR text (tiny vs images) to Netlify function
+    // Send images to Netlify function for server-side OCR (no WASM restriction)
     const response = await fetch("/.netlify/functions/parse-schedule", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ocrText: allText })
+      body: JSON.stringify({ pages: pageImages })
     });
 
     if (!response.ok) throw new Error("Server error: " + response.status);
@@ -1494,7 +1472,7 @@ async function handleScheduleUpload(event) {
     for (const [roomLabel, data] of Object.entries(roomsRaw)) {
       rooms.add(roomLabel);
       if (!surgeons[roomLabel]) {
-        surgeons[roomLabel] = typeof data === "string" ? { surgeon: data } : data;
+        surgeons[roomLabel] = typeof data === "string" ? { surgeon: data, procedure: "" } : data;
       }
     }
 
