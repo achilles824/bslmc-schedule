@@ -1,78 +1,23 @@
 const https = require("https");
-const { createWorker } = require("tesseract.js");
 
-// Parse OCR text from Epic schedule
-function parseScheduleText(text) {
-  const results = {};
-  const lines = text.split(/[\r\n]+/);
-
-  const deptMap = [
-    { pattern: /BSLMC\s+OPSC/i,          type: "jamail"    },
-    { pattern: /BSLMC\s+MCNAIR/i,         type: "mcnair"    },
-    { pattern: /BSLMC\s+OTM\s+ENDOSC/i,  type: "otm_endo"  },
-    { pattern: /BSLMC\s+OTM\s+PERI/i,    type: "otm_or"    },
-    { pattern: /SLEH\s+ENDOSC/i,          type: "main_endo" },
-    { pattern: /SLEH\s+COOLEY/i,          type: "skip"      },
-    { pattern: /SLEH/i,                   type: "main_or"   },
-  ];
-
-  const roomRe = /^(OTM\s+OR\s*\d{1,2}|Mc\s*OR\s*\d{1,2}|OTM\s+IR\s*\d|OTM\s+Endo\s*\d{1,2}|ENDO\s+\d{1,2}|Endo\s+\d{1,2}|OR\s*\d{1,2}|IR\s+\d|NIR\s*\d|MRI|CT)\b/i;
-  const surgeonRe = /([A-Z][A-Za-z'\-]+),\s+[A-Z][a-z]/;
-  const procRe = /\d{2,4}\s+\d+\s+([A-Z][A-Z,\s\-\/]{3,40})/;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.length < 15) continue;
-    if (/Motility|RAD\s+MOD|SEDATION|Virtual.*Surgeon/i.test(trimmed)) continue;
-    if (/^(PERIOP|ENDOSC|SERVICES|E SERVICES)/i.test(trimmed)) continue;
-
-    const roomMatch = trimmed.match(roomRe);
-    if (!roomMatch) continue;
-
-    const roomRaw = roomMatch[1].trim();
-
-    let deptType = null;
-    for (const { pattern, type } of deptMap) {
-      if (pattern.test(trimmed)) { deptType = type; break; }
-    }
-    if (!deptType || deptType === "skip") continue;
-
-    const surgeonMatch = trimmed.match(surgeonRe);
-    if (!surgeonMatch) continue;
-    const surgeon = surgeonMatch[1];
-    if (/Virtual|Surgeon|Anesthesia/i.test(surgeon)) continue;
-
-    const procMatch = trimmed.match(procRe);
-    const procedure = procMatch ? procMatch[1].replace(/,\s*$/, "").trim().slice(0, 40) : "";
-
-    let roomNorm = null;
-    let m;
-    if (deptType === "jamail") {
-      m = roomRaw.match(/OR\s*(\d+)/i);
-      if (m) roomNorm = "Jamail OR " + parseInt(m[1]);
-    } else if (deptType === "mcnair") {
-      m = roomRaw.match(/(?:Mc\s*)?OR\s*(\d+)/i);
-      if (m) roomNorm = "McNair OR " + parseInt(m[1]);
-    } else if (deptType === "otm_or") {
-      m = roomRaw.match(/OTM\s+OR\s*(\d+)/i);
-      if (m) roomNorm = "OTM OR " + parseInt(m[1]);
-    } else if (deptType === "otm_endo") {
-      m = roomRaw.match(/(?:OTM\s+)?Endo\s*(\d+)/i);
-      if (m) roomNorm = "OTM Endo " + parseInt(m[1]);
-    } else if (deptType === "main_endo") {
-      m = roomRaw.match(/ENDO\s*(\d+)/i);
-      if (m) roomNorm = "Main Endo " + parseInt(m[1]);
-    } else if (deptType === "main_or") {
-      m = roomRaw.match(/OR\s*(\d+)/i);
-      if (m) roomNorm = "Main OR " + parseInt(m[1]);
-    }
-
-    if (roomNorm && !results[roomNorm]) {
-      results[roomNorm] = { surgeon, procedure };
-    }
-  }
-
-  return results;
+function httpsPost(hostname, path, headers, bodyStr) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname, path, method: "POST",
+      headers: { ...headers, "Content-Length": Buffer.byteLength(bodyStr) }
+    };
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", chunk => data += chunk);
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+        catch(e) { reject(new Error("Invalid JSON: " + data.slice(0, 200))); }
+      });
+    });
+    req.on("error", reject);
+    req.write(bodyStr);
+    req.end();
+  });
 }
 
 exports.handler = async function(event) {
@@ -80,44 +25,74 @@ exports.handler = async function(event) {
     return { statusCode: 405, body: "Method Not Allowed" };
   }
 
-  let pages;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { statusCode: 500, body: JSON.stringify({ error: "ANTHROPIC_API_KEY not set" }) };
+  }
+
+  let pages, batchIndex;
   try {
     const body = JSON.parse(event.body);
     pages = body.pages;
+    batchIndex = body.batchIndex || 0;
     if (!pages || !pages.length) throw new Error("No pages provided");
   } catch(e) {
     return { statusCode: 400, body: JSON.stringify({ error: "Bad request: " + e.message }) };
   }
 
-  console.log(`Received ${pages.length} pages for server-side OCR`);
+  console.log(`Batch ${batchIndex}: ${pages.length} pages, size: ${Math.round(pages.reduce((s,p)=>s+p.length,0)/1024)}KB`);
+
+  const content = pages.map(b64 => ({
+    type: "image",
+    source: { type: "base64", media_type: "image/jpeg", data: b64 }
+  }));
+
+  content.push({
+    type: "text",
+    text: `This is part of an Epic OR surgery schedule with a "Pt Dept" column. Extract every room with a surgical case.
+
+ROOM MAPPING RULES (use Pt Dept column):
+- "SLEH PERIOPERATIVE" → Main OR, return room as-is e.g. "OR 3"
+- "BSLMC OPSC PERIOPERATIVE" → Jamail OR, prefix room e.g. "OR 3" → "Jamail OR 3"
+- "BSLMC MCNAIR OR PERIOPERATIVE" → McNair OR, return as-is e.g. "Mc OR 1"
+- "BSLMC OTM PERIOPERATIVE" → OTM OR, return as-is e.g. "OTM OR 11"
+- "BSLMC OTM ENDOSCOPY" + mixed case "Endo 01" → return "Endo 01"
+- "SLEH ENDOSCOPY" + ALL CAPS "ENDO 01" → return "ENDO 01"
+- SKIP: Motility rooms, ICU, RAD/SEDATION, "Virtual, Surgeon" providers
+
+For each unique room return surgeon last name and first procedure (max 40 chars).
+Return ONLY valid JSON:
+{"rooms":{"OR 4":{"surgeon":"Lerner","procedure":"NEPHRECTOMY"},"Mc OR 1":{"surgeon":"Martin","procedure":"ARTHROPLASTY KNEE"}}}`
+  });
 
   try {
-    // Run Tesseract.js server-side (WASM works fine in Node.js)
-    const worker = await createWorker("eng");
-    let allText = "";
+    const result = await httpsPost(
+      "api.anthropic.com", "/v1/messages",
+      {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content }] })
+    );
 
-    for (let i = 0; i < pages.length; i++) {
-      console.log(`OCR page ${i + 1}/${pages.length}`);
-      const imgBuffer = Buffer.from(pages[i], "base64");
-      const { data: { text } } = await worker.recognize(imgBuffer);
-      allText += text + "\n";
+    if (result.body.error) {
+      console.error("API error:", result.body.error.message);
+      return { statusCode: 500, body: JSON.stringify({ error: result.body.error.message }) };
     }
 
-    await worker.terminate();
-
-    console.log(`OCR complete. Text length: ${allText.length}`);
-
-    const rooms = parseScheduleText(allText);
-    console.log(`Rooms found: ${Object.keys(rooms).length} — ${JSON.stringify(Object.keys(rooms))}`);
+    const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
+    console.log(`Batch ${batchIndex} response:`, raw.slice(0, 200));
+    const parsed = JSON.parse(raw);
+    console.log(`Batch ${batchIndex} rooms: ${Object.keys(parsed.rooms||{}).length}`);
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rooms })
+      body: JSON.stringify(parsed)
     };
-
   } catch(e) {
-    console.error("OCR error:", e.message);
+    console.error("Error:", e.message);
     return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
   }
 };
