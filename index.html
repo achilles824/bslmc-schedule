@@ -53,7 +53,7 @@
 
   /* Header */
   header {
-    background: linear-gradient(135deg, #0f1117 0%, #1a1f35 100%);
+    background: var(--header-bg);
     border-bottom: 1px solid var(--border);
     padding: 28px 40px;
     display: flex; align-items: center; gap: 20px;
@@ -381,10 +381,12 @@
     main { padding: 12px; }
     .checklist-groups { gap: 12px; }
     .checklist-group { min-width: 120px; }
-    /* Calendar fix */
-    .calendar-grid { font-size: 10px; }
-    .cal-cell { min-height: 36px; padding: 2px; }
-    .shift-chip { font-size: 9px; padding: 1px 3px; }
+    /* Calendar fix - equal column widths */
+    .calendar-grid { font-size: 10px; display: grid !important; grid-template-columns: repeat(7, 1fr) !important; width: 100%; overflow: hidden; }
+    .cal-header-row { display: contents; }
+    .cal-header-cell { font-size: 9px !important; padding: 2px 0 !important; text-align: center; min-width: 0; overflow: hidden; }
+    .cal-cell { min-height: 36px; padding: 2px; min-width: 0; overflow: hidden; }
+    .shift-chip { font-size: 8px !important; padding: 1px 2px !important; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .month-nav { flex-wrap: wrap; gap: 4px; }
     /* My Assignment search fix */
     #tab-my-assignment .search-row { flex-direction: column; align-items: stretch; }
@@ -392,6 +394,17 @@
     #tab-my-assignment .day-input-wrap { max-width: 100% !important; }
     #tab-my-assignment .view-btn { width: 100%; }
     .assignment-card { margin: 0; }
+    /* Mobile admin layout */
+    .admin-toolbar { flex-direction: column; align-items: stretch; }
+    .admin-toolbar .day-input-wrap { flex: none; }
+    .admin-toolbar .view-btn { width: 100%; }
+    .room-card { width: calc(50% - 4px); }
+    .room-card.float-room { width: 100%; }
+    .room-cards { gap: 6px; }
+    .room-group-title { font-size: 10px; }
+    .admin-rooms { overflow-x: hidden; }
+    .location-toggle-btn { font-size: 11px; padding: 4px 10px; }
+
     /* Theme toggle fix on mobile */
     #themeToggleBtn { position: static !important; transform: none !important; margin-left: 8px; flex-shrink: 0; }
     .tab-bar { display: flex; align-items: center; }
@@ -1308,10 +1321,8 @@ function showDayView() {
       <div class="day-group-title">${cred === "Other" ? "Other" : cred} <span style="color:var(--muted);font-weight:400;font-size:11px;">(${people.length})</span></div>
       ${people.map(p => {
         const credBg = {MD:"rgba(79,142,247,0.85)",CRNA:"rgba(62,207,142,0.85)",CAA:"rgba(245,158,11,0.85)"}[p.credential] || "var(--muted)";
-        const agBg = {"Baylor":"rgba(99,102,241,0.1)","Cross Country":"rgba(236,72,153,0.1)","Caliber":"rgba(20,184,166,0.1)"}[p.agency] || "";
-        const agBorder = {"Baylor":"rgba(99,102,241,0.3)","Cross Country":"rgba(236,72,153,0.3)","Caliber":"rgba(20,184,166,0.3)"}[p.agency] || "var(--border)";
         return `
-        <div class="provider-row" style="background:${agBg};border:1px solid ${agBorder};border-radius:6px;margin-bottom:4px;">
+        <div class="provider-row">
           <div class="provider-mini-avatar" style="background:${credBg};color:white;">${getInitials(p.name)}</div>
           <div class="provider-row-name">${p.name}</div>
           <div class="provider-row-meta">${p.agency || ""}</div>
@@ -2111,10 +2122,25 @@ function executeManualEntry() {
   const name = document.getElementById("manualEntryName").value.trim();
   const cred = document.getElementById("manualEntryCred").value;
   if (!name || !manualEntryRoomKey) return;
-  if (!currentAssignments[manualEntryRoomKey]) currentAssignments[manualEntryRoomKey] = {};
-  currentAssignments[manualEntryRoomKey][manualEntrySlot] = { name, credential: cred, agency: "Manual" };
-  closeManualEntry();
-  renderAdminDay(currentAdminDate);
+
+  // Check if person is scheduled to work that day
+  const orStaff = getORStaffForDay(currentAdminDate);
+  const isWorking = orStaff.some(p => p.name.toLowerCase() === name.toLowerCase());
+
+  const doAssign = () => {
+    if (!currentAssignments[manualEntryRoomKey]) currentAssignments[manualEntryRoomKey] = {};
+    currentAssignments[manualEntryRoomKey][manualEntrySlot] = { name, credential: cred, agency: "Manual" };
+    closeManualEntry();
+    renderAdminDay(currentAdminDate);
+  };
+
+  if (!isWorking && dataLoaded) {
+    if (confirm(`⚠️ "${name}" is not scheduled to work OR cases today.\n\nAdd them anyway?`)) {
+      doAssign();
+    }
+  } else {
+    doAssign();
+  }
 }
 
 function openTransferModal(roomKey, roomLabel) {
@@ -2549,6 +2575,7 @@ const lightStyle = document.createElement('style');
 lightStyle.textContent = `
   [data-theme="light"] {
     --bg: #f4f5f7;
+    --header-bg: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
     --surface: #ffffff;
     --surface2: #f0f1f3;
     --border: #d1d5db;
