@@ -1439,40 +1439,57 @@ async function handleScheduleUpload(event) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-    // Render pages as images and send to Netlify for server-side OCR
+    // Render all pages as images
     const pageImages = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       status.textContent = `Rendering page ${i} of ${pdf.numPages}...`;
       const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 1.5 });
+      const viewport = page.getViewport({ scale: 1.2 });
       const canvas = document.createElement("canvas");
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-      pageImages.push(canvas.toDataURL("image/jpeg", 0.7).split(",")[1]);
+      pageImages.push(canvas.toDataURL("image/jpeg", 0.65).split(",")[1]);
     }
 
-    status.textContent = `Running OCR on ${pageImages.length} pages...`;
+    // Send in batches of 3 pages — each call stays well under Netlify timeout
+    const BATCH = 3;
+    const allRoomsRaw = {};
+    const totalBatches = Math.ceil(pageImages.length / BATCH);
 
-    // Send images to Netlify function for server-side OCR (no WASM restriction)
-    const response = await fetch("/.netlify/functions/parse-schedule", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pages: pageImages })
-    });
+    for (let b = 0; b < pageImages.length; b += BATCH) {
+      const batchNum = Math.floor(b / BATCH) + 1;
+      status.textContent = `Analyzing batch ${batchNum} of ${totalBatches}...`;
+      const batchPages = pageImages.slice(b, b + BATCH);
 
-    if (!response.ok) throw new Error("Server error: " + response.status);
-    const parsed = await response.json();
-    if (parsed.error) throw new Error(parsed.error);
+      try {
+        const response = await fetch("/.netlify/functions/parse-schedule", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pages: batchPages, batchIndex: batchNum })
+        });
+        if (!response.ok) { console.warn("Batch " + batchNum + " failed: " + response.status); continue; }
+        const parsed = await response.json();
+        if (parsed.error) { console.warn("Batch " + batchNum + " error: " + parsed.error); continue; }
+        // Merge results — first occurrence wins
+        for (const [room, data] of Object.entries(parsed.rooms || {})) {
+          if (!allRoomsRaw[room]) allRoomsRaw[room] = data;
+        }
+      } catch(e) {
+        console.warn("Batch " + batchNum + " exception:", e.message);
+      }
+    }
 
-    const roomsRaw = parsed.rooms || {};
+    const roomsRaw = allRoomsRaw;
     const rooms = new Set();
     const surgeons = {};
 
     for (const [roomLabel, data] of Object.entries(roomsRaw)) {
-      rooms.add(roomLabel);
-      if (!surgeons[roomLabel]) {
-        surgeons[roomLabel] = typeof data === "string" ? { surgeon: data, procedure: "" } : data;
+      const normalized = normalizeRoomName(roomLabel);
+      const key = normalized || roomLabel;
+      rooms.add(key);
+      if (!surgeons[key]) {
+        surgeons[key] = typeof data === "string" ? { surgeon: data, procedure: "" } : data;
       }
     }
 
@@ -1526,24 +1543,24 @@ function normalizeRoomName(raw) {
   // OTM OR - handled below after Endo checks
   let m;
   // McNair / Mc OR
-  m = raw.match(/^Mc(?:Nair)?\s+OR\s*(\d{1,2})/i);
+  m = raw.match(/^Mc(?:Nair)?\s*OR\s*(\d{1,2})/i);
   if (m) return "McNair OR " + parseInt(m[1]);
   // Jamail
-  m = raw.match(/^Jamail\s+(?:OR\s*)?(\d{1,2})/i);
+  m = raw.match(/^Jamail\s*(?:OR\s*)?(\d{1,2})/i);
   if (m) return "Jamail OR " + parseInt(m[1]);
-  // Main OR: plain "OR N"
-  m = raw.match(/^OR\s+(\d{1,2})/i);
+  // Main OR: plain "OR N" or "OR04" (with/without space, with/without leading zero)
+  m = raw.match(/^OR\s*(\d{1,2})/i);
   if (m) return "Main OR " + parseInt(m[1]);
   // OTM Endo
   m = raw.match(/^OTM\s+Endo\s*(\d{1,2})/i);
   if (m) return "OTM Endo " + parseInt(m[1]);
   // ENDO (uppercase) = Main Endo (SLEH), Endo (mixed) = OTM Endo (BSLMC OTM)
-  m = raw.match(/^ENDO\s+(\d{1,2})$/);
+  m = raw.match(/^ENDO\s*(\d{1,2})$/);
   if (m) return "Main Endo " + parseInt(m[1]);
-  m = raw.match(/^Endo\s+(\d{1,2})$/i);
+  m = raw.match(/^Endo\s*(\d{1,2})$/i);
   if (m) return "OTM Endo " + parseInt(m[1]);
   // OTM OR with space: "OTM OR 11"
-  m = raw.match(/^OTM\s+OR\s*(\d{1,2})$/i);
+  m = raw.match(/^OTM\s*OR\s*(\d{1,2})$/i);
   if (m) return "OTM OR " + parseInt(m[1]);
   // OTM IR
   m = raw.match(/^OTM\s+IR\s*(\d)/i);
