@@ -1363,7 +1363,7 @@ function buildChecklist(activeRooms) {
     <div class="checklist-group">
       <div class="checklist-group-title">${group}</div>
       ${rooms.map(r => {
-        const checked = ALWAYS_ON_ROOMS.has(r.label) || (activeRooms ? activeRooms.has(r.label) : true);
+        const checked = ["Main OR 10","Main OR 15","NIR 1"].includes(r.label) || (activeRooms ? activeRooms.has(r.label) : true);
         return `<div class="checklist-item">
           <input type="checkbox" id="chk_${r.key}" ${checked ? "checked" : ""}
             data-room-key="${r.key}" />
