@@ -1,0 +1,7 @@
+{
+  "name": "parse-schedule",
+  "version": "1.0.0",
+  "dependencies": {
+    "tesseract.js": "^4.1.1"
+  }
+}
