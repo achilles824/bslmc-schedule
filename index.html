@@ -298,6 +298,32 @@
   .provider-row-name { font-size: 14px; font-weight: 500; flex: 1; }
   .provider-row-meta { font-size: 12px; color: var(--muted); }
 
+  /* Room transfer */
+  .transfer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .transfer-modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 28px; min-width: 340px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+  }
+  .transfer-modal h4 { font-family: "DM Serif Display", serif; font-size: 20px; margin-bottom: 8px; }
+  .transfer-modal p { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .transfer-select {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); font-family: "DM Sans", sans-serif;
+    font-size: 14px; padding: 10px 12px; margin-bottom: 16px; outline: none;
+  }
+  .transfer-select:focus { border-color: var(--accent); }
+  .transfer-btn-row { display: flex; gap: 10px; justify-content: flex-end; }
+  .room-transfer-btn {
+    background: none; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--muted); cursor: pointer; font-size: 11px; padding: 2px 6px;
+    transition: all 0.15s; pointer-events: all; white-space: nowrap;
+  }
+  .room-transfer-btn:hover { border-color: var(--accent); color: var(--accent); }
+
   /* Schedule upload */
   .upload-section {
     background: var(--surface); border: 1px solid var(--border);
@@ -772,6 +798,18 @@
           <div class="staff-pool" id="staffPool"></div>
         </div>
         <div class="admin-rooms" id="adminRooms"></div>
+      </div>
+    </div>
+  </div>
+  <!-- Transfer Room Modal -->
+  <div class="transfer-overlay" id="transferOverlay" style="display:none;" onclick="if(event.target===this)closeTransferModal()">
+    <div class="transfer-modal">
+      <h4>Transfer Room</h4>
+      <p id="transferDesc">Move all assignments from this room to another.</p>
+      <select class="transfer-select" id="transferTarget"></select>
+      <div class="transfer-btn-row">
+        <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="closeTransferModal()">Cancel</button>
+        <button class="view-btn" onclick="executeTransfer()">Transfer</button>
       </div>
     </div>
   </div>
@@ -1363,7 +1401,7 @@ function buildChecklist(activeRooms) {
     <div class="checklist-group">
       <div class="checklist-group-title">${group}</div>
       ${rooms.map(r => {
-        const checked = ["Main OR 10","Main OR 15","NIR 1"].includes(r.label) || (activeRooms ? activeRooms.has(r.label) : true);
+        const checked = ["Main OR 10","Main OR 15","NIR 1","Main Endo 1","Main Endo 2","Main Endo 3"].includes(r.label) || (activeRooms ? activeRooms.has(r.label) : true);
         return `<div class="checklist-item">
           <input type="checkbox" id="chk_${r.key}" ${checked ? "checked" : ""}
             data-room-key="${r.key}" />
@@ -1571,7 +1609,7 @@ function normalizeRoomName(raw) {
   // NIR
   m = raw.match(/^NIR\s*(\d)/i);
   if (m) return "NIR " + parseInt(m[1]);
-  if (/^MRI$/i.test(raw)) return "MRI";
+  if (/MRI/i.test(raw)) return "MRI";
   if (/^CT$/i.test(raw)) return "CT";
   return null;
 }
@@ -1927,6 +1965,63 @@ function toggleStaffFilter(type) {
   renderAdminDay(currentAdminDate);
 }
 
+let transferSourceKey = null;
+
+function openTransferModal(roomKey, roomLabel) {
+  transferSourceKey = roomKey;
+  document.getElementById("transferDesc").textContent = `Move all assignments from ${roomLabel} to:`;
+
+  // Build list of all non-closed rooms excluding source
+  const select = document.getElementById("transferTarget");
+  select.innerHTML = "";
+  for (const [group, rooms] of Object.entries(ALL_SITES)) {
+    for (const roomNum of rooms) {
+      const key = group + "|" + roomNum;
+      const label = roomNum === "" ? group : group + " " + roomNum;
+      if (key === roomKey) continue;
+      if (window.closedRooms && window.closedRooms[key]) continue;
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = label;
+      select.appendChild(opt);
+    }
+  }
+
+  document.getElementById("transferOverlay").style.display = "flex";
+}
+
+function closeTransferModal() {
+  document.getElementById("transferOverlay").style.display = "none";
+  transferSourceKey = null;
+}
+
+function executeTransfer() {
+  const targetKey = document.getElementById("transferTarget").value;
+  if (!transferSourceKey || !targetKey) return;
+
+  const sourceData = currentAssignments[transferSourceKey] || {};
+
+  // Copy all slots to target, merge (don't overwrite existing)
+  if (!currentAssignments[targetKey]) currentAssignments[targetKey] = {};
+  const targetData = currentAssignments[targetKey];
+
+  // Transfer md, app, surgeon, procedure, float
+  if (sourceData.md && !targetData.md) targetData.md = sourceData.md;
+  if (sourceData.app && !targetData.app) targetData.app = sourceData.app;
+  if (sourceData.surgeon && !targetData.surgeon) targetData.surgeon = sourceData.surgeon;
+  if (sourceData.procedure && !targetData.procedure) targetData.procedure = sourceData.procedure;
+  if (sourceData.float && sourceData.float.length) {
+    if (!targetData.float) targetData.float = [];
+    targetData.float = [...targetData.float, ...sourceData.float];
+  }
+
+  // Clear source room
+  delete currentAssignments[transferSourceKey];
+
+  closeTransferModal();
+  renderAdminDay(currentAdminDate);
+}
+
 function updateProcedure(roomKey, value) {
   if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
   if (value.trim()) {
@@ -2123,7 +2218,9 @@ function renderAdminDay(dateVal) {
       } else {
         const surgeonVal = (currentAssignments[roomKey] && currentAssignments[roomKey]["surgeon"]) || "";
         gridHtml += `<div class="room-card${isClosed?" closed":""}">
-          <div class="room-card-title">${roomLabel}
+          <div class="room-card-title" style="gap:4px;">
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">${roomLabel}</span>
+            <button class="room-transfer-btn" onclick="event.stopPropagation();openTransferModal('${roomKey}','${roomLabel}')">⇄</button>
             <button class="room-close-btn${isClosed?" closed":""}"
               style="pointer-events:all;"
               onclick="event.stopPropagation();toggleRoom('${roomKey}')">${isClosed?"✕":""}</button>
