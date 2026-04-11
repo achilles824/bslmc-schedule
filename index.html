@@ -245,9 +245,9 @@
   .toggle-btn.active-icu { background: rgba(34,211,238,0.15); border-color: var(--icu); color: var(--icu); }
   .toggle-btn.active-off { background: rgba(148,163,184,0.15); border-color: var(--off); color: var(--off); }
   .toggle-btn.active-call { background: rgba(244,114,182,0.15); border-color: var(--call); color: var(--call); }
-  .toggle-btn.active-baylor { background: rgba(79,142,247,0.15); border-color: var(--accent); color: var(--accent); }
-  .toggle-btn.active-crosscountry { background: rgba(62,207,142,0.15); border-color: var(--day); color: var(--day); }
-  .toggle-btn.active-caliber { background: rgba(245,158,11,0.15); border-color: var(--special); color: var(--special); }
+  .toggle-btn.active-baylor { background: rgba(99,102,241,0.15); border-color: #6366f1; color: #6366f1; }
+  .toggle-btn.active-crosscountry { background: rgba(236,72,153,0.15); border-color: #ec4899; color: #ec4899; }
+  .toggle-btn.active-caliber { background: rgba(20,184,166,0.15); border-color: #14b8a6; color: #14b8a6; }
   .view-btn {
     background: linear-gradient(135deg, var(--accent), var(--accent2));
     border: none; border-radius: 8px; color: white; cursor: pointer;
@@ -381,6 +381,20 @@
     main { padding: 12px; }
     .checklist-groups { gap: 12px; }
     .checklist-group { min-width: 120px; }
+    /* Calendar fix */
+    .calendar-grid { font-size: 10px; }
+    .cal-cell { min-height: 36px; padding: 2px; }
+    .shift-chip { font-size: 9px; padding: 1px 3px; }
+    .month-nav { flex-wrap: wrap; gap: 4px; }
+    /* My Assignment search fix */
+    #tab-my-assignment .search-row { flex-direction: column; align-items: stretch; }
+    #tab-my-assignment .search-wrap { max-width: 100% !important; }
+    #tab-my-assignment .day-input-wrap { max-width: 100% !important; }
+    #tab-my-assignment .view-btn { width: 100%; }
+    .assignment-card { margin: 0; }
+    /* Theme toggle fix on mobile */
+    #themeToggleBtn { position: static !important; transform: none !important; margin-left: 8px; flex-shrink: 0; }
+    .tab-bar { display: flex; align-items: center; }
   }
 
   /* My Assignment tab */
@@ -640,12 +654,12 @@
   </div>
 </header>
 
-<div class="tab-bar" style="position:relative;">
+<div class="tab-bar" style="display:flex;align-items:center;">
   <button onclick="toggleTheme()" id="themeToggleBtn" title="Toggle theme"
-    style="position:absolute;right:12px;top:50%;transform:translateY(-50%);
+    style="margin-left:auto;flex-shrink:0;
     background:none;border:1px solid var(--border);border-radius:20px;
     color:var(--muted);cursor:pointer;font-size:14px;padding:4px 10px;
-    transition:all 0.2s;z-index:10;">🌙</button>
+    transition:all 0.2s;">🌙</button>
   <button class="tab-btn active" onclick="switchTab('my-assignment')">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
     My Assignment
@@ -833,7 +847,10 @@
     <div class="transfer-modal">
       <h4 id="manualEntryTitle">Manually Add Staff</h4>
       <p id="manualEntryDesc">Enter the name of the staff member to assign.</p>
-      <input type="text" id="manualEntryName" class="transfer-select" placeholder="Last name, First name..." style="margin-bottom:8px;" />
+      <div style="position:relative;">
+        <input type="text" id="manualEntryName" class="transfer-select" placeholder="Type name to search or enter new..." style="margin-bottom:4px;" autocomplete="off" oninput="manualEntrySearch()" />
+        <div id="manualEntryList" style="position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:160px;overflow-y:auto;z-index:10;display:none;"></div>
+      </div>
       <select id="manualEntryCred" class="transfer-select">
         <option value="MD">MD</option>
         <option value="CRNA">CRNA</option>
@@ -1289,13 +1306,18 @@ function showDayView() {
     if (!people.length) return;
     groupsHtml += `<div class="day-group">
       <div class="day-group-title">${cred === "Other" ? "Other" : cred} <span style="color:var(--muted);font-weight:400;font-size:11px;">(${people.length})</span></div>
-      ${people.map(p => `
-        <div class="provider-row">
-          <div class="provider-mini-avatar">${getInitials(p.name)}</div>
+      ${people.map(p => {
+        const credBg = {MD:"rgba(79,142,247,0.85)",CRNA:"rgba(62,207,142,0.85)",CAA:"rgba(245,158,11,0.85)"}[p.credential] || "var(--muted)";
+        const agBg = {"Baylor":"rgba(99,102,241,0.1)","Cross Country":"rgba(236,72,153,0.1)","Caliber":"rgba(20,184,166,0.1)"}[p.agency] || "";
+        const agBorder = {"Baylor":"rgba(99,102,241,0.3)","Cross Country":"rgba(236,72,153,0.3)","Caliber":"rgba(20,184,166,0.3)"}[p.agency] || "var(--border)";
+        return `
+        <div class="provider-row" style="background:${agBg};border:1px solid ${agBorder};border-radius:6px;margin-bottom:4px;">
+          <div class="provider-mini-avatar" style="background:${credBg};color:white;">${getInitials(p.name)}</div>
           <div class="provider-row-name">${p.name}</div>
           <div class="provider-row-meta">${p.agency || ""}</div>
           <span class="shift-chip ${shiftClass(p.shift)}">${p.shift}</span>
-        </div>`).join("")}
+        </div>`;
+      }).join("")}
     </div>`;
   });
 
@@ -2030,6 +2052,36 @@ let transferSourceKey = null;
 let manualEntryRoomKey = null;
 let manualEntrySlot = null;
 
+function manualEntrySearch() {
+  const q = document.getElementById("manualEntryName").value.trim().toLowerCase();
+  const list = document.getElementById("manualEntryList");
+  const slot = manualEntrySlot;
+  if (!q || q.length < 1) { list.style.display = "none"; return; }
+
+  // Filter SCHEDULE_DATA by name and credential
+  const credFilter = slot === "md" ? ["MD"] : ["CRNA", "CAA"];
+  const matches = (SCHEDULE_DATA || [])
+    .filter(p => p.name.toLowerCase().includes(q) && credFilter.includes(p.credential))
+    .slice(0, 10);
+
+  if (!matches.length) { list.style.display = "none"; return; }
+
+  list.innerHTML = matches.map(p => `
+    <div onclick="selectManualEntry('${p.name}','${p.credential}')"
+      style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);"
+      onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <span class="sc-cred sc-${p.credential?.toLowerCase()}" style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;">${p.credential||""}</span>
+      <span>${p.name}</span>
+    </div>`).join("");
+  list.style.display = "block";
+}
+
+function selectManualEntry(name, cred) {
+  document.getElementById("manualEntryName").value = name;
+  document.getElementById("manualEntryCred").value = cred;
+  document.getElementById("manualEntryList").style.display = "none";
+}
+
 function openManualEntry(roomKey, slot) {
   manualEntryRoomKey = roomKey;
   manualEntrySlot = slot;
@@ -2383,7 +2435,13 @@ function renderAdminDay(dateVal) {
 
 // Drag and drop
 // Reset auto-lock on admin activity
-document.addEventListener("click", () => { if (adminUnlocked) resetAutoLock(); });
+document.addEventListener("click", (e) => {
+  if (adminUnlocked) resetAutoLock();
+  if (!e.target.closest("#manualEntryName") && !e.target.closest("#manualEntryList")) {
+    const list = document.getElementById("manualEntryList");
+    if (list) list.style.display = "none";
+  }
+});
 document.addEventListener("keydown", () => { if (adminUnlocked) resetAutoLock(); });
 
 function onDragStart(e) {
