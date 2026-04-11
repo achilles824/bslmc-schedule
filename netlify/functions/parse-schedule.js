@@ -70,10 +70,12 @@ SKIP RULES — skip a row if ALL of these are true:
 
 Also always skip: Motility rooms, ICU rows, Rad Mod Sedation rows, OTM Rad Mod Sedation rows.
 
-For each unique room (first occurrence only), return surgeon last name from Providers column and first procedure (max 40 chars).
-If Providers says "Virtual, Surgeon" but you are including the row (because it's MRI or Anes. Type is General), return surgeon as "Unknown".
+For each unique room (first occurrence only), return:
+- surgeon: last name from Providers column (or "Unknown" if Virtual/Surgeon)
+- procedure: first procedure name, max 40 chars
+- time: the start time of the first case formatted as HH:MM (e.g. "07:30", "08:00"). The Time column shows times like "073 0" meaning 07:30, "080 0" meaning 08:00, "130 0" meaning 13:00.
 Return ONLY valid JSON, no markdown:
-{"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY"},"Jamail OR 2":{"surgeon":"Weng","procedure":"REPAIR RETINAL DETACHMENT"},"MRI":{"surgeon":"Unknown","procedure":"PROCEDURE IN NON-OPERATING ROOM"}}}`
+{"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY","time":"07:30"},"Jamail OR 2":{"surgeon":"Weng","procedure":"REPAIR RETINAL DETACHMENT","time":"09:30"},"MRI":{"surgeon":"Unknown","procedure":"MRI PROCEDURE","time":"13:00"}}}`
   });
 
   try {
