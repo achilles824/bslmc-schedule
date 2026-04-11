@@ -1463,8 +1463,18 @@ async function handleScheduleUpload(event) {
     }
     await worker.terminate();
 
-    status.textContent = "Parsing schedule...";
+    console.log("OCR complete. Text length:", allText.length);
     console.log("OCR text sample:", allText.slice(0, 400));
+
+    // If OCR produced no text, fall back to manual checklist
+    if (allText.trim().length < 50) {
+      status.textContent = "⚠️ OCR produced no text — showing manual checklist";
+      buildChecklist(null);
+      event.target.value = "";
+      return;
+    }
+
+    status.textContent = "Parsing schedule...";
 
     // Send OCR text (tiny vs images) to Netlify function
     const response = await fetch("/.netlify/functions/parse-schedule", {
