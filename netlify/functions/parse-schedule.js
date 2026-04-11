@@ -61,7 +61,7 @@ exports.handler = async function(event) {
                       "x-api-key": apiKey,
                       "anthropic-version": "2023-06-01"
             },
-                  JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content }] })
+                  JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000, messages: [{ role: "user", content }] })
                 );
 
       console.log("API status: " + result.status);
