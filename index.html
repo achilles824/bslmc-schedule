@@ -2187,6 +2187,7 @@ async function loadAdminDay() {
   } catch(e) {}
 
   renderAdminDay(dateVal);
+  loadFinalizedState(dateVal); // Update finalize button for this date
 
   // Listen for real-time changes from other admins
   window.fbListen("assignments/" + dateVal, (data) => {
