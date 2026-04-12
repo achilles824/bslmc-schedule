@@ -24,7 +24,14 @@
 
   // Expose Firebase functions to global scope
   window.fbSet = (path, data) => set(ref(db, path), data);
-  window.fbGet = (path) => get(ref(db, path)).then(snap => snap.exists() ? snap.val() : null);
+  window.fbGet = (path) => new Promise((resolve, reject) => {
+    let resolved = false;
+    const unsub = onValue(ref(db, path), snap => {
+      if (!resolved) { resolved = true; unsub(); resolve(snap.exists() ? snap.val() : null); }
+    }, err => {
+      if (!resolved) { resolved = true; reject(err); }
+    });
+  });
   window.fbListen = (path, callback) => onValue(ref(db, path), snap => callback(snap.exists() ? snap.val() : null));
   window.firebaseReady = true;
   document.dispatchEvent(new Event("firebaseReady"));
@@ -1875,8 +1882,15 @@ async function lookupAssignment() {
         </div>` : `<div style="color:var(--muted);font-size:13px;">${r.isFloat ? "No other float staff assigned" : "Solo assignment"}</div>`}
       </div>`).join("");
 
-    // Check finalized state for this date (one-time read)
-    const finalizedSnap = await window.fbGet("finalized/" + dateVal);
+    // Check finalized state — use onValue (fbListen) since rules allow it
+    const finalizedSnap = await new Promise(resolve => {
+      let resolved = false;
+      const unsub = window.fbListen("finalized/" + dateVal, val => {
+        if (!resolved) { resolved = true; unsub(); resolve(!!val); }
+      });
+      // Safety timeout in case Firebase is slow
+      setTimeout(() => { if (!resolved) { resolved = true; unsub(); resolve(false); } }, 3000);
+    });
     const borderColor = finalizedSnap ? "var(--day)" : "var(--cancel)";
     const warningHtml = finalizedSnap ? "" : `
       <div style="background:rgba(220,38,38,0.08);border:1px solid var(--cancel);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;">
