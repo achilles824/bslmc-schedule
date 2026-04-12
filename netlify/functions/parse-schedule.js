@@ -84,11 +84,16 @@ HOSPITAL MAPPING — determined ONLY by Pt Dept:
 
 6. Pt Dept contains "SLEH ENDOSCOPY" + ALL-CAPS room "ENDO 01" → return "ENDO 01"
 
-7. NIR rooms (Neuro IR) → return "NIR 1" or "NIR 2"
+7. NIR / Neuro IR rooms → return "NIR 1" or "NIR 2"
+   - Room may appear as "RM-IR Neuro 1", "NIR 1", "Neuro IR 1", or similar
+   - Always return as "NIR 1" or "NIR 2"
 
-8. IR rooms → return "IR 1" or "IR 2"
+8. IR / General IR rooms → return "IR 1" or "IR 2"
+   - Room may appear as "RM-IR General 1", "IR 1", or similar
+   - Always return as "IR 1" or "IR 2"
 
-9. MRI room (may appear as "RM-IR MRI") → return "MRI"
+9. MRI room → return "MRI"
+   - Room may appear as "RM-IR MRI" or "MRI"
 
 SKIP RULES — skip a row entirely if ALL of these are true:
 - Providers column says "Virtual, Surgeon"
@@ -105,9 +110,12 @@ Also always skip regardless of anes type:
 - Rows where Room column says "Motility" or "Rad Mod Sedation" or "OTM Rad Mod Sedation"
 - ICU rows
 
-EXAMPLE of a row that MUST be included:
-  Room: RM-IR MRI, Dept: SLEH PERIOPERATIVE, Anes Type: General, Providers: Virtual, Surgeon
-  → Return as "MRI" with surgeon "Unknown"
+EXAMPLES of rows that MUST be included (Virtual/Surgeon + General anesthesia):
+  Room: RM-IR MRI, Anes Type: General, Providers: Virtual, Surgeon → return as "MRI", surgeon "Unknown"
+  Room: RM-IR Neuro 1, Anes Type: General, Providers: Virtual, Surgeon → return as "NIR 1", surgeon "Unknown"
+  Room: RM-IR General 1, Anes Type: General, Providers: Virtual, Surgeon → return as "IR 1", surgeon "Unknown"
+  Room: RM-IR Neuro 2, Anes Type: General, Providers: Virtual, Surgeon → return as "NIR 2", surgeon "Unknown"
+  Room: RM-IR General 2, Anes Type: General, Providers: Virtual, Surgeon → return as "IR 2", surgeon "Unknown"
 
 For each unique room (first occurrence only), return:
 - surgeon: last name from Providers column (or "Unknown" if Virtual/Surgeon)
