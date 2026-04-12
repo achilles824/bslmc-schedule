@@ -26,10 +26,11 @@
   window.fbSet = (path, data) => set(ref(db, path), data);
   window.fbGet = (path) => new Promise((resolve, reject) => {
     let resolved = false;
-    const unsub = onValue(ref(db, path), snap => {
-      if (!resolved) { resolved = true; unsub(); resolve(snap.exists() ? snap.val() : null); }
+    let unsub;
+    unsub = onValue(ref(db, path), snap => {
+      if (!resolved) { resolved = true; if (unsub) unsub(); resolve(snap.exists() ? snap.val() : null); }
     }, err => {
-      if (!resolved) { resolved = true; reject(err); }
+      if (!resolved) { resolved = true; if (unsub) unsub(); reject(err); }
     });
   });
   window.fbListen = (path, callback) => onValue(ref(db, path), snap => callback(snap.exists() ? snap.val() : null));
@@ -1885,8 +1886,9 @@ async function lookupAssignment() {
     // Check finalized state — use onValue (fbListen) since rules allow it
     const finalizedSnap = await new Promise(resolve => {
       let resolved = false;
-      const unsub = window.fbListen("finalized/" + dateVal, val => {
-        if (!resolved) { resolved = true; unsub(); resolve(!!val); }
+      let unsub;
+      unsub = window.fbListen("finalized/" + dateVal, val => {
+        if (!resolved) { resolved = true; if (unsub) unsub(); resolve(!!val); }
       });
       // Safety timeout in case Firebase is slow
       setTimeout(() => { if (!resolved) { resolved = true; unsub(); resolve(false); } }, 3000);
