@@ -121,7 +121,21 @@ Return ONLY valid JSON, no markdown:
     const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
     console.log("Response: " + raw.slice(0, 300));
     const parsed = JSON.parse(raw);
-    console.log("Rooms found: " + Object.keys(parsed.rooms || {}).length);
+
+    // Post-process: if "Jamail OR N" exists, remove any plain "OR N" in the same batch
+    // (Claude sometimes returns both when seeing the same OPSC room multiple times)
+    const rooms = parsed.rooms || {};
+    for (const key of Object.keys(rooms)) {
+      const m = key.match(/^Jamail OR (\d+)$/i);
+      if (m) {
+        const plainKey = "OR " + m[1];
+        const paddedKey = "OR 0" + m[1];
+        delete rooms[plainKey];
+        delete rooms[paddedKey];
+      }
+    }
+    parsed.rooms = rooms;
+    console.log("Rooms found: " + Object.keys(parsed.rooms).length);
 
     return {
       statusCode: 200,
