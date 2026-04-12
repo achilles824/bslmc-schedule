@@ -1875,10 +1875,8 @@ async function lookupAssignment() {
         </div>` : `<div style="color:var(--muted);font-size:13px;">${r.isFloat ? "No other float staff assigned" : "Solo assignment"}</div>`}
       </div>`).join("");
 
-    // Check finalized state for this date
-    const finalizedSnap = await new Promise(resolve => {
-      const unsub = window.fbListen("finalized/" + dateVal, val => { unsub(); resolve(!!val); });
-    });
+    // Check finalized state for this date (one-time read)
+    const finalizedSnap = await window.fbGet("finalized/" + dateVal);
     const borderColor = finalizedSnap ? "var(--day)" : "var(--cancel)";
     const warningHtml = finalizedSnap ? "" : `
       <div style="background:rgba(220,38,38,0.08);border:1px solid var(--cancel);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;">
@@ -2134,24 +2132,25 @@ function stopAutoLock() {
   if (autoLockTimeout) { clearTimeout(autoLockTimeout); autoLockTimeout = null; }
 }
 
-async function loadFinalizedState(dateStr) {
-  return new Promise(resolve => {
-    window.fbListen("finalized/" + dateStr, (val) => {
-      isFinalized = !!val;
-      const btn = document.getElementById("finalizeBtn");
-      const exportBtn = document.getElementById("exportPdfBtn");
-      if (btn) {
-        btn.textContent = isFinalized ? "✗ Unfinalize" : "✓ Finalize";
-        btn.style.borderColor = isFinalized ? "var(--cancel)" : "var(--day)";
-        btn.style.color = isFinalized ? "var(--cancel)" : "var(--day)";
-      }
-      if (exportBtn) {
-        exportBtn.style.opacity = isFinalized ? "1" : "0.4";
-        exportBtn.style.cursor = isFinalized ? "pointer" : "not-allowed";
-        exportBtn.disabled = !isFinalized;
-      }
-      resolve();
-    });
+let finalizeListener = null;
+function loadFinalizedState(dateStr) {
+  // Unsubscribe any previous listener
+  if (finalizeListener) { finalizeListener(); finalizeListener = null; }
+  // Real-time listener — updates button whenever Firebase changes
+  finalizeListener = window.fbListen("finalized/" + dateStr, (val) => {
+    isFinalized = !!val;
+    const btn = document.getElementById("finalizeBtn");
+    const exportBtn = document.getElementById("exportPdfBtn");
+    if (btn) {
+      btn.textContent = isFinalized ? "✗ Unfinalize" : "✓ Finalize";
+      btn.style.borderColor = isFinalized ? "var(--cancel)" : "var(--day)";
+      btn.style.color = isFinalized ? "var(--cancel)" : "var(--day)";
+    }
+    if (exportBtn) {
+      exportBtn.style.opacity = isFinalized ? "1" : "0.4";
+      exportBtn.style.cursor = isFinalized ? "pointer" : "not-allowed";
+      exportBtn.disabled = !isFinalized;
+    }
   });
 }
 
