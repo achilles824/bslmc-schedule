@@ -95,6 +95,12 @@ HOSPITAL MAPPING — determined ONLY by Pt Dept:
 9. MRI room → return "MRI"
    - Room may appear as "RM-IR MRI" or "MRI"
 
+SPECIAL UNCONDITIONAL RULE:
+- If the Room column contains "MRI" or "RM-IR MRI" → ALWAYS include this row, no exceptions
+- Return as "MRI" with surgeon "Unknown" and the time from that row
+- Do NOT skip MRI rows even if Providers says "Virtual, Surgeon"
+
+
 SKIP RULES — skip a row entirely if ALL of these are true:
 - Providers column says "Virtual, Surgeon"
 - AND the Anes. Type column does NOT say "General" (Moderate Sedation, NA, etc. → skip)
