@@ -1605,7 +1605,19 @@ async function handleScheduleUpload(event) {
         const parsed = await response.json();
         if (parsed.error) { console.warn("Batch " + batchNum + " error: " + parsed.error); continue; }
         // Merge results — first occurrence wins
+        // Skip plain "OR N" if "Jamail OR N" already captured (or vice versa same batch)
         for (const [room, data] of Object.entries(parsed.rooms || {})) {
+          const normRoom = normalizeRoomName(room) || room;
+          // If this normalizes to "Main OR N", check if we already have "Jamail OR N"
+          const mainMatch = normRoom.match(/^Main OR (\d+)$/);
+          if (mainMatch) {
+            const jamailKey = "Jamail OR " + mainMatch[1];
+            // Check if Jamail version already in allRoomsRaw (any form)
+            const jamailExists = Object.keys(allRoomsRaw).some(k =>
+              (normalizeRoomName(k) || k) === jamailKey
+            );
+            if (jamailExists) continue; // skip — Jamail version is authoritative
+          }
           if (!allRoomsRaw[room]) allRoomsRaw[room] = data;
         }
       } catch(e) {
@@ -1625,6 +1637,7 @@ async function handleScheduleUpload(event) {
         surgeons[key] = typeof data === "string" ? { surgeon: data, procedure: "" } : data;
       }
     }
+
 
     console.log("AI extracted rooms:", [...rooms]);
     console.log("Surgeons:", surgeons);
