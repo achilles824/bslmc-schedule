@@ -1,4 +1,4 @@
-// parse-schedule v6
+// parse-schedule v7
 const https = require("https");
 
 function httpsPost(hostname, path, headers, bodyStr) {
@@ -50,32 +50,54 @@ exports.handler = async function(event) {
 
   content.push({
     type: "text",
-    text: `This is part of an Epic OR surgery schedule with "Room", "Pt Dept", "Anes. Type", and "Providers" columns.
+    text: `This is an Epic OR surgery schedule. It has "Room" and "Pt Dept" columns.
 
-DEPARTMENT RULES (use Pt Dept column to determine location):
-- Pt Dept contains "BSLMC OPSC" → ALWAYS Jamail OR. Prefix room with "Jamail": "OR 2" → "Jamail OR 2", "OR 3" → "Jamail OR 3". No exceptions.
-- Pt Dept contains "SLEH PERIOPERATIVE" → ALWAYS Main OR. Return room as-is: "OR 04", "OR 16". No exceptions.
-- Pt Dept contains "BSLMC MCNAIR OR PERIOPERATIVE" → McNair OR, return as-is: "Mc OR 1"
-- Pt Dept contains "BSLMC OTM PERIOPERATIVE" → OTM OR, return as-is: "OTM OR 5"
-- Pt Dept contains "BSLMC OTM ENDOSCOPY" + mixed-case room "Endo 01" → return "Endo 01" (OTM Endo)
-- Pt Dept contains "SLEH ENDOSCOPY" + ALL-CAPS room "ENDO 01" → return "ENDO 01" (Main Endo)
-- NIR rooms → return "NIR 1" or "NIR 2"
-- IR rooms → return "IR 1" or "IR 2"
-- MRI room (may appear as "RM-IR MRI") → return "MRI"
+IMPORTANT: There are TWO separate physical hospitals with rooms that share the same numbers.
+The Pt Dept column tells you which hospital each case belongs to. Read it carefully for EVERY row.
 
-SKIP RULES — skip a row if ALL of these are true:
-- Providers column says "Virtual, Surgeon" AND
-- The room is NOT an MRI room AND
-- Anes. Type is NOT "General"
+HOSPITAL MAPPING — determined ONLY by Pt Dept:
 
-Also always skip: Motility rooms, ICU rows, Rad Mod Sedation rows, OTM Rad Mod Sedation rows.
+1. Pt Dept contains "BSLMC OPSC" → JAMAIL OR (different hospital from Main OR)
+   - Room "OR 1" with BSLMC OPSC → return "Jamail OR 1"
+   - Room "OR 2" with BSLMC OPSC → return "Jamail OR 2"
+   - Room "OR 3" with BSLMC OPSC → return "Jamail OR 3"
+   - NEVER return a BSLMC OPSC room as "Main OR". Always prefix with "Jamail".
+
+2. Pt Dept contains "SLEH PERIOPERATIVE" → MAIN OR (St. Luke's Episcopal Hospital)
+   - Room "OR 1" with SLEH → return "OR 01" (as-is, it becomes Main OR 1)
+   - Room "OR 3" with SLEH → return "OR 03" (as-is, it becomes Main OR 3)
+   - Room "OR 16" with SLEH → return "OR 16"
+   - NEVER prefix SLEH rooms with "Jamail".
+
+3. Pt Dept contains "BSLMC MCNAIR OR PERIOPERATIVE" → McNair OR
+   - Return room as-is: "Mc OR 1", "Mc OR 3"
+
+4. Pt Dept contains "BSLMC OTM PERIOPERATIVE" → OTM OR
+   - Return room as-is: "OTM OR 5", "OTM OR 11"
+
+5. Pt Dept contains "BSLMC OTM ENDOSCOPY" + mixed-case room "Endo 01" → return "Endo 01"
+
+6. Pt Dept contains "SLEH ENDOSCOPY" + ALL-CAPS room "ENDO 01" → return "ENDO 01"
+
+7. NIR rooms (Neuro IR) → return "NIR 1" or "NIR 2"
+
+8. IR rooms → return "IR 1" or "IR 2"
+
+9. MRI room (may appear as "RM-IR MRI") → return "MRI"
+
+SKIP RULES — skip a row entirely if:
+- Providers column says "Virtual, Surgeon" AND room is NOT MRI AND Anes. Type is NOT "General"
+- Motility rooms
+- ICU rows
+- Rad Mod Sedation / OTM Rad Mod Sedation
 
 For each unique room (first occurrence only), return:
 - surgeon: last name from Providers column (or "Unknown" if Virtual/Surgeon)
-- procedure: first procedure name, max 40 chars
-- time: the start time of the first case formatted as HH:MM (e.g. "07:30", "08:00"). The Time column shows times like "073 0" meaning 07:30, "080 0" meaning 08:00, "130 0" meaning 13:00.
+- procedure: first procedure, max 40 chars
+- time: start time formatted HH:MM (e.g. "07:30"). Time column shows "073 0" = 07:30, "130 0" = 13:00.
+
 Return ONLY valid JSON, no markdown:
-{"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY","time":"07:30"},"Jamail OR 2":{"surgeon":"Weng","procedure":"REPAIR RETINAL DETACHMENT","time":"09:30"},"MRI":{"surgeon":"Unknown","procedure":"MRI PROCEDURE","time":"13:00"}}}`
+{"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY","time":"07:30"},"Jamail OR 2":{"surgeon":"Weng","procedure":"REPAIR RETINAL DETACHMENT","time":"09:30"},"Jamail OR 3":{"surgeon":"Chang","procedure":"AQUEOUS DRAINAGE","time":"07:00"},"OR 03":{"surgeon":"Smith","procedure":"LITHOTRIPSY","time":"08:00"}}}`
   });
 
   try {
@@ -99,7 +121,7 @@ Return ONLY valid JSON, no markdown:
     const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
     console.log("Response: " + raw.slice(0, 300));
     const parsed = JSON.parse(raw);
-    console.log("Rooms: " + Object.keys(parsed.rooms || {}).length);
+    console.log("Rooms found: " + Object.keys(parsed.rooms || {}).length);
 
     return {
       statusCode: 200,
