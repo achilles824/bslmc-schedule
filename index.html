@@ -821,6 +821,8 @@
         <button class="view-btn" style="background:linear-gradient(135deg,var(--day),#16a34a);" onclick="saveAssignments()">Save Assignments</button>
         <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="lockAdmin()">Lock</button>
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearDay()">Clear Day</button>
+        <button id="finalizeBtn" class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="toggleFinalize()">✓ Finalize</button>
+        <button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
         <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
       <div class="upload-section">
@@ -1522,18 +1524,20 @@ function applyRoomChecklist() {
     }
   });
 
-  // Apply parsed surgeons and procedures to room assignments
+  // Apply parsed surgeons/procedure/time — preserve existing MD and APP assignments
   if (window.parsedSurgeons) {
     for (const [roomLabel, data] of Object.entries(window.parsedSurgeons)) {
       for (const r of ALL_ROOMS_FLAT) {
         if (r.label === roomLabel) {
           if (!currentAssignments[r.key]) currentAssignments[r.key] = {};
+          const existing = currentAssignments[r.key];
+          // Only update surgeon/procedure/time — never overwrite md or app
           if (typeof data === "string") {
-            currentAssignments[r.key]["surgeon"] = data;
+            existing["surgeon"] = data;
           } else {
-            if (data.surgeon) currentAssignments[r.key]["surgeon"] = data.surgeon;
-            if (data.procedure) currentAssignments[r.key]["procedure"] = data.procedure;
-            if (data.time) currentAssignments[r.key]["caseTime"] = data.time;
+            if (data.surgeon) existing["surgeon"] = data.surgeon;
+            if (data.procedure) existing["procedure"] = data.procedure;
+            if (data.time) existing["caseTime"] = data.time;
           }
           break;
         }
@@ -1852,6 +1856,7 @@ async function lookupAssignment() {
         ${foundRooms.length > 1 ? `<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:6px;">Assignment ${i+1}</div>` : `<div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Assignment</div>`}
         <div class="assignment-room" style="${r.isFloat ? "font-size:32px;" : ""}">${r.room}</div>
         ${r.isFloat ? `<div style="font-size:12px;background:rgba(122,130,160,0.12);color:var(--muted);border-radius:5px;padding:3px 10px;display:inline-block;margin-bottom:8px;font-weight:600;">FLOAT</div>` : ""}
+        ${r.caseTime ? `<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px;">⏰ First case: ${r.caseTime}</div>` : ""}
         ${r.surgeon ? `<div class="surgeon-tooltip-wrap" style="margin-bottom:8px;">
           <div style="font-size:14px;color:var(--muted);cursor:${r.procedure ? "help" : "default"};">
             Dr. ${r.surgeon}
@@ -1870,14 +1875,29 @@ async function lookupAssignment() {
         </div>` : `<div style="color:var(--muted);font-size:13px;">${r.isFloat ? "No other float staff assigned" : "Solo assignment"}</div>`}
       </div>`).join("");
 
+    // Check finalized state for this date
+    const finalizedSnap = await new Promise(resolve => {
+      const unsub = window.fbListen("finalized/" + dateVal, val => { unsub(); resolve(!!val); });
+    });
+    const borderColor = finalizedSnap ? "var(--day)" : "var(--cancel)";
+    const warningHtml = finalizedSnap ? "" : `
+      <div style="background:rgba(220,38,38,0.08);border:1px solid var(--cancel);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;">
+        <span style="font-size:18px;">⚠️</span>
+        <div>
+          <div style="font-weight:700;color:var(--cancel);font-size:13px;">Assignments Not Finalized</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;">These assignments may still change. Check back later for the final schedule.</div>
+        </div>
+      </div>`;
+
     area.innerHTML = `
-      <div class="assignment-card">
+      <div class="assignment-card" style="border:2px solid ${borderColor};">
         <div style="background:linear-gradient(135deg,var(--surface2),var(--surface));border-bottom:1px solid var(--border);padding:16px 24px;">
           <div style="font-size:13px;color:var(--muted);">${dayLabel}</div>
           <div style="font-family:'DM Serif Display',serif;font-size:20px;margin-top:4px;">${name}</div>
           ${foundRooms.length > 1 ? `<div style="font-size:12px;color:var(--special);margin-top:4px;">${foundRooms.length} assignments today</div>` : ""}
         </div>
         <div class="assignment-result" style="text-align:left;padding:20px 24px;">
+          ${warningHtml}
           ${roomsHtml}
         </div>
         <div class="refresh-indicator">Auto-refreshes every 60 seconds</div>
@@ -1970,6 +1990,90 @@ function lockAdmin() {
   stopAutoLock();
 }
 
+// ── EXPORT PDF ──
+function exportAssignmentPdf() {
+  if (!isFinalized || !currentAdminDate) return;
+
+  const dt = parseDate(currentAdminDate);
+  const dateLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
+
+  // Build rows from ALL_ROOMS_FLAT, skipping closed rooms
+  const rows = [];
+  for (const r of ALL_ROOMS_FLAT) {
+    if (window.closedRooms && window.closedRooms[r.key]) continue;
+    const a = currentAssignments[r.key] || {};
+    const md = a.md ? a.md.name : "";
+    const app = a.app ? a.app.name : "";
+    const surgeon = a.surgeon ? ("Dr. " + a.surgeon) : "";
+    const time = a.caseTime || "";
+    rows.push({ room: r.label, md, app, surgeon, time });
+  }
+
+  // Build HTML for print
+  const rowsHtml = rows.map(r => `
+    <tr>
+      <td>${r.room}</td>
+      <td>${r.time}</td>
+      <td>${r.md}</td>
+      <td>${r.app}</td>
+      <td>${r.surgeon}</td>
+    </tr>`).join("");
+
+  const printHtml = `<!DOCTYPE html><html><head><title>OR Assignments — ${dateLabel}</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11px; margin: 20px; }
+    h2 { font-size: 16px; margin-bottom: 4px; }
+    p { margin: 0 0 12px; color: #666; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #1e3a5f; color: white; padding: 6px 8px; text-align: left; font-size: 11px; }
+    td { padding: 5px 8px; border-bottom: 1px solid #e5e7eb; font-size: 11px; }
+    tr:nth-child(even) td { background: #f9fafb; }
+    .finalized { color: #16a34a; font-weight: bold; font-size: 11px; }
+    @media print { body { margin: 10px; } }
+  </style></head><body>
+  <h2>OR Assignments — ${dateLabel}</h2>
+  <p class="finalized">✓ Finalized</p>
+  <table>
+    <thead><tr><th>Room</th><th>First Case</th><th>MD</th><th>APP</th><th>Surgeon</th></tr></thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+  </body></html>`;
+
+  const win = window.open("", "_blank");
+  win.document.write(printHtml);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 500);
+}
+
+// ── FINALIZE STATE ──
+let isFinalized = false;
+
+function toggleFinalize() {
+  isFinalized = !isFinalized;
+  const btn = document.getElementById("finalizeBtn");
+  const exportBtn = document.getElementById("exportPdfBtn");
+  if (isFinalized) {
+    btn.textContent = "✗ Unfinalize";
+    btn.style.borderColor = "var(--cancel)";
+    btn.style.color = "var(--cancel)";
+    exportBtn.style.opacity = "1";
+    exportBtn.style.cursor = "pointer";
+    exportBtn.disabled = false;
+  } else {
+    btn.textContent = "✓ Finalize";
+    btn.style.borderColor = "var(--day)";
+    btn.style.color = "var(--day)";
+    exportBtn.style.opacity = "0.4";
+    exportBtn.style.cursor = "not-allowed";
+    exportBtn.disabled = true;
+  }
+  // Save finalized state to Firebase
+  if (currentAdminDate) {
+    window.fbSet("finalized/" + currentAdminDate, isFinalized);
+  }
+}
+
 function confirmClearDay() {
   if (!currentAdminDate) return;
   const dt = parseDate(currentAdminDate);
@@ -2028,6 +2132,27 @@ function startAutoLock() {
 
 function stopAutoLock() {
   if (autoLockTimeout) { clearTimeout(autoLockTimeout); autoLockTimeout = null; }
+}
+
+async function loadFinalizedState(dateStr) {
+  return new Promise(resolve => {
+    window.fbListen("finalized/" + dateStr, (val) => {
+      isFinalized = !!val;
+      const btn = document.getElementById("finalizeBtn");
+      const exportBtn = document.getElementById("exportPdfBtn");
+      if (btn) {
+        btn.textContent = isFinalized ? "✗ Unfinalize" : "✓ Finalize";
+        btn.style.borderColor = isFinalized ? "var(--cancel)" : "var(--day)";
+        btn.style.color = isFinalized ? "var(--cancel)" : "var(--day)";
+      }
+      if (exportBtn) {
+        exportBtn.style.opacity = isFinalized ? "1" : "0.4";
+        exportBtn.style.cursor = isFinalized ? "pointer" : "not-allowed";
+        exportBtn.disabled = !isFinalized;
+      }
+      resolve();
+    });
+  });
 }
 
 async function loadAdminDay() {
