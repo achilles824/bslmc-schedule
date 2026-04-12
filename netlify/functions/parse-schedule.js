@@ -96,7 +96,7 @@ For each unique room (first occurrence only), return:
 - procedure: first procedure, max 40 chars
 - time: start time formatted HH:MM (e.g. "07:30"). Time column shows "073 0" = 07:30, "130 0" = 13:00.
 
-Return ONLY valid JSON, no markdown:
+CRITICAL: Return ONLY the raw JSON object. Do not explain, do not reason, do not write any text before or after the JSON. Start your response with { and end with }. No markdown, no preamble:
 {"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY","time":"07:30"},"Jamail OR 2":{"surgeon":"Weng","procedure":"REPAIR RETINAL DETACHMENT","time":"09:30"},"Jamail OR 3":{"surgeon":"Chang","procedure":"AQUEOUS DRAINAGE","time":"07:00"},"OR 03":{"surgeon":"Smith","procedure":"LITHOTRIPSY","time":"08:00"}}}`
   });
 
@@ -118,24 +118,21 @@ Return ONLY valid JSON, no markdown:
       return { statusCode: 500, body: JSON.stringify({ error: result.body.error.message }) };
     }
 
-    const raw = result.body.content[0].text.trim().replace(/```json|```/g, "").trim();
+    const responseText = result.body.content[0].text.trim();
+    // Extract JSON even if Claude adds reasoning text before/after
+    let raw = responseText.replace(/```json|```/g, "").trim();
+    if (!raw.startsWith("{")) {
+      const jsonStart = raw.indexOf("{");
+      const jsonEnd = raw.lastIndexOf("}");
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        raw = raw.slice(jsonStart, jsonEnd + 1);
+        console.log("Extracted JSON from verbose response");
+      }
+    }
     console.log("Response: " + raw.slice(0, 300));
     const parsed = JSON.parse(raw);
 
-    // Post-process: if "Jamail OR N" exists, remove any plain "OR N" in the same batch
-    // (Claude sometimes returns both when seeing the same OPSC room multiple times)
-    const rooms = parsed.rooms || {};
-    for (const key of Object.keys(rooms)) {
-      const m = key.match(/^Jamail OR (\d+)$/i);
-      if (m) {
-        const plainKey = "OR " + m[1];
-        const paddedKey = "OR 0" + m[1];
-        delete rooms[plainKey];
-        delete rooms[paddedKey];
-      }
-    }
-    parsed.rooms = rooms;
-    console.log("Rooms found: " + Object.keys(parsed.rooms).length);
+    console.log("Rooms found: " + Object.keys(parsed.rooms || {}).length);
 
     return {
       statusCode: 200,
