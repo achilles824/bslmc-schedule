@@ -68,9 +68,14 @@ HOSPITAL MAPPING — determined ONLY by Pt Dept:
    - Room "OR 3" with SLEH → return "OR 03" (as-is, it becomes Main OR 3)
    - Room "OR 16" with SLEH → return "OR 16"
    - NEVER prefix SLEH rooms with "Jamail".
+   - Plain "OR N" (no prefix) should ONLY be returned for SLEH PERIOPERATIVE rooms.
+   - If the dept is NOT SLEH, do NOT return a plain "OR N" — use the correct prefix.
 
 3. Pt Dept contains "BSLMC MCNAIR OR PERIOPERATIVE" → McNair OR
    - Return room as-is: "Mc OR 1", "Mc OR 3"
+   - CRITICAL: McNair rooms in Epic show as "Mc OR 1", "Mc OR 2" etc.
+   - NEVER return a McNair room as plain "OR 1" or "OR 2" — always keep the "Mc OR" prefix
+   - If you see a room labeled just "OR 1" with BSLMC MCNAIR dept, return it as "Mc OR 1"
 
 4. Pt Dept contains "BSLMC OTM PERIOPERATIVE" → OTM OR
    - Return room as-is: "OTM OR 5", "OTM OR 11"
@@ -85,11 +90,24 @@ HOSPITAL MAPPING — determined ONLY by Pt Dept:
 
 9. MRI room (may appear as "RM-IR MRI") → return "MRI"
 
-SKIP RULES — skip a row entirely if:
-- Providers column says "Virtual, Surgeon" AND room is NOT MRI AND Anes. Type is NOT "General"
-- Motility rooms
+SKIP RULES — skip a row entirely if ALL of these are true:
+- Providers column says "Virtual, Surgeon"
+- AND the Anes. Type column does NOT say "General" (Moderate Sedation, NA, etc. → skip)
+- AND the Room is not an MRI room
+
+In other words:
+- "Virtual, Surgeon" + "Moderate Sedation" → SKIP
+- "Virtual, Surgeon" + "NA" → SKIP  
+- "Virtual, Surgeon" + "General" → INCLUDE (e.g. RM-IR MRI with General anesthesia MUST be included)
+- "Virtual, Surgeon" + "General" on any room → INCLUDE
+
+Also always skip regardless of anes type:
+- Rows where Room column says "Motility" or "Rad Mod Sedation" or "OTM Rad Mod Sedation"
 - ICU rows
-- Rad Mod Sedation / OTM Rad Mod Sedation
+
+EXAMPLE of a row that MUST be included:
+  Room: RM-IR MRI, Dept: SLEH PERIOPERATIVE, Anes Type: General, Providers: Virtual, Surgeon
+  → Return as "MRI" with surgeon "Unknown"
 
 For each unique room (first occurrence only), return:
 - surgeon: last name from Providers column (or "Unknown" if Virtual/Surgeon)
