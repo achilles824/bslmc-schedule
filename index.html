@@ -1018,6 +1018,7 @@ function classifySingle(s) {
   if (u.startsWith("N")) return "night";
   if (u.startsWith("D") || u.startsWith("*D")) return "day";
   if (u.includes("OR")) return "day";
+  if (u.includes("EXTRA")) return "day"; // QGenda "extra" role = available for OR
   if (u.startsWith("*")) return "special";
   return "other";
 }
@@ -2222,20 +2223,25 @@ function manualEntrySearch() {
   if (!q || q.length < 1) { list.style.display = "none"; return; }
 
   // Filter SCHEDULE_DATA by name and credential
-  const credFilter = slot === "md" ? ["MD"] : ["CRNA", "CAA"];
+  const credFilter = slot.startsWith("float") ? ["MD", "CRNA", "CAA"] : (slot === "md" ? ["MD"] : ["CRNA", "CAA"]);
   const matches = (SCHEDULE_DATA || [])
     .filter(p => p.name.toLowerCase().includes(q) && credFilter.includes(p.credential))
     .slice(0, 10);
 
   if (!matches.length) { list.style.display = "none"; return; }
 
-  list.innerHTML = matches.map(p => `
-    <div onclick="selectManualEntry('${p.name}','${p.credential}')"
+  list.innerHTML = matches.map((p, i) => `
+    <div data-idx="${i}"
       style="padding:8px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);"
       onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
       <span class="sc-cred sc-${p.credential?.toLowerCase()}" style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;">${p.credential||""}</span>
       <span>${p.name}</span>
     </div>`).join("");
+  // Use event delegation to avoid quote issues in onclick
+  list.querySelectorAll('[data-idx]').forEach(el => {
+    const p = matches[parseInt(el.dataset.idx)];
+    el.addEventListener('mousedown', e => { e.preventDefault(); selectManualEntry(p.name, p.credential); });
+  });
   list.style.display = "block";
 }
 
@@ -2255,7 +2261,9 @@ function openManualEntry(roomKey, slot) {
   document.getElementById("manualEntryName").value = "";
   // Pre-select credential type
   document.getElementById("manualEntryCred").value = slot === "md" ? "MD" : "CRNA";
-  if (slot === "app") {
+  if (slot.startsWith("float")) {
+    document.getElementById("manualEntryCred").innerHTML = '<option value="MD">MD</option><option value="CRNA">CRNA</option><option value="CAA">CAA</option>';
+  } else if (slot === "app") {
     document.getElementById("manualEntryCred").innerHTML = '<option value="CRNA">CRNA</option><option value="CAA">CAA</option>';
   } else {
     document.getElementById("manualEntryCred").innerHTML = '<option value="MD">MD</option>';
@@ -2471,7 +2479,7 @@ function renderAdminDay(dateVal) {
         const countBadge = count > 0 ? `<span style="font-size:9px;background:${overAssigned?"var(--cancel)":"var(--muted)"};color:white;border-radius:3px;padding:1px 4px;margin-left:2px;">${count}</span>` : "";
         return `<div class="staff-chip${assigned?" assigned":""}${overAssigned?" over-assigned":""}" 
           draggable="true"
-          data-name="${p.name}" data-cred="${p.credential||""}" data-agency="${p.agency||""}"
+          data-name="${p.name.replace(/"/g, '&quot;')}" data-cred="${p.credential||""}" data-agency="${p.agency||""}"
           ondragstart="onDragStart(event)">
           ${p.credential ? `<span class="sc-cred ${credClass}">${p.credential}</span>` : ""}
           <span style="flex:1;">${p.name}</span>
@@ -2548,8 +2556,10 @@ function renderAdminDay(dateVal) {
           ${isClosed?"":floatSlots}
           ${isClosed?"":` <div class="room-slot slot-float"
             ondragover="onDragOver(event)" ondrop="onDrop(event,'${roomKey}','float${floatPeople.length}')"
-            ondragleave="onDragLeave(event)">
-            <span style="color:var(--muted);font-size:10px;">+ Add</span>
+            ondragleave="onDragLeave(event)"
+            ondblclick="openManualEntry('${roomKey}','float${floatPeople.length}')"
+            title="Double-click to assign">
+            <span style="color:var(--muted);font-size:10px;">+ Add / double-click</span>
           </div>`}
         </div>`;
       } else {
