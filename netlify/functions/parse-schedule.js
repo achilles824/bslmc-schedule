@@ -20,8 +20,28 @@ function httpsPost(hostname, path, headers, bodyStr) {
     req.end();
   });
 }
+const ALLOWED_ORIGINS = [
+  'https://achilles824.github.io',
+  'https://bslmc-schedule.pages.dev'
+];
 
+function getCorsHeaders(event) {
+  const origin = (event.headers && event.headers.origin) || '';
+  const allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS'
+  };
+}
 exports.handler = async function(event) {
+  if (event.httpMethod === "OPTIONS") {
+  return { statusCode: 204, headers: getCorsHeaders(event), body: '' };
+}
+
+if (event.httpMethod !== "POST") {
+  return { statusCode: 405, body: "Method Not Allowed" };
+}
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: "Method Not Allowed" };
   }
@@ -168,7 +188,7 @@ CRITICAL: Return ONLY the raw JSON object. Do not explain, do not reason, do not
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getCorsHeaders(event) },
       body: JSON.stringify(parsed)
     };
   } catch(e) {
