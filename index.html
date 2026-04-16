@@ -830,7 +830,8 @@
         <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="lockAdmin()">Lock</button>
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearDay()">Clear Day</button>
         <button id="finalizeBtn" class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="toggleFinalize()">✓ Finalize</button>
-        <button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
+                <button id="aiAssignBtn" class="view-btn" style="background:none;border:1px solid #10b981;color:#10b981;" onclick="aiAssign()">&#x1F916; AI Assign</button>
+<button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
         <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
       <div class="upload-section">
@@ -2764,6 +2765,107 @@ if (window.firebaseReady) {
 } else {
   document.addEventListener("firebaseReady", initApp);
 }
+
+// ==== AI ASSIGN FEATURE ====
+let _aiAssignPlan = null;
+async function aiAssign() {
+  const btn = document.getElementById("aiAssignBtn");
+  const date = document.getElementById("adminDate") && document.getElementById("adminDate").value;
+  if (!date) { alert("Please select a date first."); return; }
+  btn.disabled = true; btn.textContent = "Thinking...";
+  try {
+    const keyResp = await fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/config/anthropicKey.json");
+    const apiKey = await keyResp.json();
+    if (!apiKey || typeof apiKey !== "string") { alert("API key not found. Add it at /config/anthropicKey in Firebase console."); return; }
+    const staff = window.getORStaffForDay(date);
+    const aResp = await fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + ".json");
+    const cur = (await aResp.json()) || {};
+    const closed = cur.__closed || {};
+    const needs = {};
+    for (const [k,v] of Object.entries(cur)) {
+      if (k === "__closed" || closed[k] || !v || typeof v !== "object") continue;
+      if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
+    }
+    if (!Object.keys(needs).length) { alert("All rooms already assigned!"); return; }
+    const ss = staff.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n");
+    const prompt = buildAiAssignPrompt(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2));
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      body: JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4000,messages:[{role:"user",content:prompt}]})
+    });
+    const res = await r.json();
+    if (!res.content || !res.content[0] || !res.content[0].text) throw new Error("No response: " + JSON.stringify(res));
+    const txt = res.content[0].text;
+    const m = txt.match(/```json([\s\S]*?)```/) || [txt];
+    const jsonStr = m[0].replace(/^```json/, "").replace(/```$/, "").trim();
+    _aiAssignPlan = JSON.parse(jsonStr);
+    showAiAssignPreview(_aiAssignPlan);
+  } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "AI Assign"; }
+}
+function buildAiAssignPrompt(date,ss,cur,needs) {
+  const rules = "CAMPUS ROUTING (HARD):\nMain Campus=Main OR,IR,NIR,CT,MRI,Main Endo. McNair Campus=OTM OR,OTM Endo,Jamail OR,McNair OR.\n\nBaylor MDs: OR-[number] shift=Main ONLY. OR-MN shift=McNair ONLY.\nBaylor APPs: ordinal+APP-MN=McNair ONLY, ordinal+APP(no MN)=Main ONLY, Extra=either, non-Baylor=flexible.\n\nLOCATION RULES:\n- Lauren Ganderson=ALWAYS Jamail OR\n- Jamail APP pool ONLY: Karina Kima,Carla Rose,Audra Jackson,Evie Schoene,Mark Doria\n- Main OR: max 2 rooms/MD\n- McNair/OTM: max 3 rooms/MD (hard limit 4)\n- Jamail: 1 MD up to 4 rooms is normal\n- Main Endo: 3 rooms, 1 MD covers all\n- Radiology IR/NIR/CT/MRI: 1 MD covers all; NIR always needs coverage\n\nNERVE BLOCKS:\nBlock MDs: Chris Seibert,Eric Ritter,Jonas Hafkin,Kevin Tran,Tiffany Brownewell,Yiu-Hei Adrian Ching,Chidi Ani,Danielle Gluck,Oludayo Adeyefa\nBlock surgeons: Meheux,Martin,Metoxen,Moseley,Granberry,Williams,Harrington,Chona,Adil Ahmed\nSpinal/General w Block with block surgeon=block-capable MD. Multiple 0730 blocks=split across different block-capable MDs.\n\nENDO: Each APP endo max once/week. Flag 2nd+ assignments.";
+  const fmt = '{"assignments":{"Room|Num":{"md":{"name":"Full Name","credential":"MD","agency":"Baylor"},"app":{"name":"Full Name","credential":"CRNA","agency":"Caliber"}}},"flags":["warnings"],"notes":["notes"]}';
+  return "Anesthesia scheduling for Baylor/CHI St Lukes.\n\nDATE: " + date + "\n\nSTAFF:\n" + ss + "\n\nCURRENT ASSIGNMENTS (do not change):\n" + cur + "\n\nROOMS NEEDING ASSIGNMENT (only these):\n" + needs + "\n\nRULES:\n" + rules + "\n\nUse EXACT room key format (e.g. Main OR|3). Use EXACT staff names. Only rooms from needs list. If room has MD but needs APP only (or vice versa), only include missing role.\n\nRespond ONLY with valid JSON:\n" + fmt;
+}
+function showAiAssignPreview(plan) {
+  const modal = document.getElementById("aiAssignModal");
+  const content = document.getElementById("aiAssignContent");
+  const flagsDiv = document.getElementById("aiAssignFlags");
+  const secs = {};
+  const asgn = plan.assignments || {};
+  for (const rk in asgn) { const s = rk.split("|")[0]; if (!secs[s]) secs[s] = []; secs[s].push({room:rk, md:asgn[rk].md, app:asgn[rk].app}); }
+  const ord = ["Main OR","Main Endo","IR","NIR","CT","MRI","OTM OR","OTM Endo","Jamail OR","McNair OR"];
+  const keys = ord.filter(s => secs[s]).concat(Object.keys(secs).filter(s => !ord.includes(s)));
+  let html = "";
+  for (const sec of keys) {
+    html += '<div style="margin-bottom:20px;"><div style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:4px 0;border-bottom:2px solid var(--border);margin-bottom:8px;">' + sec + '</div>';
+    for (const ro of secs[sec]) {
+      const num = ro.room.split("|")[1] || "";
+      html += '<div style="display:flex;gap:16px;padding:7px 4px;border-bottom:1px solid var(--border);">';
+      html += '<span style="font-weight:500;min-width:150px;font-size:13px;">' + sec + " " + num + '</span>';
+      html += '<span style="color:#2563eb;flex:1;font-size:13px;">' + (ro.md && ro.md.name ? "MD: " + ro.md.name : "") + '</span>';
+      html += '<span style="color:#16a34a;flex:1;font-size:13px;">' + (ro.app && ro.app.name ? "APP: " + ro.app.name : "") + '</span></div>';
+    }
+    html += "</div>";
+  }
+  if (plan.notes && plan.notes.length) html += '<div style="margin-top:12px;padding:12px;background:#f8f9fa;border-radius:8px;font-size:12px;color:var(--muted);line-height:1.8;">' + plan.notes.map(n => "• " + n).join("<br>") + '</div>';
+  content.innerHTML = html;
+  if (plan.flags && plan.flags.length) { flagsDiv.style.display = "block"; flagsDiv.innerHTML = "<strong>Flags:</strong><br>" + plan.flags.map(f => "• " + f).join("<br>"); }
+  else flagsDiv.style.display = "none";
+  modal.style.display = "block";
+}
+async function applyAiAssignments() {
+  if (!_aiAssignPlan) return;
+  const date = document.getElementById("adminDate").value;
+  const btn = document.getElementById("aiAssignConfirmBtn");
+  const status = document.getElementById("aiAssignStatus");
+  btn.disabled = true; btn.textContent = "Applying...";
+  try {
+    const asgn = _aiAssignPlan.assignments || {};
+    const keys = Object.keys(asgn);
+    let count = 0;
+    for (const rk of keys) {
+      const a = asgn[rk];
+      const enc = encodeURIComponent(rk);
+      const base = "https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + "/" + enc;
+      if (a.md && a.md.name) await fetch(base + "/md.json", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(a.md)});
+      if (a.app && a.app.name) await fetch(base + "/app.json", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(a.app)});
+      count++;
+      if (status) status.textContent = "Writing " + count + " of " + keys.length + "...";
+    }
+    document.getElementById("aiAssignModal").style.display = "none";
+    _aiAssignPlan = null;
+    if (typeof window.startAssignmentListener === "function") window.startAssignmentListener(date);
+    alert(count + " rooms assigned successfully!");
+  } catch(e) { console.error(e); alert("Failed: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "Apply Assignments"; if (status) status.textContent = ""; }
+}
+// ==== END AI ASSIGN ====
 </script>
+
+<!-- AI Assign Modal -->
+<div id="aiAssignModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;overflow-y:auto;"><div style="background:var(--surface);margin:40px auto;max-width:820px;border-radius:12px;padding:32px;box-shadow:0 8px 32px rgba(0,0,0,0.3);"><h2 style="margin:0 0 8px;font-family:'DM Serif Display',serif;">&#x1F916; AI Assignment Preview</h2><p style="color:var(--muted);margin:0 0 20px;font-size:14px;">Review proposed assignments. Already-assigned rooms are skipped.</p><div id="aiAssignFlags" style="display:none;background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;line-height:1.6;"></div><div id="aiAssignContent" style="font-size:14px;max-height:60vh;overflow-y:auto;"></div><div style="margin-top:24px;display:flex;gap:12px;justify-content:flex-end;align-items:center;"><span id="aiAssignStatus" style="font-size:13px;color:var(--muted);flex:1;"></span><button onclick="document.getElementById('aiAssignModal').style.display='none'" style="padding:10px 20px;border-radius:8px;border:1px solid var(--muted);background:none;cursor:pointer;color:var(--text);">Cancel</button><button id="aiAssignConfirmBtn" onclick="applyAiAssignments()" style="padding:10px 24px;border-radius:8px;border:none;background:#10b981;color:#fff;cursor:pointer;font-weight:600;">Apply Assignments</button></div></div></div>
 </body>
 </html>
