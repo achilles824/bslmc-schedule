@@ -2770,7 +2770,7 @@ if (window.firebaseReady) {
 let _aiAssignPlan = null;
 async function aiAssign() {
   const btn = document.getElementById("aiAssignBtn");
-  const date = document.getElementById("adminDate") && document.getElementById("adminDate").value;
+  const date = document.getElementById("adminDatePicker") && document.getElementById("adminDatePicker").value;
   if (!date) { alert("Please select a date first."); return; }
   btn.disabled = true; btn.textContent = "Thinking...";
   try {
@@ -2838,7 +2838,7 @@ function showAiAssignPreview(plan) {
 }
 async function applyAiAssignments() {
   if (!_aiAssignPlan) return;
-  const date = document.getElementById("adminDate").value;
+  const date = document.getElementById("adminDatePicker").value;
   const btn = document.getElementById("aiAssignConfirmBtn");
   const status = document.getElementById("aiAssignStatus");
   btn.disabled = true; btn.textContent = "Applying...";
