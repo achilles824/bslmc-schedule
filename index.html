@@ -2768,34 +2768,42 @@ if (window.firebaseReady) {
 
 // ==== AI ASSIGN FEATURE ====
 let _aiAssignPlan = null;
+
 async function aiAssign() {
   const btn = document.getElementById("aiAssignBtn");
   const date = document.getElementById("adminDatePicker") && document.getElementById("adminDatePicker").value;
   if (!date) { alert("Please select a date first."); return; }
   btn.disabled = true; btn.textContent = "Thinking...";
   try {
-    const keyResp = await fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/config/anthropicKey.json");
+    // Load API key and rules from Firebase in parallel
+    const [keyResp, rulesResp, staffResp, assignResp] = await Promise.all([
+      fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/config/anthropicKey.json"),
+      fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/config/assignmentRules.json"),
+      Promise.resolve(window.getORStaffForDay(date)),
+      fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + ".json")
+    ]);
     const apiKey = await keyResp.json();
-    if (!apiKey || typeof apiKey !== "string") { alert("API key not found. Add it at /config/anthropicKey in Firebase console."); return; }
-    const staff = window.getORStaffForDay(date);
-    const aResp = await fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + ".json");
-    const cur = (await aResp.json()) || {};
+    const rules = await rulesResp.json();
+    const staff = staffResp;
+    const cur = (await assignResp.json()) || {};
+    if (!apiKey || typeof apiKey !== "string") { alert("API key not found in Firebase at /config/anthropicKey"); return; }
+    if (!rules || !rules.version) { alert("Assignment rules not found in Firebase at /config/assignmentRules"); return; }
     const closed = cur.__closed || {};
     const needs = {};
     for (const [k,v] of Object.entries(cur)) {
       if (k === "__closed" || closed[k] || !v || typeof v !== "object") continue;
       if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
     }
-    if (!Object.keys(needs).length) { alert("All rooms already assigned!"); return; }
+    if (!Object.keys(needs).length) { alert("All active rooms already have both MD and APP assigned!"); return; }
     const ss = staff.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n");
-    const prompt = buildAiAssignPrompt(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2));
+    const prompt = buildAiAssignPrompt(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2), rules);
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-      body: JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4000,messages:[{role:"user",content:prompt}]})
+      body: JSON.stringify({model:"claude-sonnet-4-20250514", max_tokens:8000, messages:[{role:"user",content:prompt}]})
     });
     const res = await r.json();
-    if (!res.content || !res.content[0] || !res.content[0].text) throw new Error("No response: " + JSON.stringify(res));
+    if (!res.content || !res.content[0] || !res.content[0].text) throw new Error("No response from Claude: " + JSON.stringify(res));
     const txt = res.content[0].text;
     const m = txt.match(/```json([\s\S]*?)```/) || [txt];
     const jsonStr = m[0].replace(/^```json/, "").replace(/```$/, "").trim();
@@ -2804,11 +2812,62 @@ async function aiAssign() {
   } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
   finally { btn.disabled = false; btn.textContent = "AI Assign"; }
 }
-function buildAiAssignPrompt(date,ss,cur,needs) {
-  const rules = "CAMPUS ROUTING (HARD):\nMain Campus=Main OR,IR,NIR,CT,MRI,Main Endo. McNair Campus=OTM OR,OTM Endo,Jamail OR,McNair OR.\n\nBaylor MDs: OR-[number] shift=Main ONLY. OR-MN shift=McNair ONLY.\nBaylor APPs: ordinal+APP-MN=McNair ONLY, ordinal+APP(no MN)=Main ONLY, Extra=either, non-Baylor=flexible.\n\nLOCATION RULES:\n- Lauren Ganderson=ALWAYS Jamail OR\n- Jamail APP pool ONLY: Karina Kima,Carla Rose,Audra Jackson,Evie Schoene,Mark Doria\n- Main OR: max 2 rooms/MD\n- McNair/OTM: max 3 rooms/MD (hard limit 4)\n- Jamail: 1 MD up to 4 rooms is normal\n- Main Endo: 3 rooms, 1 MD covers all\n- Radiology IR/NIR/CT/MRI: 1 MD covers all; NIR always needs coverage\n\nNERVE BLOCKS:\nBlock MDs: Chris Seibert,Eric Ritter,Jonas Hafkin,Kevin Tran,Tiffany Brownewell,Yiu-Hei Adrian Ching,Chidi Ani,Danielle Gluck,Oludayo Adeyefa\nBlock surgeons: Meheux,Martin,Metoxen,Moseley,Granberry,Williams,Harrington,Chona,Adil Ahmed\nSpinal/General w Block with block surgeon=block-capable MD. Multiple 0730 blocks=split across different block-capable MDs.\n\nENDO: Each APP endo max once/week. Flag 2nd+ assignments.";
-  const fmt = '{"assignments":{"Room|Num":{"md":{"name":"Full Name","credential":"MD","agency":"Baylor"},"app":{"name":"Full Name","credential":"CRNA","agency":"Caliber"}}},"flags":["warnings"],"notes":["notes"]}';
-  return "Anesthesia scheduling for Baylor/CHI St Lukes.\n\nDATE: " + date + "\n\nSTAFF:\n" + ss + "\n\nCURRENT ASSIGNMENTS (do not change):\n" + cur + "\n\nROOMS NEEDING ASSIGNMENT (only these):\n" + needs + "\n\nRULES:\n" + rules + "\n\nUse EXACT room key format (e.g. Main OR|3). Use EXACT staff names. Only rooms from needs list. If room has MD but needs APP only (or vice versa), only include missing role.\n\nRespond ONLY with valid JSON:\n" + fmt;
+
+function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
+  const r = rules;
+  const blockMDs = r.nerveBlocks.blockCapableMDs.join(", ");
+  const blockSurgeons = r.nerveBlocks.blockSurgeons.join(", ");
+  const jailMailPool = r.locationRules.jailMailAPPPool.join(", ");
+
+  return "You are an anesthesia scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System.\n\n" +
+    "DATE: " + date + "\n\n" +
+    "STAFF ROSTER:\n" + staffSummary + "\n\n" +
+    "CURRENT ASSIGNMENTS (DO NOT change any of these):\n" + currentAssignments + "\n\n" +
+    "ROOMS NEEDING ASSIGNMENT (assign ALL of these - rooms missing MD and/or APP):\n" + roomsNeeding + "\n\n" +
+    "=== ASSIGNMENT RULES (follow strictly) ===\n\n" +
+    "CAMPUS ROUTING (HARD RULES):\n" +
+    "Main Campus = " + r.campusRouting.mainCampus.join(", ") + "\n" +
+    "McNair Campus = " + r.campusRouting.mcnairCampus.join(", ") + "\n" +
+    "Baylor MDs: " + r.campusRouting.baylorMDs.mainOnly + " = Main ONLY. " + r.campusRouting.baylorMDs.mcnairOnly + " = McNair ONLY.\n" +
+    "Baylor APPs: " + r.campusRouting.baylorAPPs.mcnairOnly + " = McNair ONLY. " + r.campusRouting.baylorAPPs.mainOnly + " = Main ONLY. " + r.campusRouting.baylorAPPs.either + " = flexible.\n" +
+    r.campusRouting.baylorAPPs.outOrder + "\n" +
+    "Flexible MDs (Cross Country, Caliber): " + r.campusRouting.flexibleMDs + "\n\n" +
+    "LOCATION RULES:\n" +
+    "- Lauren Ganderson: " + r.locationRules.laurenGanderson + "\n" +
+    "- Jamail APP pool (ONLY these APPs go to Jamail): " + jailMailPool + "\n" +
+    "- " + r.locationRules.jailMailNotes + "\n" +
+    "- Main Endo: " + r.locationRules.mainEndo + "\n" +
+    "- Radiology: " + r.locationRules.radiology + "\n" +
+    "- CV Anesthesia: " + r.locationRules.cvAnesthesia + "\n" +
+    "- Main OR: " + r.locationRules.mainOR + "\n" +
+    "- McNair/OTM OR/OTM Endo: " + r.locationRules.mcnairOTM + "\n" +
+    "- OTM Endo: " + r.locationRules.otmEndo + "\n" +
+    "- CRITICAL: " + r.locationRules.roomCountCritical + "\n\n" +
+    "NERVE BLOCK RULES:\n" +
+    "Block-capable MDs: " + blockMDs + "\n" +
+    "Block surgeons (flag for block-capable MD): " + blockSurgeons + "\n" +
+    r.nerveBlocks.rules.join("\n") + "\n\n" +
+    "APP CONFLICT RULE:\n" +
+    r.appConflicts.rule + "\n" +
+    "Exception: " + r.appConflicts.exception + "\n" +
+    r.appConflicts.secondCases + "\n\n" +
+    "ENDO WEEKLY RULE:\n" +
+    r.endoWeeklyRule.rule + "\n" +
+    r.endoWeeklyRule.flag + "\n" +
+    r.endoWeeklyRule.trackBothTypes + "\n\n" +
+    "STAFF NOTES:\n" +
+    Object.entries(r.staffNotes).map(([n,v]) => "- " + n + ": " + v).join("\n") + "\n\n" +
+    "OUTPUT REQUIREMENTS:\n" +
+    "- Use EXACT room key format from needs list (e.g. Main OR|3, McNair OR|1, Main Endo|1)\n" +
+    "- Use EXACT staff names from the roster\n" +
+    "- Only assign rooms from the needs list\n" +
+    "- If room has MD but needs APP only (or vice versa), include only the missing role\n" +
+    "- Rooms with CV Anesthesia as MD: skip entirely\n" +
+    "- Every open room should get both MD and APP unless staff is unavailable\n\n" +
+    "Respond ONLY with valid JSON, no other text:\n" +
+    '{"assignments":{"Room|Num":{"md":{"name":"Full Name","credential":"MD","agency":"Agency"},"app":{"name":"Full Name","credential":"CRNA","agency":"Agency"}}},"flags":["warnings"],"notes":["notes"]}';
 }
+
 function showAiAssignPreview(plan) {
   const modal = document.getElementById("aiAssignModal");
   const content = document.getElementById("aiAssignContent");
@@ -2836,6 +2895,7 @@ function showAiAssignPreview(plan) {
   else flagsDiv.style.display = "none";
   modal.style.display = "block";
 }
+
 async function applyAiAssignments() {
   if (!_aiAssignPlan) return;
   const date = document.getElementById("adminDatePicker").value;
