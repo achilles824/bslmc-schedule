@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+  import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firehbasejs/10.8.0/firebase-database.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyArS7o4H8ExdOywQFfixgNcW48C4iZLr9U",
@@ -2857,6 +2857,17 @@ function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeedin
     r.endoWeeklyRule.trackBothTypes + "\n\n" +
     "STAFF NOTES:\n" +
     Object.entries(r.staffNotes).map(([n,v]) => "- " + n + ": " + v).join("\n") + "\n\n" +
+    "=== CRITICAL: MULTI-ROOM MD ASSIGNMENT ===\n" +
+    "One MD covers multiple rooms at the same time. You MUST list that MD name in EVERY room they cover.\n" +
+    "NEVER leave a room blank just because the MD is already listed in another room.\n\n" +
+    "MANDATORY GROUPS — write the same MD name in ALL rooms of each group:\n" +
+    "- Main Endo: MD name goes in Main Endo|1, Main Endo|2, AND Main Endo|3 — all three, always\n" +
+    "- Radiology: MD name goes in IR|1, NIR|1, and any active CT/MRI rooms — one MD covers all\n" +
+    "- Main OR: if MD covers rooms 11 and 14, list them in BOTH Main OR|11 AND Main OR|14\n" +
+    "- OTM Endo: MD name goes in every OTM Endo room they supervise\n" +
+    "- Jamail: Ganderson name goes in every open Jamail room (OR|2, OR|3, OR|6, etc.)\n\n" +
+    "WRONG: Main Endo|1 has MD, Main Endo|2 and |3 are blank\n" +
+    "RIGHT: Main Endo|1, Main Endo|2, Main Endo|3 all have the same MD name\n\n" +
     "OUTPUT REQUIREMENTS:\n" +
     "- Use EXACT room key format from needs list (e.g. Main OR|3, McNair OR|1, Main Endo|1)\n" +
     "- Use EXACT staff names from the roster\n" +
