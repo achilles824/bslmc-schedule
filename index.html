@@ -2857,17 +2857,30 @@ function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeedin
     r.endoWeeklyRule.trackBothTypes + "\n\n" +
     "STAFF NOTES:\n" +
     Object.entries(r.staffNotes).map(([n,v]) => "- " + n + ": " + v).join("\n") + "\n\n" +
-    "=== CRITICAL: MULTI-ROOM MD ASSIGNMENT ===\n" +
-    "One MD covers multiple rooms at the same time. You MUST list that MD name in EVERY room they cover.\n" +
-    "NEVER leave a room blank just because the MD is already listed in another room.\n\n" +
-    "MANDATORY GROUPS — write the same MD name in ALL rooms of each group:\n" +
-    "- Main Endo: MD name goes in Main Endo|1, Main Endo|2, AND Main Endo|3 — all three, always\n" +
-    "- Radiology: MD name goes in IR|1, NIR|1, and any active CT/MRI rooms — one MD covers all\n" +
-    "- Main OR: if MD covers rooms 11 and 14, list them in BOTH Main OR|11 AND Main OR|14\n" +
-    "- OTM Endo: MD name goes in every OTM Endo room they supervise\n" +
-    "- Jamail: Ganderson name goes in every open Jamail room (OR|2, OR|3, OR|6, etc.)\n\n" +
-    "WRONG: Main Endo|1 has MD, Main Endo|2 and |3 are blank\n" +
-    "RIGHT: Main Endo|1, Main Endo|2, Main Endo|3 all have the same MD name\n\n" +
+    "=== CRITICAL RULE 1: MULTI-ROOM MD ASSIGNMENT ===\n" +
+    "One MD covers MULTIPLE rooms simultaneously. Write that MD name in EVERY room they cover — not just one.\n" +
+    "MANDATORY GROUPS (same MD in ALL rooms of each group):\n" +
+    "- Main Endo: MD in Main Endo|1, Main Endo|2, AND Main Endo|3 — all three, always\n" +
+    "- Radiology: MD in IR|1, NIR|1, and any active CT/MRI rooms — one MD covers all\n" +
+    "- OTM Endo: MD in every OTM Endo room they supervise\n" +
+    "- Jamail: Ganderson in every open Jamail room\n\n" +
+    "=== CRITICAL RULE 2: HARD ROOM COUNT LIMITS ===\n" +
+    "Count ALL rooms across ALL locations for each MD. These are absolute hard limits:\n" +
+    "- Main OR: MAX 3 rooms per MD. Never 4+.\n" +
+    "- OTM OR: MAX 4 rooms per MD. Never 5+.\n" +
+    "- OTM Endo: MAX 3 rooms per MD. Never 4+.\n" +
+    "- McNair OR: MAX 4 rooms per MD.\n" +
+    "- Jamail OR: up to 4 rooms for Ganderson — normal.\n" +
+    "- Radiology (IR+NIR+CT+MRI): 1 MD covers all — normal, no flag needed.\n" +
+    "- CROSS-LOCATION: An MD with 1 OTM OR room + 7 OTM Endo rooms = 8 rooms TOTAL — NEVER allowed.\n" +
+    "- BEFORE assigning an MD to any room, count their current total rooms. Stop when they hit the limit.\n\n" +
+    "=== CRITICAL RULE 3: APP CONFLICTS ===\n" +
+    "Never assign the same APP to two rooms with overlapping or simultaneous case times.\n" +
+    "Do NOT put the same APP in NIR|1 AND NIR|2 — those are concurrent rooms.\n" +
+    "Each APP must be in only one room at a time.\n\n" +
+    "=== CRITICAL RULE 4: JAMAIL APP POOL ===\n" +
+    "ONLY these APPs go to Jamail: Karina Kima, Carla Rose, Audra Jackson, Evie Schoene, Mark Doria.\n" +
+    "Do NOT assign Jamail APPs to Main OR or any other campus.\n\n" +
     "OUTPUT REQUIREMENTS:\n" +
     "- Use EXACT room key format from needs list (e.g. Main OR|3, McNair OR|1, Main Endo|1)\n" +
     "- Use EXACT staff names from the roster\n" +
