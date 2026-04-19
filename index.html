@@ -2790,7 +2790,7 @@ async function aiAssign() {
       Promise.resolve(window.getORStaffForDay(date)),
       fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + ".json")
     ]);
-    const apiKey = await keyResp.json();
+    const apiKey = (await keyResp.json() || "").trim();
     const rules = await rulesResp.json();
     const staff = staffResp;
     const cur = (await assignResp.json()) || {};
