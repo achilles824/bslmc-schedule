@@ -2808,7 +2808,7 @@ async function aiAssign() {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-      body: JSON.stringify({model:"claude-sonnet-4-20250514", max_tokens:8000, messages:[{role:"user",content:prompt}]})
+      body: JSON.stringify({model:"claude-sonnet-4-20250514", max_tokens:4096, messages:[{role:"user",content:prompt}]})
     });
     const res = await r.json();
     if (!res.content || !res.content[0] || !res.content[0].text) throw new Error("No response from Claude: " + JSON.stringify(res));
