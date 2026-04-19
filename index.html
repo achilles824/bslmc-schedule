@@ -2770,6 +2770,14 @@ if (window.firebaseReady) {
 let _aiAssignPlan = null;
 
 async function aiAssign() {
+  // Date confirmation
+  const dateInput = document.getElementById('adminDatePicker');
+  const selectedDate = dateInput ? dateInput.value : 'unknown';
+  const parts = selectedDate.split('-');
+  const displayDate = parts.length === 3 ? parts[1] + '/' + parts[2] + '/' + parts[0] : selectedDate;
+  const confirmed = window.confirm('⚠️ AI Assign will run for:\n\n' + displayDate + '\n\nIs this the correct date?');
+  if (!confirmed) return;
+
   const btn = document.getElementById("aiAssignBtn");
   const date = document.getElementById("adminDatePicker") && document.getElementById("adminDatePicker").value;
   if (!date) { alert("Please select a date first."); return; }
