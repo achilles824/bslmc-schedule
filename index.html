@@ -2821,85 +2821,121 @@ function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeedin
   const blockSurgeons = r.nerveBlocks.blockSurgeons.join(", ");
   const jailMailPool = r.locationRules.jailMailAPPPool.join(", ");
 
-  return "You are an anesthesia scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System.\n\n" +
-    "DATE: " + date + "\n\n" +
-    "STAFF ROSTER:\n" + staffSummary + "\n\n" +
-    "CURRENT ASSIGNMENTS (DO NOT change any of these):\n" + currentAssignments + "\n\n" +
-    "ROOMS NEEDING ASSIGNMENT (assign ALL of these - rooms missing MD and/or APP):\n" + roomsNeeding + "\n\n" +
-    "=== ASSIGNMENT RULES (follow strictly) ===\n\n" +
-    "CAMPUS ROUTING (HARD RULES):\n" +
-    "Main Campus = " + r.campusRouting.mainCampus.join(", ") + "\n" +
-    "McNair Campus = " + r.campusRouting.mcnairCampus.join(", ") + "\n" +
-    "Baylor MDs: " + r.campusRouting.baylorMDs.mainOnly + " = Main ONLY. " + r.campusRouting.baylorMDs.mcnairOnly + " = McNair ONLY.\n" +
-    "Baylor APPs: " + r.campusRouting.baylorAPPs.mcnairOnly + " = McNair ONLY. " + r.campusRouting.baylorAPPs.mainOnly + " = Main ONLY. " + r.campusRouting.baylorAPPs.either + " = flexible.\n" +
-    r.campusRouting.baylorAPPs.outOrder + "\n" +
-    "Flexible MDs (Cross Country, Caliber): " + r.campusRouting.flexibleMDs + "\n\n" +
-    "LOCATION RULES:\n" +
-    "- Lauren Ganderson: " + r.locationRules.laurenGanderson + "\n" +
-    "- Jamail APP pool (ONLY these APPs go to Jamail): " + jailMailPool + "\n" +
-    "- " + r.locationRules.jailMailNotes + "\n" +
-    "- Main Endo: " + r.locationRules.mainEndo + "\n" +
-    "- Radiology: " + r.locationRules.radiology + "\n" +
-    "- CV Anesthesia: " + r.locationRules.cvAnesthesia + "\n" +
-    "- Main OR: " + r.locationRules.mainOR + "\n" +
-    "- McNair/OTM OR/OTM Endo: " + r.locationRules.mcnairOTM + "\n" +
-    "- OTM Endo: " + r.locationRules.otmEndo + "\n" +
-    "- CRITICAL: " + r.locationRules.roomCountCritical + "\n\n" +
-    "NERVE BLOCK RULES:\n" +
-    "Block-capable MDs: " + blockMDs + "\n" +
-    "Block surgeons (flag for block-capable MD): " + blockSurgeons + "\n" +
-    r.nerveBlocks.rules.join("\n") + "\n\n" +
-    "APP CONFLICT RULE:\n" +
-    r.appConflicts.rule + "\n" +
-    "Exception: " + r.appConflicts.exception + "\n" +
-    r.appConflicts.secondCases + "\n\n" +
-    "ENDO WEEKLY RULE:\n" +
-    r.endoWeeklyRule.rule + "\n" +
-    r.endoWeeklyRule.flag + "\n" +
-    r.endoWeeklyRule.trackBothTypes + "\n\n" +
-    "STAFF NOTES:\n" +
-    Object.entries(r.staffNotes).map(([n,v]) => "- " + n + ": " + v).join("\n") + "\n\n" +
-    "=== CRITICAL RULE 1: MULTI-ROOM MD ASSIGNMENT ===\n" +
-    "One MD covers MULTIPLE rooms simultaneously. Write that MD name in EVERY room they cover.\n" +
-    "MANDATORY GROUPS — same MD name in ALL rooms of each group:\n" +
-    "- Main Endo: MD in Main Endo|1, |2, AND |3 — all three, always\n" +
-    "- Radiology: 1 MD covers IR|1, NIR|1, and any active CT/MRI — any available MD can cover radiology\n" +
-    "- OTM Endo: MD in every OTM Endo room they supervise\n" +
-    "- Jamail: Ganderson in every open Jamail room\n" +
-    "- McNair OR: typically 1 MD covers all 3 McNair OR rooms\n\n" +
-    "=== CRITICAL RULE 2: HARD ROOM COUNT LIMIT ===\n" +
-    "ABSOLUTE MAXIMUM: 4 rooms per MD total across ALL locations combined.\n" +
-    "OTM OR + OTM Endo + McNair OR + Main OR + Radiology all count toward this total.\n" +
-    "Before assigning: count the MD's current total rooms. If at 4, assign a different MD.\n" +
-    "WRONG: 1 OTM OR + 7 OTM Endo = 8 rooms for one MD. Never allowed.\n" +
-    "RIGHT: Split across 2+ MDs so no one exceeds 4 total.\n\n" +
-    "=== CRITICAL RULE 3: ALWAYS-STAFF ROOMS ===\n" +
-    "Main OR 10 and Main OR 15 MUST ALWAYS have both an MD and APP — even if no cases are listed.\n\n" +
-    "=== CRITICAL RULE 4: CAMPUS ROUTING ===\n" +
-    "Baylor MDs: OR-MN/OR-McNair shift = McNair campus ONLY. OR-[number] shift = Main campus ONLY.\n" +
-    "Baylor APPs: APP-MN ordinal = McNair ONLY. APP (no MN) ordinal = Main ONLY. No ordinal = flexible.\n" +
-    "Cross Country and Caliber MDs: flexible, assign where needed.\n" +
-    "Jamail APPs (shift designated for Jamail): Jamail ONLY — never assign to Main OR or other locations.\n\n" +
-    "=== CRITICAL RULE 5: APP CONFLICTS ===\n" +
-    "Avoid same APP in two concurrent rooms. Flag it if it happens — it is a soft rule.\n" +
-    "NIR rooms may be staggered so same APP in NIR|1 and NIR|2 might be OK — flag but allow.\n\n" +
-    "=== CRITICAL RULE 6: EXTRA STAFF IS OK ===\n" +
-    "After filling all rooms per limits, extra unassigned staff is expected and fine.\n" +
-    "Extra MDs: flag Baylor McNair MDs as flex-off candidates first.\n" +
-    "Extra APPs: they go to float — no action needed unless 5+ Baylor APPs are unassigned.\n" +
-    "Never overload an MD just to use up extra staff.\n\n" +
-    "=== CRITICAL RULE 7: ENDO WEEKLY TRACKING ===\n" +
-    "Check the weekly endo tracking in the rules. Prefer APPs who have NOT done endo this week.\n" +
-    "Flag any APP being assigned to endo a second time this week — note it is sometimes unavoidable.\n\n" +
-    "OUTPUT REQUIREMENTS:\n" +
-    "- Use EXACT room key format from needs list (e.g. Main OR|3, McNair OR|1, Main Endo|1)\n" +
-    "- Use EXACT staff names from the roster\n" +
-    "- Only assign rooms from the needs list\n" +
-    "- If room has MD but needs APP only (or vice versa), include only the missing role\n" +
-    "- Rooms with CV Anesthesia as MD: skip entirely\n" +
-    "- Every open room should get both MD and APP unless staff is unavailable\n\n" +
-    "Respond ONLY with valid JSON, no other text:\n" +
-    '{"assignments":{"Room|Num":{"md":{"name":"Full Name","credential":"MD","agency":"Agency"},"app":{"name":"Full Name","credential":"CRNA","agency":"Agency"}}},"flags":["warnings"],"notes":["notes"]}';
+  // Parse staff to identify McNair-campus Baylor MDs and their out-order
+  const staffLines = staffSummary.split("\n");
+  const mcnairOutOrder = staffLines.filter(s => s.includes("Out-MNC")).sort();
+  const mcnairCall = staffLines.filter(s => s.includes("McNair Call"));
+  const mcnairLate = staffLines.filter(s => s.includes("Late MD-MNC"));
+
+  return `You are an anesthesia scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System.
+
+DATE: ${date}
+
+STAFF ROSTER (credential | name | agency | shift):
+${staffSummary}
+
+CURRENT ASSIGNMENTS (DO NOT change these):
+${currentAssignments}
+
+ROOMS NEEDING ASSIGNMENT:
+${roomsNeeding}
+
+════════════════════════════════════════════
+MANDATORY PRE-WORK — DO THIS BEFORE ANY ASSIGNMENTS
+You must complete all 3 steps below and state your conclusions explicitly before producing any output.
+════════════════════════════════════════════
+
+PRE-WORK STEP A — McNair OR Analysis:
+1. Count how many McNair OR rooms are in the needs list.
+2. Look at the staff roster for MDs with these shift types (in flex-off priority order):
+   - "1st Out-MNC" → FLEX OFF FIRST (send home, do not assign anywhere)
+   - "2nd Out-MNC" → FLEX OFF SECOND (send home, do not assign anywhere)
+   - "3rd Out-MNC" → FLEX OFF THIRD if rooms allow fewer MDs
+   - "Late MD-MNC" → DO NOT flex off. Route to OTM campus (OTM OR or OTM Endo).
+   - "McNair Call" → NEVER flex off. Route to OTM campus. Always working.
+3. Assign ALL active McNair OR rooms to the single lowest-priority MD who was NOT flexed off.
+   That one MD covers ALL McNair OR rooms. If a block surgeon is in McNair OR, that MD must be block-capable.
+   Block-capable MDs include: ${blockMDs}
+4. State: which MDs are flexed off, which MD covers McNair OR, and which go to OTM.
+
+PRE-WORK STEP B — OTM Displacement Analysis:
+1. McNair-campus MDs (Late MD-MNC and McNair Call) who are NOT flexed off go to OTM campus.
+   They MUST stay on McNair campus (OTM OR, OTM Endo, Jamail OR, McNair OR). NEVER send them to Main OR.
+2. Each McNair-campus MD placed at OTM displaces one flexible locum MD from OTM.
+3. Those displaced locum MDs go to Main OR.
+4. State: which McNair-campus MDs go to OTM, which locums are displaced, and which displaced locums go to Main OR.
+
+PRE-WORK STEP C — Main OR Staffing Plan:
+1. List the displaced locum MDs who will cover Main OR.
+2. List the Baylor Main OR MDs (shifts containing OR-[number] e.g. OR 10-MD, OR 12-MD).
+3. The MD with OR-10-MD shift covers OR 10 as their primary room plus 1 additional room.
+4. The MD with OR-12-MD shift (Charge) covers OR 12 plus 1 additional room.
+5. OR 10 and OR 15 MUST be in your final output — if no case is listed, staff them anyway. This is mandatory.
+6. Target 2 rooms per MD. Flag anyone at 3. Never assign 4+ Main OR rooms to one MD.
+7. State: which MD covers which Main OR rooms, confirming OR 10 and OR 15 are covered.
+
+════════════════════════════════════════════
+FIXED ASSIGNMENT RULES (apply after pre-work)
+════════════════════════════════════════════
+
+MANDATORY SINGLE-MD GROUPS (same MD in every room of the group):
+- Main Endo 1, 2, 3: always one MD, always 3 different APPs. Use any available flexible MD — rotate, do not reuse same MD weekly.
+- Radiology (IR, NIR, CT, MRI): one MD covers ALL active radiology rooms. NIR always covered even with no cases. Do NOT assign the radiology MD to Main Endo — these are separate assignments.
+- Jamail OR: Lauren Ganderson covers ALL open Jamail rooms. Jamail APP pool ONLY in Jamail: ${jailMailPool}
+- McNair OR: one MD covers all active rooms (from Pre-Work Step A).
+
+CAMPUS ROUTING (HARD RULES):
+- Baylor MD with OR-MN or OR-McNair shift → McNair campus ONLY (OTM OR, OTM Endo, Jamail, McNair OR). Never Main OR.
+- Baylor MD with OR-[number] shift → Main campus ONLY. Never OTM or McNair.
+- Late MD-MNC and McNair Call MDs → McNair campus ONLY. Route to OTM if McNair OR is light.
+- Baylor APP with APP-MN in ordinal → McNair campus ONLY that day.
+- Baylor APP with APP (no MN) in ordinal → Main campus ONLY that day.
+- Cross Country and Caliber MDs → flexible, assign where needed.
+- An APP's campus is determined by their shift that day — not a permanent rule.
+- NEVER assign an APP to rooms on two different campuses simultaneously.
+
+ROOM COUNT LIMITS:
+- Main OR: target 2 rooms per MD. 3 is acceptable — flag it. NEVER 4+. This is a hard violation.
+- OTM OR + OTM Endo + McNair OR combined: max 3 rooms per MD, hard limit 4.
+- Radiology MD: multi-room is normal — do not flag.
+- Count rooms ACROSS ALL LOCATIONS. Total across every location cannot exceed 4 per MD.
+
+NERVE BLOCKS:
+Block surgeons (${blockSurgeons}): assign a block-capable MD to that room group.
+Block-capable MDs: ${blockMDs}
+Multiple simultaneous 0730 block cases = split across DIFFERENT block-capable MDs.
+
+APP CONFLICTS:
+Avoid same APP in two concurrent rooms. Flag it — soft rule, not a hard block.
+Radiology APPs can be shared if times are staggered. NIR rooms may be staggered — flag but allow.
+If a room has a second case later with no APP available, leave APP empty.
+
+ENDO WEEKLY TRACKING:
+Prefer APPs who have NOT done endo this week. Flag any APP doing endo a second time this week.
+
+EXTRA STAFF:
+It is normal and expected to have unassigned staff after rooms are filled. Do not overload MDs to use up staff.
+Extra MDs: flag 1st/2nd Out-MNC as flexed off. All others simply unassigned.
+Extra APPs: float — no action unless 5+ Baylor APPs unassigned.
+
+CV ANESTHESIA: Skip any room where MD = CV Anesthesia. Specialized team.
+
+════════════════════════════════════════════
+SELF-CHECK BEFORE OUTPUT
+════════════════════════════════════════════
+Before writing your JSON, verify:
+[ ] OR 10 is in the output with both MD and APP
+[ ] OR 15 is in the output with both MD and APP
+[ ] No MD has 4+ Main OR rooms
+[ ] No MD exceeds 4 total rooms across all locations
+[ ] Radiology MD is NOT also covering Main Endo
+[ ] 1st Out-MNC and 2nd Out-MNC MDs are NOT assigned anywhere (flexed off)
+[ ] No McNair-campus MD (OR-MN, McNair Call, Late MD-MNC) is assigned to Main OR
+[ ] No APP is assigned to rooms on two different campuses simultaneously
+[ ] Suwarna Deoskar (or whoever has OR-12-MD shift) has 2 rooms including OR 12
+
+OUTPUT FORMAT — respond ONLY with valid JSON, no other text:
+{"assignments":{"Room|Num":{"md":{"name":"Full Name","credential":"MD","agency":"Agency"},"app":{"name":"Full Name","credential":"CRNA","agency":"Agency"}}},"flags":["warnings"],"notes":["notes"]}`;
 }
 
 function showAiAssignPreview(plan) {
