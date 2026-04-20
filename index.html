@@ -3116,14 +3116,27 @@ function showAiAssignPreview(plan) {
   const flagsDiv = document.getElementById("aiAssignFlags");
   const secs = {};
   const asgn = plan.assignments || {};
-  for (const rk in asgn) { const s = rk.split("|")[0]; if (!secs[s]) secs[s] = []; secs[s].push({room:rk, md:asgn[rk].md, app:asgn[rk].app}); }
+  for (const rk in asgn) {
+  // Support both "Section|Number" and "Section Number" key formats
+  let s, num;
+  if (rk.includes("|")) {
+    [s, num] = rk.split("|");
+  } else {
+    // Split off the trailing number/identifier
+    const m = rk.match(/^(.*?)\s+(\S+)$/);
+    if (m) { s = m[1]; num = m[2]; }
+    else { s = rk; num = ""; }
+  }
+  if (!secs[s]) secs[s] = [];
+  secs[s].push({ room: rk, section: s, num: num, md: asgn[rk].md, app: asgn[rk].app });
+}
   const ord = ["Main OR","Main Endo","IR","NIR","CT","MRI","OTM OR","OTM Endo","Jamail OR","McNair OR"];
   const keys = ord.filter(s => secs[s]).concat(Object.keys(secs).filter(s => !ord.includes(s)));
   let html = "";
   for (const sec of keys) {
     html += '<div style="margin-bottom:20px;"><div style="font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:4px 0;border-bottom:2px solid var(--border);margin-bottom:8px;">' + sec + '</div>';
     for (const ro of secs[sec]) {
-      const num = ro.room.split("|")[1] || "";
+      const num = ro.num;
       html += '<div style="display:flex;gap:16px;padding:7px 4px;border-bottom:1px solid var(--border);">';
       html += '<span style="font-weight:500;min-width:150px;font-size:13px;">' + sec + " " + num + '</span>';
       html += '<span style="color:#2563eb;flex:1;font-size:13px;">' + (ro.md && ro.md.name ? "MD: " + ro.md.name : "") + '</span>';
