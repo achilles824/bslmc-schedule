@@ -2811,11 +2811,11 @@ const flexibleAPPs = staff.filter(s =>
 const ss = [
   "=== MDs (campus determined by shift) ===",
   staff.filter(s => s.credential === "MD").map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== MAIN CAMPUS ONLY — Baylor APPs without -MN ===",
+  "=== MAIN CAMPUS ONLY - Baylor APPs without -MN ===",
   mainBaylorAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== McNAIR CAMPUS ONLY — Baylor APPs with -MN ===",
+  "=== McNAIR CAMPUS ONLY - Baylor APPs with -MN ===",
   mcnairAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== FLEXIBLE — Locums APPs (assign where needed, either campus) ===",
+  "=== FLEXIBLE - Locums APPs (Caliber, Cross Country - assign where needed) ===",
   flexibleAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
 ].join("\n");
 const mds = staff.filter(s => s.credential === "MD");
