@@ -2823,7 +2823,17 @@ if (fenceMatch) {
   if (a !== -1 && b !== -1 && b > a) jsonStr = allText.substring(a, b + 1);
 }
 if (!jsonStr) throw new Error("No JSON found in Claude response. Response started with: " + allText.substring(0, 200));
-_aiAssignPlan = JSON.parse(jsonStr);
+const parsed = JSON.parse(jsonStr);
+// Normalize: if Claude returned an array, convert to {assignments:{}} object shape
+if (Array.isArray(parsed)) {
+  const assignmentsObj = {};
+  parsed.forEach(item => {
+    if (item.room) assignmentsObj[item.room] = { md: item.md || null, app: item.app || null, notes: item.notes || "" };
+  });
+  _aiAssignPlan = { assignments: assignmentsObj, flags: parsed.flatMap(i => i.notes ? [i.notes] : []) };
+} else {
+  _aiAssignPlan = parsed;
+}
     showAiAssignPreview(_aiAssignPlan);
   } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
   finally { btn.disabled = false; btn.textContent = "AI Assign"; }
