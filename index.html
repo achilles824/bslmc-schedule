@@ -2811,9 +2811,9 @@ const flexibleAPPs = staff.filter(s =>
 const ss = [
   "=== MDs (campus determined by shift) ===",
   staff.filter(s => s.credential === "MD").map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== MAIN CAMPUS ONLY - Baylor APPs without -MN ===",
+  "=== MAIN CAMPUS ONLY - Baylor APPs (no -MN in shift) ===",
   mainBaylorAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== McNAIR CAMPUS ONLY - Baylor APPs with -MN ===",
+  "=== McNAIR CAMPUS ONLY - Baylor APPs (-MN in shift) ===",
   mcnairAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
   "=== FLEXIBLE - Locums APPs (Caliber, Cross Country - assign where needed) ===",
   flexibleAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
