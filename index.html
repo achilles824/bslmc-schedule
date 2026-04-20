@@ -3058,9 +3058,18 @@ D5 APPs (7a-12p):
 - Default: leave unassigned (float)
 - Alternative: assign to a McNair-campus room whose case finishes by 12:00
 
-D12 APPs:
-- Fine to assign to 7:30 AM rooms — they start at 7:00 like everyone else
-- Rule: if a late-start room exists, prefer assigning a D12 APP to it (but still assign D12 APPs to 7:30 rooms if needed)
+D12 / D12(M) APPs (12-hour shifts, 7a-7p):
+- Fine to assign to 7:30 AM rooms — they arrive at 7:00 like everyone else
+- REQUIRED: if a Main OR room is a late-start room (caseTime ≥ 12:00), its APP MUST be a D12 / D12(M) shift APP if one is available in the unassigned pool at the time of that assignment
+- Late-start rooms: check caseTime on every Main OR room. A caseTime of 12:00 or later = late-start room.
+- When assigning APPs to late-start rooms, do NOT assign a D8 APP (ends 3pm) or D10 APP (ends 5pm) if a D12 / D12(M) APP is still unassigned
+- Rationale: D8 APPs end before a 1pm case with 4+ hour length finishes. D10 APPs may not cover a 1pm case through completion. D12 / D12(M) APPs stay until 7pm.
+
+LATE-START D12 MATCHING CHECK (perform before finalizing APP assignments):
+1. List all Main OR rooms with caseTime ≥ 12:00.
+2. List all unassigned D12 / D12(M) APPs.
+3. For each late-start room, verify its assigned APP has a D12 or D12(M) shift.
+4. If a late-start room has a non-D12 APP assigned AND a D12 APP is unassigned, swap them — assign the D12 to the late room, reassign the displaced APP to the room you swapped from.
 
 DEDUPLICATION:
 - Each APP appears in exactly ONE room (NIR rooms sharing one APP is the sole exception)
@@ -3078,21 +3087,48 @@ Rooms in roomsNeeding with no cases today, that are NOT mandatory-staff (OR 10, 
 
 ---
 
-## STEP 7 — FLAGS (MINIMAL)
+## STEP 7 — FLAGS (CLOSED WHITELIST)
 
-Include in FLAGS only:
-- Flex-off by shift designation: "1st Out-MNC flexed off — out-order, surplus allocation"
-- Unassigned APPs: list names
-- Empty unstaffed rooms: list them
-- Genuine exceptions: MD at 3 rooms in Main OR, repeat-endo APP violations, short-staffed day, block-case handled without OTM bridge when one was available
+Flags are combined into ONE single "notes" string on the FLAGS element. Do NOT emit per-room flags. Do NOT narrate expected behaviors.
 
-Do NOT include:
-- "Designated MD" informational lines
-- "Always staffed room" for OR 10/15/NIR-1 (expected)
-- "Main Endo coverage" / "Radiology coverage" / "Jamail coverage" / "McNair consolidation" (expected)
-- Shared NIR APP (expected)
-- 3-room MDs at OTM/McNair (at cap, expected)
-- Late-start D12 APP coverage (expected)
+ONLY these flag types are permitted. If a condition does not match one of these exact templates, do NOT emit it.
+
+1. FLEX-OFF (one entry per flexed-off MD):
+   Template: "{Nth} Out-MNC flexed off ({Name})."
+   Example: "1st Out-MNC flexed off (Jonas Hafkin). 2nd Out-MNC flexed off (Chris Seibert)."
+
+2. UNASSIGNED APPS (one combined entry):
+   Template: "Unassigned APPs: {comma-separated names}."
+   Only include APPs who were in the staff list but not assigned to any room.
+
+3. EMPTY ROOMS NOT STAFFED (one combined entry, only if applicable):
+   Template: "No cases, not staffed: {comma-separated rooms}."
+   Only include rooms that appeared in roomsNeeding but had no cases and are NOT mandatory-staff rooms.
+
+4. APP POOL EXHAUSTED (one combined entry, only when truly exhausted):
+   Template: "No APP available: {comma-separated rooms}."
+   Do NOT emit this if any unassigned APP remains in the staff list.
+
+5. EXCEPTIONS TO STANDARD RULES (one entry each, only when a rule was bent or violated due to unavoidable constraints):
+   - "Main OR 3-room MD: {Name} at {N} rooms — {reason}." (only when a Main MD has 3 rooms, never for 1-2)
+   - "Repeat endo: {APP Name} already did endo on {day} this week."
+   - "McNair block case: {room} covered without OTM bridge — no block-capable OTM MD available."
+   - "Short-staffed day: {campus} demand {X}, supply {Y}."
+
+DO NOT emit flags for any of these (all are expected behaviors):
+- Main-anchored MD on their designated OR or paired room
+- "Always staffed" rooms (OR 10, OR 15, NIR-1)
+- Main Endo one-MD-covers-three pattern
+- Radiology one-MD-covers-all pattern
+- Jamail coverage by Ganderson
+- McNair OR consolidation
+- Cross-location bridging (by design)
+- 3-room MDs at OTM or McNair (at cap, not an exception)
+- Shared NIR APP
+- Late-start rooms assigned to D12 APPs
+- Any per-room informational narration
+
+If there are no exceptions to report at all, the FLAGS entry notes string can be empty or just contain the flex-off + unassigned APPs lines.
 
 ---
 
@@ -3129,10 +3165,13 @@ APPs:
 - [ ] Radiology: NIR shares one APP, total radiology APPs ≤ 3, only General rooms staffed (NIR-1 always)
 - [ ] No APP appears in 2 rooms (NIR is sole exception)
 - [ ] No case-bearing room is missing an APP while unassigned APPs remain
+- [ ] Every late-start Main OR room (caseTime ≥ 12:00) has a D12 or D12(M) APP if one was available
 
 FLAG DISCIPLINE:
-- [ ] No flags narrate expected behaviors
-- [ ] Flex-off identified by shift designation, not person
+- [ ] Only flag types from the Step 7 closed whitelist appear in FLAGS notes
+- [ ] No per-room flag entries — all flags consolidated into the single FLAGS element notes string
+- [ ] No flags narrate expected behaviors (designated MDs, always-staffed rooms, Main Endo coverage, radiology coverage, Jamail coverage, McNair consolidation, bridging, shared NIR APP, 3-room OTM/McNair MDs, late-start D12 coverage)
+- [ ] Flex-off identified by shift designation with person name in parens
 
 All checks passed? Output the JSON array.
 
@@ -3157,7 +3196,6 @@ Final FLAGS element:
   "notes": "1st Out-MNC flexed off. 2nd Out-MNC flexed off. Unassigned APPs: [names]. No cases, not staffed: [rooms]."
 }`;
 }
-
 function showAiAssignPreview(plan) {
   const modal = document.getElementById("aiAssignModal");
   const content = document.getElementById("aiAssignContent");
