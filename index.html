@@ -2872,195 +2872,183 @@ CRITICAL OUTPUT RULE: Output ONLY a raw JSON array. No prose, no explanation, no
 
 ---
 
-## STAFF WORKING TODAY
+STAFF WORKING TODAY
 ${staffSummary}
 
-## CURRENT ASSIGNMENTS (already saved — do not reassign these rooms)
+CURRENT ASSIGNMENTS (already saved - do not reassign these rooms)
 ${currentAssignments}
 
-## ROOMS NEEDING ASSIGNMENT
+ROOMS NEEDING ASSIGNMENT
 ${roomsNeeding}
 
-## RULES REFERENCE
+RULES REFERENCE
 ${JSON.stringify(rules, null, 2)}
 
 ---
 
-## STEP 1 — CLASSIFY EVERY MD BY CAMPUS
+STEP 1 - CLASSIFY EVERY MD BY CAMPUS
 
 Classify each MD before making any assignments.
 
-MAIN campus only — never send to McNair/OTM/Jamail:
+MAIN campus only - never send to McNair/OTM/Jamail:
 - Shift contains a specific numbered OR (e.g. "OR 8 - MD", "OR 10 - MD", "OR 12 - MD")
 - These MDs must be assigned to their designated OR room plus exactly one additional Main OR room. Total: 2 rooms. Never more.
 
-McNAIR campus only — NEVER assign to Main OR, Main Endo, or radiology under any circumstances:
+McNAIR campus only - NEVER assign to Main OR, Main Endo, or radiology under any circumstances:
 - Shift contains any of: "McNair", "MNC", "OR - McNair", "McNair Call", "Late MD-MNC", "Out-MNC", "1st Out-MNC", "2nd Out-MNC", "3rd Out-MNC"
 - These MDs may only go to: McNair OR, OTM OR, OTM Endo, or Jamail OR
 - Even if Main OR is understaffed, McNair-campus MDs stay on McNair campus
 
-Flexible — assign where most needed:
+Flexible - assign where most needed:
 - Cross Country, Caliber, or Locums MDs (D5/D8/D10/D12 shifts)
-- Exception: Lauren Ganderson (Baylor, OR - McNair) → Jamail OR ONLY, always, regardless of any other rule
+- Exception: Lauren Ganderson (Baylor, OR - McNair) -> Jamail OR ONLY, always
 
 ---
 
-## STEP 2 — McNAIR OR CONSOLIDATION
+STEP 2 - McNAIR OR CONSOLIDATION
 
 Count McNair OR rooms with cases today.
-- 1–3 McNair OR rooms → assign 1 MD to cover all of them. Never 1 MD per room.
-- When McNair OR volume is light, flex off McNair-campus MDs in this strict order:
-  1. 1st Out-MNC → flex off first
-  2. 2nd Out-MNC → flex off second
-  3. 3rd Out-MNC → flex off third
-  4. Late MD-MNC → do NOT flex off; reassign to OTM OR or OTM Endo instead
-  5. McNair Call → almost never flex off; route to OTM if McNair OR is light
-- Every time an MD is flexed off, add a flag: "[Name] ([shift]) flexed off — light McNair OR volume"
+- 1-3 McNair OR rooms -> assign 1 MD to cover all. Never 1 MD per room.
+- Flex off McNair-campus MDs in this strict order when volume is light:
+  1. 1st Out-MNC -> flex off first
+  2. 2nd Out-MNC -> flex off second
+  3. 3rd Out-MNC -> flex off third
+  4. Late MD-MNC -> do NOT flex off; reassign to OTM OR or OTM Endo instead
+  5. McNair Call -> almost never flex off; route to OTM if McNair OR is light
+- Every time an MD is flexed off, add a flag: "[Name] ([shift]) flexed off - light McNair OR volume"
 
 ---
 
-## STEP 3 — OTM STAFFING PLAN
+STEP 3 - OTM STAFFING PLAN
 
 For MDs assigned to OTM campus after McNair consolidation:
 - Preferred pattern: 1 MD covers 1 OTM OR room + 1 OTM Endo room (most balanced split)
-- Only 1 MD should bridge OTM OR and OTM Endo. A second MD bridging both is redundant — send them to Main OR instead.
-- OTM campus max: 3 rooms per MD (acceptable, no flag needed). Hard limit: 4 rooms. Never exceed 4.
-- If one MD takes OTM OR rooms and another takes OTM Endo, that is fine — just avoid the same MD covering large numbers of both.
+- Only 1 MD should bridge OTM OR and OTM Endo. A second MD bridging both is redundant.
+- OTM campus max: 3 rooms per MD (no flag needed). Hard limit: 4 rooms. Never exceed 4.
 
 ---
 
-## STEP 4 — LATE START ROOM IDENTIFICATION
+STEP 4 - LATE START ROOM IDENTIFICATION
 
-Before assigning Main OR rooms, check the caseTime field for every room in the roomsNeeding data.
-- A room is a late-start room ONLY if its caseTime is 12:00 PM (12:00) or later.
-- A room with no caseTime, or a caseTime of 07:30, is a normal room — it needs its own dedicated MD and APP.
-- Late-start rooms may be assigned as a 3rd room to an MD who already has 2 normal (7:30 AM) rooms, since that MD will be free by then.
-- Do NOT assign any room as a 3rd room unless you have confirmed its caseTime is 12:00 or later.
-- If no APP is available for a late-start room: assign the MD, leave APP null, add flag: "Late start room [room name] — no APP available"
-- Never leave a 7:30 AM room without an APP unless the entire campus APP pool is exhausted.
+Before assigning Main OR rooms, check the caseTime field for every room in roomsNeeding.
+- A room is a late-start room ONLY if its caseTime is 12:00 or later.
+- A room with no caseTime or a caseTime of 07:30 is a normal room needing its own MD and APP.
+- Late-start rooms may be assigned as a 3rd room to an MD who already has 2 normal rooms.
+- Do NOT assign any room as a 3rd room unless its caseTime is confirmed 12:00 or later.
+- If no APP is available for a late-start room: assign MD, set app to null, flag it.
+- Never leave a 07:30 room without an APP unless the campus APP pool is fully exhausted.
 
 ---
 
-## STEP 5 — APP ASSIGNMENT
+STEP 5 - APP ASSIGNMENT
 
-The staff list is pre-divided into three APP groups. Follow these rules strictly:
+The staff list is pre-divided into three APP groups. Follow strictly:
 
-MAIN CAMPUS ONLY — Baylor APPs without -MN:
+MAIN CAMPUS ONLY - Baylor APPs without -MN in shift:
 - Assign ONLY to: Main OR, Main Endo, IR, NIR, CT, MRI
 - Never assign to McNair OR, OTM OR, OTM Endo, or Jamail OR
 - Assign in out-order (1st Out first, 2nd Out second, etc.)
-- Main campus will almost always have more APPs than slots — leave extras unassigned and flag them
+- Main campus will almost always have more APPs than slots - leave extras unassigned and flag them
 
-McNAIR CAMPUS ONLY — Baylor APPs with -MN:
+McNAIR CAMPUS ONLY - Baylor APPs with -MN in shift:
 - Assign ONLY to: McNair OR, OTM OR, OTM Endo, or Jamail OR
 - Never assign to Main OR, Main Endo, IR, NIR, CT, or MRI
 - Assign in out-order (1st Out-MN first, etc.)
-- Karina Kima and Carla Rose → assign to Jamail OR first before other McNair locations
-- McNair campus will often have fewer APPs than rooms — fill what you can, flag the rest as "No APP available"
+- Karina Kima and Carla Rose -> assign to Jamail OR first before other McNair locations
+- McNair campus will often have fewer APPs than rooms - fill what you can, flag the rest as "No APP available"
 
-FLEXIBLE — Locums APPs (Caliber, Cross Country):
+FLEXIBLE - Locums APPs (Caliber, Cross Country):
 - May be assigned to either campus wherever needed
 - Fill gaps after all Baylor APPs have been placed
-- Carla Rose (Caliber, D12 M) → preferentially assign to Jamail OR
+- Carla Rose (Caliber) -> preferentially assign to Jamail OR
 
-DEDUPLICATION — absolute rule:
+DEDUPLICATION - absolute rule:
 - Each APP may appear in exactly ONE room assignment in the entire output
 - Before assigning any APP, check if their name is already used. If yes, skip and choose another.
-- Never assign the same APP to two rooms, even if they are on the same campus
+- Never assign the same APP to two rooms under any circumstance
 - After completing all assignments, scan the full list for duplicate APP names and fix any found
 
 UNASSIGNED APP TRACKING:
-- Any APP from the staff list who was not assigned to any room must be flagged by name
+- Any APP from the staff list not assigned to any room must be flagged by name
 - Add to the FLAGS entry: "Unassigned APPs: [name], [name], ..."
 - A large number of unassigned Main campus APPs is normal and expected
 
 ---
 
-## LOCATION-SPECIFIC RULES
+LOCATION-SPECIFIC RULES
 
 Main OR:
-- OR 10 and OR 15 must ALWAYS be staffed with both MD and APP — no exceptions, even if no case is listed
-- Baylor MDs with a designated OR number in their shift must be assigned that specific OR plus one other Main OR room (total: 2 rooms, never more at Main OR)
-- Target 2 rooms per MD at Main OR. 3 rooms only if one is a confirmed late-start room. Never 4+ rooms.
-- Do not assign a flexible MD to Main OR if McNair campus needs coverage — McNair takes priority for flexible MDs
+- OR 10 and OR 15 must ALWAYS be staffed with both MD and APP - no exceptions
+- Baylor MDs with a designated OR number in their shift must be assigned that OR plus one other Main OR room. Total: 2 rooms, never more at Main OR.
+- Target 2 rooms per MD at Main OR. 3 rooms only if one is a confirmed late-start room. Never 4+.
+- Do not assign a flexible MD to Main OR if McNair campus needs coverage
 
 Main Endo:
-- 1 MD covers ALL 3 Main Endo rooms always (even if no cases)
-- Each room gets a different APP — 3 unique APPs total
+- 1 MD covers ALL 3 Main Endo rooms always
+- Each room gets a different APP - 3 unique APPs total
 
 Radiology (IR, NIR, CT, MRI):
-- 1 MD covers ALL radiology rooms — do not flag this as multi-room coverage
-- NIR: assign exactly 1 dedicated APP to cover all NIR rooms. The same APP name appears for NIR 1 and NIR 2 (and any additional NIR rooms). Do not assign a second different APP to any NIR room.
+- 1 MD covers ALL radiology rooms - do not flag as multi-room coverage
+- NIR: assign exactly 1 dedicated APP to cover all NIR rooms. The same APP name appears for NIR 1 and NIR 2. Do not assign a second different APP to any NIR room.
 - IR / CT / MRI: assign 1 separate APP (staggered coverage is normal and acceptable)
 - Do not flag radiology APP sharing as a conflict
 
 McNair OR:
-- 1–3 rooms → 1 MD covers all. Never 1 MD per room.
-- Prefer block-capable MDs when block surgeons are scheduled (Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed)
-- Multiple simultaneous 0730 block cases → split across different block-capable MDs
+- 1-3 rooms -> 1 MD covers all. Never 1 MD per room.
+- Prefer block-capable MDs when block surgeons are scheduled
 
 Jamail OR:
-- Lauren Ganderson always covers all open Jamail rooms (up to 4 rooms — no flag needed)
-- Preferred APPs in order: Karina Kima first, then Carla Rose, then remaining Jamail APP pool
+- Lauren Ganderson always covers all open Jamail rooms (up to 4 rooms - no flag needed)
+- Preferred APPs in order: Karina Kima first, then Carla Rose, then others
 
 OTM OR / OTM Endo:
-- Max 3 rooms per MD — no flag at 3. Flag only at 4. Hard limit: never exceed 4.
+- Max 3 rooms per MD - no flag at 3. Flag only at 4. Hard limit: never exceed 4.
 
 ---
 
-## SELF-CHECK — COMPLETE BEFORE OUTPUTTING
+SELF-CHECK - COMPLETE BEFORE OUTPUTTING
 
 Fix any failure before producing output.
 
 MD CAMPUS CHECK:
-- [ ] No McNair-campus MD (any shift with McNair/MNC/Out-MNC/McNair Call/Late MD-MNC) appears in Main OR, Main Endo, IR, NIR, CT, or MRI
-- [ ] Every Baylor MD with a designated OR number is assigned that OR plus exactly 1 other Main OR room
-- [ ] Lauren Ganderson is only at Jamail OR
-- [ ] Flexed-off MDs are flagged by name and shift
+- No McNair-campus MD appears in Main OR, Main Endo, IR, NIR, CT, or MRI
+- Every Baylor MD with a designated OR number is assigned that OR plus exactly 1 other Main OR room
+- Lauren Ganderson is only at Jamail OR
+- Flexed-off MDs are flagged by name and shift
 
 APP CAMPUS CHECK:
-- [ ] Every Baylor APP without -MN is assigned only to Main OR, Main Endo, or radiology
-- [ ] Every Baylor APP with -MN is assigned only to McNair OR, OTM OR, OTM Endo, or Jamail OR
-- [ ] No locums APP is double-counted — each appears exactly once
+- Every Baylor APP without -MN is assigned only to Main OR, Main Endo, or radiology
+- Every Baylor APP with -MN is assigned only to McNair OR, OTM OR, OTM Endo, or Jamail OR
+- No locums APP appears more than once in the output
 
 DEDUPLICATION CHECK:
-- [ ] Write out every APP name in the full assignment list
-- [ ] Confirm every name appears exactly once across ALL rooms
-- [ ] Fix any duplicate by replacing with an unassigned APP from the correct pool, or flag as no APP available
+- Write out every APP name in the full assignment list
+- Confirm every name appears exactly once across ALL rooms
+- Fix any duplicate by replacing with an unassigned APP from the correct pool, or flag as no APP available
 
 ROOM CHECKS:
-- [ ] OR 10 staffed with MD and APP
-- [ ] OR 15 staffed with MD and APP
-- [ ] No 7:30 AM room is missing an APP unless the campus pool is genuinely exhausted
-- [ ] No room is assigned as an MD's 3rd room unless its caseTime is confirmed 12:00 PM or later
-- [ ] Main Endo covered by 1 MD with 3 unique APPs
-- [ ] NIR has exactly 1 APP (same APP name for all NIR rooms); IR has a different APP
-- [ ] Karina Kima and Carla Rose assigned to Jamail OR before other locations
-- [ ] McNair APP shortage rooms flagged as "No APP available"
-- [ ] Unassigned APPs listed in FLAGS
+- OR 10 staffed with MD and APP
+- OR 15 staffed with MD and APP
+- No 07:30 room is missing an APP unless the campus pool is genuinely exhausted
+- No room is assigned as an MD's 3rd room unless its caseTime is confirmed 12:00 or later
+- Main Endo covered by 1 MD with 3 unique APPs
+- NIR has exactly 1 APP (same APP name for all NIR rooms); IR has a different APP
+- Karina Kima and Carla Rose assigned to Jamail OR before other locations
+- McNair APP shortage rooms flagged as "No APP available"
+- Unassigned APPs listed in FLAGS
 
 All checks passed? Output the JSON array now.
 
 ---
 
-## OUTPUT FORMAT
+OUTPUT FORMAT
 
 Each assignment:
-{
-  "room": "Main OR 10",
-  "md": { "name": "...", "credential": "MD", "agency": "..." },
-  "app": { "name": "...", "credential": "CRNA", "agency": "..." },
-  "notes": ""
-}
+{ "room": "Main OR 10", "md": { "name": "...", "credential": "MD", "agency": "..." }, "app": { "name": "...", "credential": "CRNA", "agency": "..." }, "notes": "" }
 
 If no APP: set "app" to null and explain in "notes".
 Include one final FLAGS element:
-{
-  "room": "FLAGS",
-  "md": null,
-  "app": null,
-  "notes": "Jonas Hafkin (1st Out-MNC) flexed off. Chris Seibert (2nd Out-MNC) flexed off. Unassigned APPs: [names]. No APP available: [rooms]."
-}`;
+{ "room": "FLAGS", "md": null, "app": null, "notes": "Jonas Hafkin (1st Out-MNC) flexed off. Unassigned APPs: [names]. No APP available: [rooms]." }`;
 }
 CRITICAL: Output ONLY the JSON array. Start with [ and end with ]. Nothing else.`;
 }
