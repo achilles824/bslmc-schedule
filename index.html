@@ -2806,13 +2806,23 @@ async function aiAssign() {
     });
     const res = await r.json();
     if (!res.content || !res.content[0] || !res.content[0].text) throw new Error("No response from Claude: " + JSON.stringify(res));
-    const txt = "[" + res.content
+    const allText = res.content
   .filter(item => item.type === "text")
   .map(item => item.text)
   .join("");
-const arrayEnd = txt.lastIndexOf("]");
-if (arrayEnd === -1) throw new Error("Incomplete JSON from Claude. Response started with: " + txt.substring(0, 200));
-const jsonStr = txt.substring(0, arrayEnd + 1);
+
+// Try fenced block first
+let jsonStr = null;
+const fenceMatch = allText.match(/```json\s*([\s\S]*?)```/);
+if (fenceMatch) {
+  jsonStr = fenceMatch[1].trim();
+} else {
+  // Fall back: find outermost [ ... ]
+  const a = allText.indexOf("[");
+  const b = allText.lastIndexOf("]");
+  if (a !== -1 && b !== -1 && b > a) jsonStr = allText.substring(a, b + 1);
+}
+if (!jsonStr) throw new Error("No JSON found in Claude response. Response started with: " + allText.substring(0, 200));
 _aiAssignPlan = JSON.parse(jsonStr);
     showAiAssignPreview(_aiAssignPlan);
   } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
