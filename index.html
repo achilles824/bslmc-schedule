@@ -2793,7 +2793,17 @@ async function aiAssign() {
       if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
     }
     if (!Object.keys(needs).length) { alert("All active rooms already have both MD and APP assigned!"); return; }
-    const ss = staff.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n");
+    const mainAPPs = staff.filter(s => s.credential !== "MD" && !s.shift.includes("-MN"));
+const mcnairAPPs = staff.filter(s => s.credential !== "MD" && s.shift.includes("-MN"));
+const mds = staff.filter(s => s.credential === "MD");
+const ss = [
+  "=== MDs (campus determined by shift) ===",
+  mds.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+  "=== MAIN CAMPUS APPs ONLY (no -MN in shift) ===",
+  mainAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+  "=== McNAIR CAMPUS APPs ONLY (-MN in shift) ===",
+  mcnairAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
+].join("\n");
     const prompt = buildAiAssignPrompt(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2), rules);
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -2835,14 +2845,14 @@ async function aiAssign() {
 function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System. Assign MDs and APPs to OR rooms for ${date}.
 
-Complete the three pre-work steps silently in your reasoning, then output ONLY the final JSON array. No prose, no explanation, no markdown.
+CRITICAL OUTPUT RULE: Output ONLY a raw JSON array. No prose, no explanation, no markdown. Start with [ and end with ].
 
 ---
 
 ## STAFF WORKING TODAY
 ${staffSummary}
 
-## CURRENT ASSIGNMENTS
+## CURRENT ASSIGNMENTS (already saved — do not reassign these rooms)
 ${currentAssignments}
 
 ## ROOMS NEEDING ASSIGNMENT
@@ -2853,132 +2863,147 @@ ${JSON.stringify(rules, null, 2)}
 
 ---
 
-## PRE-WORK STEP 1 — CAMPUS ROUTING
+## STEP 1 — CLASSIFY EVERY MD BY CAMPUS
 
-Before making any assignments, classify every staff member:
+Go through every MD and assign them a campus. Write this list in your reasoning.
 
-**MD Campus Rules (HARD — never violate):**
-- Shift contains "OR-[number]", "OR 8", "OR 10", "OR 12" etc → MAIN campus only
-- Shift contains "McNair", "MNC", "OR - McNair", "McNair Call", "Late MD-MNC", "Out-MNC" → McNAIR campus only (McNair OR, OTM OR, OTM Endo, Jamail OR). NEVER assign to Main OR, Main Endo, or radiology.
-- Cross Country, Caliber, or Locums MDs → flexible, assign where most needed
-- Lauren Ganderson → Jamail OR ONLY, always
+MAIN campus only (never send to McNair/OTM/Jamail):
+- Shift contains "OR 8", "OR 10", "OR 12" or similar numbered Main OR shifts
 
-**APP Campus Rules (ABSOLUTE HARD RULE — zero exceptions):**
-Inspect every APP's shift string character by character before assigning them.
-- If the shift contains "-MN" anywhere (e.g. "APP-MN", "Out APP-MN", "1st Out APP-MN") → that APP MUST go to McNair campus ONLY (McNair OR, OTM OR, OTM Endo, Jamail OR). They can NEVER be assigned to Main OR, Main Endo, IR, NIR, CT, or MRI.
-- If the shift does NOT contain "-MN" → that APP MUST go to Main campus ONLY (Main OR, Main Endo, IR, NIR, CT, MRI). They can NEVER be assigned to McNair campus rooms.
-- This rule applies regardless of how many APPs are available on either campus. If a campus is short on APPs, leave rooms unassigned and flag them — do NOT pull APPs from the wrong campus.
+McNAIR campus only (NEVER send to Main OR, Main Endo, or radiology — not even if Main is short-staffed):
+- Shift contains any of: "McNair", "MNC", "OR - McNair", "McNair Call", "Late MD-MNC", "Out-MNC"
+- This includes: 1st Out-MNC, 2nd Out-MNC, 3rd Out-MNC, Late MD-MNC, McNair Call
+- Route these MDs to: McNair OR, OTM OR, OTM Endo, or Jamail OR ONLY
 
-**APP Deduplication Rule (ABSOLUTE — zero exceptions):**
-Each APP can only appear in ONE room assignment in the entire schedule. Build a running list of assigned APPs as you work. Before assigning any APP, check if their name is already in the list. If it is, choose a different APP. An APP in two rooms simultaneously is never acceptable.
+Flexible (assign where most needed):
+- Cross Country, Caliber, or Locums MDs with D5/D8/D10/D12 shifts
+- Lauren Ganderson → Jamail OR ONLY always, regardless of flexibility
 
 ---
 
-## PRE-WORK STEP 2 — McNAIR CONSOLIDATION
+## STEP 2 — McNAIR CONSOLIDATION
 
-Count McNair OR rooms with cases. Apply:
-- 1–3 McNair OR rooms → 1 MD covers all. Do NOT assign 1 MD per room.
-- Flex off McNair MDs in this strict order when McNair OR is light:
-  1. 1st Out-MNC first
-  2. 2nd Out-MNC second
-  3. 3rd Out-MNC third
-  4. Late MD-MNC → reassign to OTM instead of flexing off
-  5. McNair Call → almost never flex off; route to OTM if McNair OR is light
+Count McNair OR rooms with cases. Flex off McNair MDs in strict order:
+1. 1st Out-MNC → flex off first. FLAG: "[Name] (1st Out-MNC) flexed off — light McNair volume"
+2. 2nd Out-MNC → flex off second. FLAG: "[Name] (2nd Out-MNC) flexed off — light McNair volume"
+3. 3rd Out-MNC → flex off third
+4. Late MD-MNC → reassign to OTM OR or OTM Endo instead of flexing off
+5. McNair Call → almost never flex off; route to OTM if McNair OR is light
 
----
-
-## PRE-WORK STEP 3 — LATE START ROOM HANDLING
-
-Before assigning Main OR rooms, identify rooms with case start times of 12:00 PM or later.
-- Do NOT assign a late-start room as a standalone assignment to an MD with no other rooms.
-- Instead, assign the late-start room as a 3rd room to an MD who already has 2 early rooms (7:30 AM). The time stagger makes this feasible.
-- This frees up MD slots that can go to McNair campus or be flexed off.
-- If no APP is available for a late-start room, leave it unassigned and flag it.
-- For today: OR 23 and OR 24 are late-start rooms (12 PM and 1 PM). Assign them as 3rd rooms to existing MDs, not as standalone assignments.
+Always flag when an MD is flexed off.
 
 ---
 
-## PRE-WORK STEP 4 — OTM STAFFING PLAN
+## STEP 3 — LATE START ROOM HANDLING
 
-For MDs available at OTM campus:
-- Preferred: 1 MD covers 1 OTM OR room + 1 OTM Endo room (most balanced split)
-- Only 1 MD should bridge OTM OR and OTM Endo. A second MD doing the same is redundant.
-- OTM campus limit: max 3 rooms per MD (no flag needed). Hard limit: 4. Never exceed 4.
+Identify rooms with case start times of 12:00 PM or later from the rooms data.
+- A late-start room must be assigned as a 3rd room to an MD who already has 2 early (7:30 AM) rooms
+- Do NOT assign any room as an MD's 3rd room unless it is a verified late-start room
+- Do NOT give an MD a 3rd room just to avoid leaving it unassigned — only late-start rooms qualify
+- If no APP is available for a late-start room: assign the MD, leave APP empty, flag it
+- If a room starts at 7:30 AM it is NOT a late-start room and must be treated as a normal room with its own MD and APP
+
+---
+
+## STEP 4 — OTM STAFFING PLAN
+
+For MDs at OTM campus, preferred distribution:
+- 1 MD covers 1 OTM OR room + 1 OTM Endo room (most balanced)
+- Only 1 MD should bridge OTM OR and OTM Endo — a second bridging MD is redundant
+- OTM campus max: 3 rooms per MD (no flag). Hard limit: 4. Never exceed 4.
+
+---
+
+## STEP 5 — BUILD APP ASSIGNMENT LIST
+
+The staff list is pre-divided into MAIN CAMPUS APPs and McNAIR CAMPUS APPs.
+- MAIN CAMPUS APPs → assign ONLY to: Main OR, Main Endo, IR, NIR, CT, MRI
+- McNAIR CAMPUS APPs → assign ONLY to: McNair OR, OTM OR, OTM Endo, Jamail OR
+- Karina Kima and Carla Rose → preferentially assign to Jamail OR first
+- Build a running list of assigned APPs as you go. Before assigning any APP, check this list. If the APP is already assigned, skip them and pick someone else.
+- If all available APPs for a campus are exhausted: leave the room's APP empty and flag "No APP available"
+- Flag any APP who ends up unassigned at the end
 
 ---
 
 ## ASSIGNMENT RULES
 
 **Main OR:**
-- OR 10 and OR 15 MUST always be staffed with both MD and APP
-- Charge MDs must be assigned 2 rooms including their designated OR
-- Target 2 rooms per MD. Never 4+ at Main OR.
-- Late-start rooms (12 PM+) → assign as a 3rd room to an MD with 2 early rooms
+- OR 10 and OR 15 MUST always be staffed with both MD and APP — no exceptions
+- Suwarna Deoskar (Charge MD) must be assigned 2 rooms including OR 12
+- Timothy Saye must be assigned OR 10 plus 1 additional room
+- Target 2 rooms per MD. Never 4+ rooms at Main OR.
+- Late-start rooms only may be added as a 3rd room
 
 **Main Endo:**
 - 1 MD covers ALL 3 rooms always
-- 1 different APP per room (3 unique APPs)
+- 3 unique APPs — one per room, all different
 
-**Radiology (IR, NIR, CT, MRI):**
-- 1 MD covers ALL radiology rooms — do not flag as multi-room
-- NIR gets exactly 1 dedicated APP assigned to NIR only. That APP is not shared with IR, CT, or MRI under any circumstances.
-- IR, CT, MRI share 1 APP (staggered) — this is normal
-- Do not assign a 2nd APP to NIR unless explicitly instructed
+**Radiology:**
+- 1 MD covers ALL of IR, NIR, CT, MRI — do not flag as multi-room
+- NIR: assign exactly 1 dedicated APP to cover all NIR rooms. That same APP covers NIR 1 and NIR 2 if both exist. Do not assign a second different APP to NIR.
+- IR/CT/MRI: assign 1 different APP (staggered) — this is normal and correct
 
 **McNair OR:**
-- 3 rooms → 1 MD covers all 3
+- 1–3 rooms → 1 MD covers all. Do not assign 1 MD per room.
 - Block-capable MDs preferred for block surgeon rooms
 
 **Jamail OR:**
-- Lauren Ganderson always, all open rooms, up to 4 rooms — no flag needed
+- Lauren Ganderson always, all open rooms. Up to 4 rooms — no flag needed.
+- Preferred APPs: Karina Kima first, then Carla Rose, then Jamail APP pool
 
-**APP Conflict Rule:**
-- Same APP in 2 rooms with overlapping start times → not allowed
-- Exception: radiology APPs may stagger EXCEPT the NIR APP (NIR APP is exclusive)
-- Each APP appears in exactly ONE room in the final output — no exceptions
-
-**APP Endo Weekly Limit:**
-- Max once per week per APP (Main Endo and OTM Endo both count)
-- Flag if assigning a 2nd endo this week
+**OTM Endo / OTM OR:**
+- Max 3 rooms per MD — no flag needed at 3. Flag only at 4.
 
 ---
 
-## SELF-CHECK BEFORE OUTPUT
+## SELF-CHECK — VERIFY BEFORE OUTPUTTING
 
-Verify every item. Fix any failure before outputting.
+Go through this checklist and fix any failure before producing output.
 
+CAMPUS CHECKS:
+- [ ] Every McNair-campus MD is assigned ONLY to McNair OR, OTM OR, OTM Endo, or Jamail OR
+- [ ] No McNair-campus MD appears in Main OR, Main Endo, IR, NIR, CT, or MRI
+- [ ] Every MAIN CAMPUS APP is assigned only to Main OR, Main Endo, or radiology
+- [ ] Every McNAIR CAMPUS APP is assigned only to McNair OR, OTM OR, OTM Endo, or Jamail OR
+
+DEDUPLICATION CHECK (most important):
+- [ ] Write out every APP name in the final assignment list
+- [ ] Confirm every name appears exactly once
+- [ ] If any name appears twice: remove the duplicate, replace with an unassigned APP from the correct campus pool, or flag as no APP available
+- [ ] Flag any APP from the staff list who was not assigned anywhere
+
+ROOM CHECKS:
 - [ ] OR 10 has both MD and APP
 - [ ] OR 15 has both MD and APP
-- [ ] No Main OR MD has 4+ rooms
-- [ ] Charge MDs have 2 rooms including their designated OR
+- [ ] No room that starts at 7:30 AM is left without an APP unless the campus APP pool is genuinely exhausted
+- [ ] No MD has a 3rd room unless that room is a verified late-start room (12 PM+)
+- [ ] Charge MD (Deoskar) has OR 12 plus 1 more room
 - [ ] Main Endo MD covers all 3 rooms; 3 unique APPs
-- [ ] Radiology: 1 MD for all rooms; NIR has exactly 1 exclusive APP; IR/CT/MRI share a different APP
-- [ ] Every APP with "-MN" in their shift is assigned ONLY to McNair campus rooms
-- [ ] Every APP without "-MN" in their shift is assigned ONLY to Main campus rooms
-- [ ] EVERY APP name appears exactly once in the entire assignment list — scan all assignments and confirm no duplicates
-- [ ] No McNair-campus MD (any shift containing McNair, MNC, Out-MNC, McNair Call, Late MD-MNC) is assigned to Main OR, Main Endo, or radiology
-- [ ] OR 23 and OR 24 (late-start rooms) are assigned as 3rd rooms to MDs with 2 early rooms — not as standalone assignments
-- [ ] 1st Out-MNC and 2nd Out-MNC were flexed off before Patino or Kim
-- [ ] Patino is assigned somewhere on McNair campus
-- [ ] Kim is assigned somewhere on McNair campus
-- [ ] No MD exceeds 4 rooms on OTM/McNair campus
-- [ ] Lauren Ganderson is only at Jamail OR
-- [ ] No APP is receiving their 2nd+ endo assignment this week without a flag
+- [ ] NIR has exactly 1 APP covering all NIR rooms (same APP for NIR 1 and NIR 2)
+- [ ] IR has a different APP from NIR
+- [ ] Lauren Ganderson is only at Jamail OR; Karina Kima and Carla Rose assigned to Jamail first
+- [ ] Flexed-off MDs are flagged by name and shift
+- [ ] Any unassigned APPs are flagged by name
 
-All checks passed? Output the final JSON array now. No preamble, no explanation — start immediately with [
+All checks passed? Output the JSON array now.
 
 ---
 
 ## OUTPUT FORMAT
 
-Return a JSON array where each element is:
+Return a JSON array. Each element:
 {
   "room": "Main OR 10",
   "md": { "name": "...", "credential": "MD", "agency": "..." },
   "app": { "name": "...", "credential": "CRNA", "agency": "..." },
-  "notes": "optional flag"
+  "notes": "flag text or empty string"
 }
 
+If a room has no APP, set app to null and put the reason in notes.
+Include a final summary element for flags:
+{ "room": "FLAGS", "md": null, "app": null, "notes": "Jonas Hafkin (1st Out-MNC) flexed off. Chris Seibert (2nd Out-MNC) flexed off. 3 APPs unassigned: [names]." }`;
+}
 CRITICAL: Output ONLY the JSON array. Start with [ and end with ]. Nothing else.`;
 }
 
