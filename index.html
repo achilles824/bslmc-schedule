@@ -2802,23 +2802,17 @@ async function aiAssign() {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-      body: JSON.stringify({model:"claude-sonnet-4-20250514", max_tokens:4096, messages:[{role:"user",content:prompt}]})
+      body: JSON.stringify({model:"claude-sonnet-4-20250514", max_tokens:4096, system:"You are an anesthesiology scheduling assistant. You MUST output ONLY a raw JSON array. No prose, no markdown, no explanation, no pre-work narrative. Your entire response must start with [ and end with ]. Do your reasoning silently and output only the final JSON array.", messages:[{role:"user",content:prompt},{role:"assistant",content:"["}]})
     });
     const res = await r.json();
     if (!res.content || !res.content[0] || !res.content[0].text) throw new Error("No response from Claude: " + JSON.stringify(res));
-    const txt = res.content
+    const txt = "[" + res.content
   .filter(item => item.type === "text")
   .map(item => item.text)
   .join("");
-let jsonStr = txt.trim()
-  .replace(/^```json\s*/i, "")
-  .replace(/^```\s*/i, "")
-  .replace(/\s*```$/i, "")
-  .trim();
-const arrayStart = jsonStr.indexOf("[");
-const arrayEnd = jsonStr.lastIndexOf("]");
-if (arrayStart === -1 || arrayEnd === -1) throw new Error("No JSON array found in Claude response. Response started with: " + txt.substring(0, 200));
-jsonStr = jsonStr.substring(arrayStart, arrayEnd + 1);
+const arrayEnd = txt.lastIndexOf("]");
+if (arrayEnd === -1) throw new Error("Incomplete JSON from Claude. Response started with: " + txt.substring(0, 200));
+const jsonStr = txt.substring(0, arrayEnd + 1);
 _aiAssignPlan = JSON.parse(jsonStr);
     showAiAssignPreview(_aiAssignPlan);
   } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
