@@ -2894,6 +2894,8 @@ ${JSON.stringify(rules, null, 2)}
 
 7. Flex-off is determined by shift designation (1st Out-MNC, 2nd Out-MNC, 3rd Out-MNC), not the identity of the MD. Never flex off based on who someone is; only based on their out-order.
 
+8. The Main Endo MD covers ONLY Main Endo 1-3. Never any OR, never radiology, never anything else. Main Endo = exactly 3 rooms, full stop.
+
 ---
 
 ## TERMINOLOGY
@@ -2921,13 +2923,15 @@ Ganderson is a special McNair-anchored case: she always goes to Jamail only.
 
 Count rooms needing MD coverage:
 - M = Main OR rooms (always include OR 10, OR 15 even if empty)
+- M_LATE = subset of M with caseTime ≥ 12:00 (late-start rooms — absorbable as 3rd rooms)
 - K = McNair OR rooms with cases
 - O = OTM OR rooms with cases
 - E = OTM Endo rooms with cases
 - J = Jamail OR rooms with cases (Ganderson handles all)
 
 Compute MD demand:
-- MAIN DEMAND = ceil(M / 2) + 1 (Main Endo MD) + 1 (radiology MD)
+- MAIN DEMAND = ceil((M − M_LATE) / 2) + 1 (Main Endo MD) + 1 (radiology MD)
+  → Late-start rooms are absorbable as 3rd rooms by existing 2-room Main MDs, so they do NOT add MD headcount to MAIN DEMAND.
 - McNAIR CAMPUS DEMAND = ceil((K + O + E) / 3) + 1 (Ganderson for Jamail)
 
 Count MD supply:
@@ -2946,22 +2950,22 @@ If TOTAL SUPPLY < TOTAL DEMAND, the day is short-staffed (flag it).
 ## WORKED EXAMPLE (for reference, not for today)
 
 Suppose on a day:
-- M = 15, K = 3, O = 7, E = 7, J = 3
+- M = 15 (including 2 late-start rooms, so M_LATE = 2), K = 3, O = 7, E = 7, J = 3
 - A = 3 Main-anchored (e.g. Deoskar OR-12, Saye OR-10, Omojola OR-8)
 - N = 6 McNair-anchored (1st Out-MNC, 2nd Out-MNC, 3rd Out-MNC, Late MD-MNC, McNair Call, Ganderson)
 - F = 10 flexible
 
-MAIN DEMAND = ceil(15/2) + 1 + 1 = 8 + 2 = 10
+MAIN DEMAND = ceil((15−2)/2) + 1 + 1 = 7 + 2 = 9
 McNAIR CAMPUS DEMAND = ceil((3+7+7)/3) + 1 = 6 + 1 = 7
-TOTAL DEMAND = 17
+TOTAL DEMAND = 16
 TOTAL SUPPLY = 3 + 6 + 10 = 19
-SURPLUS = 2
+SURPLUS = 3
 
 Allocation (Step 3 below):
-- Main gets 3 anchored + 7 flexibles = 10 ✓
-- McNair gets 6 anchored + 1 flexible (to reach 7) = 7 ✓
-- 2 flexibles remain — send to McNair campus and flex off 2 McNair-anchored in out-order
-- Final: Main = 10 MDs, McNair = 6 - 2 + 3 = 7 MDs, flex off 1st Out-MNC and 2nd Out-MNC
+- Main gets 3 anchored + 6 flexibles = 9 ✓ (late-start rooms absorb into existing MDs)
+- McNair gets 6 anchored + 1 flexible = 7 ✓
+- 3 flexibles remain — send to McNair campus and flex off 3 McNair-anchored in out-order
+- Final: Main = 9 MDs, McNair = 6 − 3 + 4 = 7 MDs, flex off 1st Out-MNC, 2nd Out-MNC, 3rd Out-MNC
 
 Use this same pattern for today's numbers.
 
@@ -2983,6 +2987,8 @@ F. ANY remaining flexible MDs are SURPLUS. Send them to McNair campus and flex o
    4. Late MD-MNC (do NOT flex; reassign to OTM)
    5. McNair Call (do NOT flex; reassign to OTM)
 
+G. LATE-START ABSORPTION CHECK: Every Main OR room with caseTime ≥ 12:00 is absorbable as a 3rd room by an existing 2-room Main MD. These rooms do NOT require their own MD pairing. During Step 4 room assignment, late-start rooms are distributed as 3rd rooms to existing 2-room Main MDs before any new MD pairing is created for them.
+
 After this step, the total MDs at each campus should equal the demand for that campus (plus Ganderson).
 
 VERIFICATION AFTER STEP 3:
@@ -2990,20 +2996,61 @@ VERIFICATION AFTER STEP 3:
 - MDs at McNair campus = McNAIR CAMPUS DEMAND
 - MDs flexed off = SURPLUS (after all Main + McNair demand is filled)
 - Every flexible MD is placed at exactly one campus
-- Main MDs each have 2 rooms, never 1. If any Main MD has only 1 room, you have too many MDs at Main — move one to McNair and flex off one more McNair-anchored.
+- Main MDs each have 2 rooms (plus possible late-start 3rd room). If any Main MD has only 1 room, you have too many MDs at Main — move one to McNair and flex off one more McNair-anchored.
+
+---
+
+## STEP 3.5 — MCNAIR-CAMPUS REDUNDANCY CHECK (MANDATORY BEFORE ROOM ASSIGNMENT)
+
+After provisional MD allocation in Step 3, before assigning specific rooms in Step 4, scan every MD assigned to the McNair campus (OTM OR, OTM Endo, McNair OR — Jamail/Ganderson excluded).
+
+RED FLAG: any MD provisionally holding exactly 1 room while another MD at the same campus has capacity OR while another single-room MD exists at a bridgeable area.
+
+BRIDGING PAIRS (the only valid combinations):
+- OTM OR ↔ OTM Endo
+- OTM OR ↔ McNair OR
+- OTM Endo ↔ McNair OR (permitted but uncommon)
+
+RESOLUTION IN THIS EXACT ORDER:
+
+1. COLLAPSE TWO SINGLES INTO ONE BRIDGE:
+   If MD_X has 1 room at Area_A and MD_Y has 1 room at Area_B, and (Area_A, Area_B) is a valid bridging pair:
+   - One MD takes both rooms (becomes the bridge; total = 2 rooms)
+   - The other MD is surplus → reassign to Main OR to absorb Main demand (including any late-start 3rd-room absorption)
+   - If Main is already at full staffing, the surplus MD flexes off (but only after McNair-anchored MDs have already been flexed in out-order per Step 3)
+
+2. REDISTRIBUTE FROM A CAPPED MD:
+   If a single-room MD cannot bridge (no valid pair partner exists), check if any 3-room MD at the same area can shed 1 room to the single-room MD, bringing them both to 2.
+
+3. REASSIGN SURPLUS:
+   If neither bridging nor redistribution works, the single-room MD is surplus → reassign to Main OR or flex off per Step 3 rules.
+
+THE BRIDGING MD MUST STILL HAVE THE FEWEST TOTAL ROOMS. A 1+1=2 bridging MD beats a 2+1=3 bridging MD. Only use 2+1 if no 1+1 option exists.
+
+ONE BRIDGE PER PAIR MAXIMUM:
+- At most 1 MD bridges OTM OR ↔ OTM Endo
+- At most 1 MD bridges OTM OR ↔ McNair OR
+- At most 1 MD bridges OTM Endo ↔ McNair OR
+- Never have 2 MDs simultaneously bridging the same pair
+
+VERIFICATION BEFORE PROCEEDING TO STEP 4:
+- [ ] No single-room MD exists at McNair campus unless no bridge partner exists AND redistribution is impossible
+- [ ] If two single-room MDs exist at a bridgeable pair, they have been collapsed
+- [ ] Every bridge is a 1+1=2 pairing unless no such pairing is possible
+- [ ] No more than one bridging MD per valid pair
 
 ---
 
 ## STEP 4 — ASSIGN ROOMS TO MDs
 
-Using the MD allocation from Step 3:
+Using the MD allocation from Step 3 and the redundancy check from Step 3.5:
 
 Main OR:
 - Main-anchored MDs: designated OR + 1 other Main OR = exactly 2 rooms
 - Main flexible MDs: 2 rooms each
-- Main Endo: 1 flexible MD covers all 3 rooms
-- Radiology: 1 flexible MD covers IR, NIR, CT, MRI, RM-IR General, RM-IR MRI (all of them, do not flag)
-- Late-start rooms (caseTime ≥ 12:00): may be a 3rd room for a MD who already has 2 earlier rooms — not required, but allowed
+- Main Endo: 1 flexible MD covers all 3 Main Endo rooms AND NOTHING ELSE. The Main Endo MD does NOT cover any OR room, any radiology room, or any other area. Main Endo = 3 rooms, full stop.
+- Radiology: 1 flexible MD covers IR, NIR, CT, MRI, RM-IR General, RM-IR MRI (all of them, do not flag). This MD does not cover Main Endo or any OR room.
+- Late-start rooms (caseTime ≥ 12:00): these are preferentially assigned as a 3RD ROOM to an existing 2-room Main MD. Before creating a new MD pairing for a late-start room, check whether any Main MD already has 2 earlier-start rooms — if yes, they absorb the late-start room as their 3rd (at cap, flagged). Only if no such MD exists do you assign a late-start room as someone's primary pairing.
 
 McNair OR:
 - 1 MD covers all 1-3 McNair OR rooms. Never 1 MD per room.
@@ -3045,11 +3092,16 @@ ASSIGNMENT ORDER:
 2. Main Endo APPs (each room a different APP — 3 unique APPs):
    - Prefer locum APPs over Baylor
    - HARD CONSTRAINT: once-per-week endo rule. Check weeklyEndoTracking in rules. If a locum APP has already done endo this week, choose a different one. Once-per-week trumps locum preference.
-3. Radiology APPs:
-   - Staff only radiology rooms where anes type is "General" (exception: NIR-1 always)
-   - NIR rooms SHARE one APP (same APP name across NIR 1, NIR 2, etc.)
-   - IR, CT, MRI, RM-IR General each get separate APPs
-   - Maximum 3 APPs across all radiology combined
+3. Radiology APPs (strict allocation order):
+   a. NIR always gets 1 APP. All NIR rooms (NIR 1, NIR 2, etc.) SHARE this single APP.
+   b. IR + CT + MRI + RM-IR General + RM-IR MRI DEFAULT to 1 shared APP across all of them combined.
+   c. TOTAL RADIOLOGY APPs DEFAULT = 2 (one NIR, one IR/CT/MRI shared).
+   d. SPLIT UPGRADE — only applies if BOTH conditions are met:
+      - Case times at IR, CT, MRI, RM-IR overlap in a way that makes sharing infeasible, AND
+      - Excess APPs are available AFTER every case-bearing room elsewhere has an APP
+   e. If the split conditions are not met, keep the shared arrangement even with overlap. Do not pull an APP from another room to split radiology.
+   f. Maximum radiology APPs = 2 on a short-staffed day, up to 4 only when excess APP supply exists.
+   g. Staff only radiology rooms where anes type is "General" (exception: NIR always, even non-General).
 4. McNair OR, OTM OR, OTM Endo rooms
 5. Main OR rooms
 6. Late-start Main OR rooms last — prefer D12 / D12(M) APPs for these
@@ -3058,21 +3110,12 @@ D5 APPs (7a-12p):
 - Default: leave unassigned (float)
 - Alternative: assign to a McNair-campus room whose case finishes by 12:00
 
-D12 / D12(M) APPs (12-hour shifts, 7a-7p):
-- Fine to assign to 7:30 AM rooms — they arrive at 7:00 like everyone else
-- REQUIRED: if a Main OR room is a late-start room (caseTime ≥ 12:00), its APP MUST be a D12 / D12(M) shift APP if one is available in the unassigned pool at the time of that assignment
-- Late-start rooms: check caseTime on every Main OR room. A caseTime of 12:00 or later = late-start room.
-- When assigning APPs to late-start rooms, do NOT assign a D8 APP (ends 3pm) or D10 APP (ends 5pm) if a D12 / D12(M) APP is still unassigned
-- Rationale: D8 APPs end before a 1pm case with 4+ hour length finishes. D10 APPs may not cover a 1pm case through completion. D12 / D12(M) APPs stay until 7pm.
-
-LATE-START D12 MATCHING CHECK (perform before finalizing APP assignments):
-1. List all Main OR rooms with caseTime ≥ 12:00.
-2. List all unassigned D12 / D12(M) APPs.
-3. For each late-start room, verify its assigned APP has a D12 or D12(M) shift.
-4. If a late-start room has a non-D12 APP assigned AND a D12 APP is unassigned, swap them — assign the D12 to the late room, reassign the displaced APP to the room you swapped from.
+D12 APPs:
+- Fine to assign to 7:30 AM rooms — they start at 7:00 like everyone else
+- Rule: if a late-start room exists, prefer assigning a D12 APP to it (but still assign D12 APPs to 7:30 rooms if needed)
 
 DEDUPLICATION:
-- Each APP appears in exactly ONE room (NIR rooms sharing one APP is the sole exception)
+- Each APP appears in exactly ONE room (NIR rooms sharing one APP is the sole exception; IR/CT/MRI sharing one APP is the second exception when not split)
 - Scan all assignments for duplicates before output
 
 APP AVAILABILITY > FLAG CONVENIENCE:
@@ -3087,48 +3130,23 @@ Rooms in roomsNeeding with no cases today, that are NOT mandatory-staff (OR 10, 
 
 ---
 
-## STEP 7 — FLAGS (CLOSED WHITELIST)
+## STEP 7 — FLAGS (MINIMAL)
 
-Flags are combined into ONE single "notes" string on the FLAGS element. Do NOT emit per-room flags. Do NOT narrate expected behaviors.
+Include in FLAGS only:
+- Flex-off by shift designation: "1st Out-MNC flexed off — out-order, surplus allocation"
+- Unassigned APPs: list names
+- Empty unstaffed rooms: list them
+- Genuine exceptions: MD at 3 rooms in Main OR, repeat-endo APP violations, short-staffed day, block-case handled without OTM bridge when one was available
 
-ONLY these flag types are permitted. If a condition does not match one of these exact templates, do NOT emit it.
-
-1. FLEX-OFF (one entry per flexed-off MD):
-   Template: "{Nth} Out-MNC flexed off ({Name})."
-   Example: "1st Out-MNC flexed off (Jonas Hafkin). 2nd Out-MNC flexed off (Chris Seibert)."
-
-2. UNASSIGNED APPS (one combined entry):
-   Template: "Unassigned APPs: {comma-separated names}."
-   Only include APPs who were in the staff list but not assigned to any room.
-
-3. EMPTY ROOMS NOT STAFFED (one combined entry, only if applicable):
-   Template: "No cases, not staffed: {comma-separated rooms}."
-   Only include rooms that appeared in roomsNeeding but had no cases and are NOT mandatory-staff rooms.
-
-4. APP POOL EXHAUSTED (one combined entry, only when truly exhausted):
-   Template: "No APP available: {comma-separated rooms}."
-   Do NOT emit this if any unassigned APP remains in the staff list.
-
-5. EXCEPTIONS TO STANDARD RULES (one entry each, only when a rule was bent or violated due to unavoidable constraints):
-   - "Main OR 3-room MD: {Name} at {N} rooms — {reason}." (only when a Main MD has 3 rooms, never for 1-2)
-   - "Repeat endo: {APP Name} already did endo on {day} this week."
-   - "McNair block case: {room} covered without OTM bridge — no block-capable OTM MD available."
-   - "Short-staffed day: {campus} demand {X}, supply {Y}."
-
-DO NOT emit flags for any of these (all are expected behaviors):
-- Main-anchored MD on their designated OR or paired room
-- "Always staffed" rooms (OR 10, OR 15, NIR-1)
-- Main Endo one-MD-covers-three pattern
-- Radiology one-MD-covers-all pattern
-- Jamail coverage by Ganderson
-- McNair OR consolidation
-- Cross-location bridging (by design)
-- 3-room MDs at OTM or McNair (at cap, not an exception)
-- Shared NIR APP
-- Late-start rooms assigned to D12 APPs
-- Any per-room informational narration
-
-If there are no exceptions to report at all, the FLAGS entry notes string can be empty or just contain the flex-off + unassigned APPs lines.
+Do NOT include:
+- "Designated MD" informational lines
+- "Always staffed room" for OR 10/15/NIR-1 (expected)
+- "Main Endo coverage" / "Radiology coverage" / "Jamail coverage" / "McNair consolidation" (expected)
+- Shared NIR APP (expected)
+- Shared IR/CT/MRI APP (expected)
+- 3-room MDs at OTM/McNair (at cap, expected)
+- Late-start D12 APP coverage (expected)
+- Late-start room absorbed as 3rd room by existing Main MD (expected)
 
 ---
 
@@ -3140,13 +3158,15 @@ ABSOLUTE RULES:
 - [ ] No MD has 4 or more rooms (anywhere)
 - [ ] OR 10 and OR 15 have MD and APP
 - [ ] NIR-1 has MD and APP
+- [ ] Main Endo MD covers ONLY Main Endo 1-3 — not any OR, not radiology
 
 BUDGET / ALLOCATION:
-- [ ] MAIN DEMAND and McNAIR CAMPUS DEMAND computed
+- [ ] MAIN DEMAND and McNAIR CAMPUS DEMAND computed (with M_LATE subtracted from Main)
 - [ ] Main has exactly MAIN DEMAND MDs (no 1-room Main flexibles)
 - [ ] McNair campus has exactly McNAIR CAMPUS DEMAND MDs
 - [ ] Flex-off count equals the SURPLUS computed in Step 3
 - [ ] Flex-off is in strict out-order (1st → 2nd → 3rd)
+- [ ] Late-start rooms absorbed as 3rd rooms by existing 2-room Main MDs where possible
 
 CAMPUS SEPARATION:
 - [ ] No Main-anchored MD appears at McNair
@@ -3155,23 +3175,24 @@ CAMPUS SEPARATION:
 - [ ] Main-only APPs are only at Main; McNair-only APPs are only at McNair
 
 CROSS-LOCATION:
-- [ ] Only 1 MD bridges OTM OR and OTM Endo
-- [ ] Bridging MD has the fewest total rooms (≤ any non-bridging OTM MD)
+- [ ] Only 1 MD bridges OTM OR ↔ OTM Endo (if any)
+- [ ] Only 1 MD bridges OTM OR ↔ McNair OR (if any)
+- [ ] Only 1 MD bridges OTM Endo ↔ McNair OR (if any)
+- [ ] Every bridging MD has the fewest total rooms (prefer 1+1=2)
+- [ ] No single-room MD exists at any McNair-campus area unless bridging and redistribution are both impossible
 - [ ] No Main MD covers 1 room alone while other Main rooms still need MDs
 
 APPs:
 - [ ] Jamail APPs come from Jamail pool (Carla Rose if working, then Kima)
 - [ ] Main Endo APPs: 3 unique, prefer locums, no repeat-endo this week
-- [ ] Radiology: NIR shares one APP, total radiology APPs ≤ 3, only General rooms staffed (NIR-1 always)
-- [ ] No APP appears in 2 rooms (NIR is sole exception)
+- [ ] Radiology: NIR shares one APP; IR/CT/MRI share one APP by default; total ≤ 2 unless split conditions met (overlap AND excess APPs)
+- [ ] No APP appears in 2 rooms (shared NIR and shared IR/CT/MRI are the sole exceptions)
 - [ ] No case-bearing room is missing an APP while unassigned APPs remain
-- [ ] Every late-start Main OR room (caseTime ≥ 12:00) has a D12 or D12(M) APP if one was available
 
 FLAG DISCIPLINE:
-- [ ] Only flag types from the Step 7 closed whitelist appear in FLAGS notes
-- [ ] No per-room flag entries — all flags consolidated into the single FLAGS element notes string
-- [ ] No flags narrate expected behaviors (designated MDs, always-staffed rooms, Main Endo coverage, radiology coverage, Jamail coverage, McNair consolidation, bridging, shared NIR APP, 3-room OTM/McNair MDs, late-start D12 coverage)
-- [ ] Flex-off identified by shift designation with person name in parens
+- [ ] No flags narrate expected behaviors
+- [ ] Flex-off identified by shift designation, not person
+- [ ] Exactly ONE FLAGS row at the end of the array (or zero if nothing to flag)
 
 All checks passed? Output the JSON array.
 
@@ -3188,13 +3209,21 @@ Each assignment:
 }
 
 If no APP (pool exhausted): "app": null with note explaining.
-Final FLAGS element:
+
+Final FLAGS element — emit EXACTLY ONE FLAGS row as the final array element. Do not emit a duplicate empty FLAGS row. If there are no flags to report, omit the FLAGS row entirely.
+
 {
   "room": "FLAGS",
   "md": null,
   "app": null,
   "notes": "1st Out-MNC flexed off. 2nd Out-MNC flexed off. Unassigned APPs: [names]. No cases, not staffed: [rooms]."
-}`;
+}
+
+Output rules for FLAGS:
+- ONE FLAGS row maximum per output
+- FLAGS row appears at the very end of the array, after all room assignments
+- If notes would be empty, do not emit the FLAGS row at all
+- Never emit a FLAGS row in the middle of the array or as a header`;
 }
 function showAiAssignPreview(plan) {
   const modal = document.getElementById("aiAssignModal");
