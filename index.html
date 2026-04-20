@@ -2774,63 +2774,51 @@ async function aiAssign() {
   const date = document.getElementById("adminDatePicker") && document.getElementById("adminDatePicker").value;
   if (!date) { alert("Please select a date first."); return; }
   btn.disabled = true; btn.textContent = "Thinking...";
-
   try {
-    const dbRef = firebase.database().ref();
-    const [apiKey, rules, staff, curSnap] = await Promise.all([
-      dbRef.child("config/anthropicKey").once("value"),
-      dbRef.child("config/assignmentRules").once("value"),
-      getORStaffForDay(date),
-      dbRef.child(`assignments/${date}`).once("value")
+    const [keyResp, rulesResp, assignResp] = await Promise.all([
+      fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/config/anthropicKey.json"),
+      fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/config/assignmentRules.json"),
+      fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + ".json")
     ]);
-    const cur = (curSnap.val() || {});
+    const apiKey = (await keyResp.json() || "").trim();
+    const rules = await rulesResp.json();
+    const staff = window.getORStaffForDay(date);
+    const cur = (await assignResp.json()) || {};
+    if (!apiKey || typeof apiKey !== "string") { alert("API key not found in Firebase at /config/anthropicKey"); return; }
+    if (!rules || !rules.version) { alert("Assignment rules not found in Firebase at /config/assignmentRules"); return; }
     const closed = cur.__closed || {};
     const needs = {};
     for (const [k,v] of Object.entries(cur)) {
       if (k === "__closed" || closed[k] || !v || typeof v !== "object") continue;
       if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
     }
-    if (!Object.keys(needs).length) { alert("All rooms already assigned!"); btn.disabled = false; btn.textContent = "AI Assign"; return; }
-
-    const prompt = buildAiAssignPrompt(date, staff, cur, needs, rules.val());
-
+    if (!Object.keys(needs).length) { alert("All active rooms already have both MD and APP assigned!"); return; }
+    const ss = staff.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n");
+    const prompt = buildAiAssignPrompt(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2), rules);
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey.val(),
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
+      headers: {"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
         system: "You are an anesthesiology scheduling assistant. You MUST output ONLY a raw JSON array. No prose, no markdown, no explanation, no pre-work narrative. Your entire response must start with [ and end with ]. Do your reasoning silently and output only the final JSON array.",
         messages: [
-          { role: "user", content: prompt },
-          { role: "assistant", content: "[" }
+          {role: "user", content: prompt},
+          {role: "assistant", content: "["}
         ]
       })
     });
-
     const res = await r.json();
     if (!res.content || !res.content[0]) throw new Error("No response from Claude: " + JSON.stringify(res));
-
-    // Reconstruct full array: prepend the "[" we seeded, then append model's continuation
     const continuation = res.content
       .filter(item => item.type === "text")
       .map(item => item.text)
       .join("");
     const fullJson = "[" + continuation;
-
-    // Find the last ] to close the array cleanly
     const arrayEnd = fullJson.lastIndexOf("]");
-    if (arrayEnd === -1) throw new Error("Incomplete JSON from Claude. Response started with: " + fullJson.substring(0, 200));
+    if (arrayEnd === -1) throw new Error("Incomplete JSON from Claude. Started with: " + fullJson.substring(0, 200));
     const jsonStr = fullJson.substring(0, arrayEnd + 1);
-
     const parsed = JSON.parse(jsonStr);
-
-    // Convert array to {assignments:{}} shape expected by showAiAssignPreview
     if (Array.isArray(parsed)) {
       const assignmentsObj = {};
       parsed.forEach(item => {
@@ -2840,7 +2828,6 @@ async function aiAssign() {
     } else {
       _aiAssignPlan = parsed;
     }
-
     showAiAssignPreview(_aiAssignPlan);
   } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
   finally { btn.disabled = false; btn.textContent = "AI Assign"; }
