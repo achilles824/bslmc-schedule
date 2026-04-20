@@ -2816,126 +2816,197 @@ async function aiAssign() {
 }
 
 function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
-  const r = rules;
-  const blockMDs = r.nerveBlocks.blockCapableMDs.join(", ");
-  const blockSurgeons = r.nerveBlocks.blockSurgeons.join(", ");
-  const jailMailPool = r.locationRules.jailMailAPPPool.join(", ");
 
-  // Parse staff to identify McNair-campus Baylor MDs and their out-order
-  const staffLines = staffSummary.split("\n");
-  const mcnairOutOrder = staffLines.filter(s => s.includes("Out-MNC")).sort();
-  const mcnairCall = staffLines.filter(s => s.includes("McNair Call"));
-  const mcnairLate = staffLines.filter(s => s.includes("Late MD-MNC"));
+  const staffJson = JSON.stringify(staffSummary, null, 2);
+  const assignJson = JSON.stringify(currentAssignments, null, 2);
+  const roomsJson = JSON.stringify(roomsNeeding, null, 2);
+  const rulesJson = JSON.stringify(rules, null, 2);
 
-  return `You are an anesthesia scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System.
+  return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System (BSLMC). You must assign MDs and APPs to OR rooms for ${date}.
 
-DATE: ${date}
+You will complete THREE mandatory pre-work steps before making any assignments. Do not skip any step.
 
-STAFF ROSTER (credential | name | agency | shift):
-${staffSummary}
+---
 
-CURRENT ASSIGNMENTS (DO NOT change these):
-${currentAssignments}
+## DATA
 
-ROOMS NEEDING ASSIGNMENT:
-${roomsNeeding}
+### Staff Working Today
+\`\`\`json
+${staffJson}
+\`\`\`
 
-════════════════════════════════════════════
-MANDATORY PRE-WORK — DO THIS BEFORE ANY ASSIGNMENTS
-You must complete all 3 steps below and state your conclusions explicitly before producing any output.
-════════════════════════════════════════════
+### Current Assignments
+\`\`\`json
+${assignJson}
+\`\`\`
 
-PRE-WORK STEP A — McNair OR Analysis:
-1. Count how many McNair OR rooms are in the needs list.
-2. Look at the staff roster for MDs with these shift types (in flex-off priority order):
-   - "1st Out-MNC" → FLEX OFF FIRST (send home, do not assign anywhere)
-   - "2nd Out-MNC" → FLEX OFF SECOND (send home, do not assign anywhere)
-   - "3rd Out-MNC" → FLEX OFF THIRD if rooms allow fewer MDs
-   - "Late MD-MNC" → DO NOT flex off. Route to OTM campus (OTM OR or OTM Endo).
-   - "McNair Call" → NEVER flex off. Route to OTM campus. Always working.
-3. Assign ALL active McNair OR rooms to the single lowest-priority MD who was NOT flexed off.
-   That one MD covers ALL McNair OR rooms. If a block surgeon is in McNair OR, that MD must be block-capable.
-   Block-capable MDs include: ${blockMDs}
-4. State: which MDs are flexed off, which MD covers McNair OR, and which go to OTM.
+### Rooms Needing Assignment
+\`\`\`json
+${roomsJson}
+\`\`\`
 
-PRE-WORK STEP B — OTM Displacement Analysis:
-1. McNair-campus MDs (Late MD-MNC and McNair Call) who are NOT flexed off go to OTM campus.
-   They MUST stay on McNair campus (OTM OR, OTM Endo, Jamail OR, McNair OR). NEVER send them to Main OR.
-2. Each McNair-campus MD placed at OTM displaces one flexible locum MD from OTM.
-3. Those displaced locum MDs go to Main OR.
-4. State: which McNair-campus MDs go to OTM, which locums are displaced, and which displaced locums go to Main OR.
+### Assignment Rules
+\`\`\`json
+${rulesJson}
+\`\`\`
 
-PRE-WORK STEP C — Main OR Staffing Plan:
-1. List the displaced locum MDs who will cover Main OR.
-2. List the Baylor Main OR MDs (shifts containing OR-[number] e.g. OR 10-MD, OR 12-MD).
-3. The MD with OR-10-MD shift covers OR 10 as their primary room plus 1 additional room.
-4. The MD with OR-12-MD shift (Charge) covers OR 12 plus 1 additional room.
-5. OR 10 and OR 15 MUST be in your final output — if no case is listed, staff them anyway. This is mandatory.
-6. Target 2 rooms per MD. Flag anyone at 3. Never assign 4+ Main OR rooms to one MD.
-7. State: which MD covers which Main OR rooms, confirming OR 10 and OR 15 are covered.
+---
 
-════════════════════════════════════════════
-FIXED ASSIGNMENT RULES (apply after pre-work)
-════════════════════════════════════════════
+## PRE-WORK STEP 1 — CAMPUS ROUTING (Complete this before any assignments)
 
-MANDATORY SINGLE-MD GROUPS (same MD in every room of the group):
-- Main Endo 1, 2, 3: always one MD, always 3 different APPs. Use any available flexible MD — rotate, do not reuse same MD weekly.
-- Radiology (IR, NIR, CT, MRI): one MD covers ALL active radiology rooms. NIR always covered even with no cases. Do NOT assign the radiology MD to Main Endo — these are separate assignments.
-- Jamail OR: Lauren Ganderson covers ALL open Jamail rooms. Jamail APP pool ONLY in Jamail: ${jailMailPool}
-- McNair OR: one MD covers all active rooms (from Pre-Work Step A).
+List every staff member working today. For each person state:
+- Name
+- Credential (MD or APP)
+- Shift/role
+- Required campus based on the following HARD rules:
 
-CAMPUS ROUTING (HARD RULES):
-- Baylor MD with OR-MN or OR-McNair shift → McNair campus ONLY (OTM OR, OTM Endo, Jamail, McNair OR). Never Main OR.
-- Baylor MD with OR-[number] shift → Main campus ONLY. Never OTM or McNair.
-- Late MD-MNC and McNair Call MDs → McNair campus ONLY. Route to OTM if McNair OR is light.
-- Baylor APP with APP-MN in ordinal → McNair campus ONLY that day.
-- Baylor APP with APP (no MN) in ordinal → Main campus ONLY that day.
-- Cross Country and Caliber MDs → flexible, assign where needed.
-- An APP's campus is determined by their shift that day — not a permanent rule.
-- NEVER assign an APP to rooms on two different campuses simultaneously.
+**MD Campus Rules:**
+- Shift contains "OR-[number]" (e.g. OR-12, OR-10, OR-8) → MAIN campus only
+- Shift contains "OR-MN" or "OR-McNair" or "McNair" → McNAIR campus only (OTM OR, OTM Endo, McNair OR, or Jamail OR). NEVER send to Main OR.
+- Shift is "McNair Call" → McNAIR campus only
+- Shift is "Late MD-MNC" → McNAIR campus only (OTM OR or OTM Endo preferred)
+- Cross Country or Caliber MDs → flexible, assign where most needed
+- Aggarwal and Ching → flexible, assign where most needed
 
-ROOM COUNT LIMITS:
-- Main OR: target 2 rooms per MD. 3 is acceptable — flag it. NEVER 4+. This is a hard violation.
-- OTM OR + OTM Endo + McNair OR combined: max 3 rooms per MD, hard limit 4.
-- Radiology MD: multi-room is normal — do not flag.
-- Count rooms ACROSS ALL LOCATIONS. Total across every location cannot exceed 4 per MD.
+**APP Campus Rules (HARD — violations are not allowed):**
+- APP shift/role ends in "-MN" (e.g. "2-MN", "4-MN", "3-MN") → MUST be assigned to McNair campus (McNair OR, OTM OR, OTM Endo, or Jamail OR). NEVER assign to Main OR, Main Endo, or radiology.
+- APP shift/role is a plain number (e.g. "2", "4", "3") → MUST be assigned to Main campus (Main OR, Main Endo, IR, NIR, CT, MRI). NEVER assign to McNair campus.
 
-NERVE BLOCKS:
-Block surgeons (${blockSurgeons}): assign a block-capable MD to that room group.
-Block-capable MDs: ${blockMDs}
-Multiple simultaneous 0730 block cases = split across DIFFERENT block-capable MDs.
+After listing each person, write: "Campus routing complete."
 
-APP CONFLICTS:
-Avoid same APP in two concurrent rooms. Flag it — soft rule, not a hard block.
-Radiology APPs can be shared if times are staggered. NIR rooms may be staggered — flag but allow.
-If a room has a second case later with no APP available, leave APP empty.
+---
 
-ENDO WEEKLY TRACKING:
-Prefer APPs who have NOT done endo this week. Flag any APP doing endo a second time this week.
+## PRE-WORK STEP 2 — McNAIR OR CONSOLIDATION ANALYSIS
 
-EXTRA STAFF:
-It is normal and expected to have unassigned staff after rooms are filled. Do not overload MDs to use up staff.
-Extra MDs: flag 1st/2nd Out-MNC as flexed off. All others simply unassigned.
-Extra APPs: float — no action unless 5+ Baylor APPs unassigned.
+Count the number of McNair OR rooms with cases today: ___
 
-CV ANESTHESIA: Skip any room where MD = CV Anesthesia. Specialized team.
+Apply the consolidation rule:
+- 1–3 McNair OR rooms → 1 MD covers all of them. Do NOT assign 1 MD per room.
+- If rooms ≤ available McNair-campus MDs, flex off in this strict order:
+  1. 1st Out-MNC (e.g. Jonas Hafkin)
+  2. 2nd Out-MNC (e.g. Chris Seibert)
+  3. 3rd Out-MNC (e.g. Kevin Tran)
+  4. Late MD-MNC (e.g. Joshua Patino) — reassign to OTM OR or OTM Endo instead of flexing off
+  5. McNair Call (e.g. Young Suk Kim) — ALMOST NEVER flex off; route to OTM if McNair OR is light
 
-════════════════════════════════════════════
-SELF-CHECK BEFORE OUTPUT
-════════════════════════════════════════════
-Before writing your JSON, verify:
-[ ] OR 10 is in the output with both MD and APP
-[ ] OR 15 is in the output with both MD and APP
-[ ] No MD has 4+ Main OR rooms
-[ ] No MD exceeds 4 total rooms across all locations
-[ ] Radiology MD is NOT also covering Main Endo
-[ ] 1st Out-MNC and 2nd Out-MNC MDs are NOT assigned anywhere (flexed off)
-[ ] No McNair-campus MD (OR-MN, McNair Call, Late MD-MNC) is assigned to Main OR
-[ ] No APP is assigned to rooms on two different campuses simultaneously
-[ ] Suwarna Deoskar (or whoever has OR-12-MD shift) has 2 rooms including OR 12
+State which MDs are flexed off and which are routed to OTM. Write: "McNair consolidation complete."
 
-OUTPUT FORMAT — respond ONLY with valid JSON, no other text:
-{"assignments":{"Room|Num":{"md":{"name":"Full Name","credential":"MD","agency":"Agency"},"app":{"name":"Full Name","credential":"CRNA","agency":"Agency"}}},"flags":["warnings"],"notes":["notes"]}`;
+---
+
+## PRE-WORK STEP 3 — OTM STAFFING PLAN (Complete before assigning OTM rooms)
+
+List all MDs available for OTM campus (McNair-campus MDs routed from Step 2 + flexible MDs assigned here).
+
+For each OTM MD, plan their assignment using this priority:
+- **Preferred:** 1 MD covers 1 OTM OR room + 1 OTM Endo room (most balanced)
+- **Acceptable:** 1 MD covers 2–3 rooms at a single location
+- **When bridging is required** (MD covers both OTM OR and OTM Endo): give that MD the fewest rooms possible without forcing another MD over 3 rooms total
+- OTM campus room limit: max 3 rooms per MD (acceptable, no flag needed). Hard limit: 4 rooms. NEVER exceed 4.
+- Only 1 MD is needed to bridge OTM OR and OTM Endo. A second MD doing the same is redundant — send that MD to Main OR instead.
+
+Write out the planned OTM distribution before making assignments. Write: "OTM staffing plan complete."
+
+---
+
+## MAIN OR LATE-START ROOM ANALYSIS
+
+Before assigning Main OR rooms, identify any rooms with significantly late start times (12:00 PM or later):
+- Late-start rooms should be assigned as a **3rd room** to an MD who already has 2 early rooms (7:30 AM), since that MD will be available by then
+- Do NOT assign a late-start room as a standalone 1-room assignment — it wastes an MD slot
+- If there are no available APPs to staff a late-start room, leave it UNASSIGNED and FLAG it
+- Bundling late-start rooms under existing MDs frees up locum MDs who can be sent to McNair campus
+
+---
+
+## ASSIGNMENT RULES (ENFORCE ALL)
+
+**Main OR:**
+- OR 10 and OR 15 MUST ALWAYS be staffed with both MD and APP, regardless of whether a case time appears in the schedule
+- Charge MDs (e.g. Suwarna Deoskar on OR 12) must still be assigned 2 rooms including their designated OR
+- Target 2 rooms per MD. 3 rooms is acceptable if times are staggered. NEVER 4+ rooms at Main OR
+- Late-start rooms (12 PM+) may be a 3rd room for an MD with 2 early rooms
+
+**Main Endo:**
+- 1 MD covers ALL 3 Main Endo rooms always
+- 1 different APP per room always (even if no cases)
+
+**Radiology (IR, NIR, CT, MRI):**
+- 1 MD covers ALL radiology rooms as a single assignment — do NOT flag this as multi-room
+- NIR MUST have its own dedicated APP — never shared with or staggered across another radiology room
+- IR, CT, and MRI may share a single APP (they typically run staggered) — this is the norm
+- Do NOT assign the NIR APP to any other radiology room
+
+**McNair OR:**
+- 3 rooms = 1 MD covers all 3. Do not assign 1 MD per room.
+- Block-capable MDs preferred when block surgeons are scheduled (Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed)
+- Multiple simultaneous 0730 block cases must be split across DIFFERENT block-capable MDs
+
+**Jamail OR:**
+- Lauren Ganderson ALWAYS goes to Jamail OR when working — never elsewhere
+- 1 MD up to 4 rooms is normal for Jamail — no flag needed
+
+**APP Conflict Rule:**
+- Do NOT assign the same APP to 2 rooms with the same or overlapping case start times
+- Exception: Radiology APPs may be staggered EXCEPT the NIR APP (NIR APP is exclusive)
+- If a room has a 2nd case later with no available APP, acceptable to leave APP empty
+
+**APP Endo Weekly Rule:**
+- Each APP should do endo at most once per week (Main Endo and OTM Endo both count)
+- Flag if an APP is receiving their 2nd or 3rd endo assignment this week
+
+**APP Ordinal/Out-Order:**
+- Ordinal = dismissal priority. 1st Out goes home first.
+- Avoid 1st/2nd Out designation for very long cases
+- "1st Out - APP" → Main campus APP only
+- "1st Out - APP-MN" → McNair campus APP only
+
+---
+
+## NOW MAKE ASSIGNMENTS
+
+Using the pre-work steps above, assign MDs and APPs to all rooms needing assignment.
+
+Format each assignment exactly as:
+\`\`\`json
+{
+  "room": "Main OR 10",
+  "md": { "name": "...", "credential": "MD", "agency": "..." },
+  "app": { "name": "...", "credential": "CRNA or AA", "agency": "..." },
+  "notes": "optional note"
+}
+\`\`\`
+
+Return an array of assignment objects. Include ALL rooms that need assignment.
+
+---
+
+## SELF-CHECK (Complete before finalizing output)
+
+Before returning the final assignment array, verify EVERY item in this checklist. If any item fails, fix it before outputting.
+
+- [ ] OR 10 has both MD and APP assigned
+- [ ] OR 15 has both MD and APP assigned
+- [ ] No Main OR MD has 4+ rooms
+- [ ] All Main OR MDs have 2 rooms (or 3 if a late-start room is included — note it)
+- [ ] Charge MDs (Deoskar etc.) have 2 rooms including their designated OR
+- [ ] Main Endo MD covers all 3 rooms; each room has a different APP
+- [ ] Radiology: 1 MD covers all IR/NIR/CT/MRI rooms
+- [ ] NIR APP is unique — not shared with IR, CT, or MRI
+- [ ] All APP "-MN" shift workers are assigned ONLY to McNair campus rooms
+- [ ] All APP plain-number shift workers are assigned ONLY to Main campus rooms
+- [ ] No McNair-campus MD (OR-MN, McNair Call, Late MD-MNC) is assigned to Main OR
+- [ ] 1st Out-MNC and 2nd Out-MNC were flexed off before Patino or Kim
+- [ ] Patino is assigned somewhere (OTM OR or OTM Endo) — not unassigned
+- [ ] Kim is assigned somewhere — not unassigned unless McNair OR is fully covered
+- [ ] No MD exceeds 4 rooms on McNair/OTM campus
+- [ ] No MD exceeds 3 rooms at Main OR
+- [ ] No APP is double-booked at overlapping case times (except staggered radiology — but NOT NIR)
+- [ ] Lauren Ganderson is only at Jamail OR (if working)
+- [ ] OTM OR + OTM Endo: not more than 1 MD bridging both locations
+- [ ] Late-start rooms (12 PM+) are bundled as a 3rd room under an existing MD, not standalone
+- [ ] No APP is receiving their 2nd+ endo assignment this week without a flag
+
+All checks passed? Output the final assignment array now.`;
 }
 
 function showAiAssignPreview(plan) {
