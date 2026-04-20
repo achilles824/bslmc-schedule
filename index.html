@@ -2818,15 +2818,7 @@ const ss = [
   "=== FLEXIBLE - Locums APPs (Caliber, Cross Country - assign where needed) ===",
   flexibleAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
 ].join("\n");
-const mds = staff.filter(s => s.credential === "MD");
-const ss = [
-  "=== MDs (campus determined by shift) ===",
-  mds.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== MAIN CAMPUS APPs ONLY (no -MN in shift) ===",
-  mainAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== McNAIR CAMPUS APPs ONLY (-MN in shift) ===",
-  mcnairAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
-].join("\n");
+
     const prompt = buildAiAssignPrompt(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2), rules);
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -3027,8 +3019,7 @@ If a room has no APP, set app to null and put the reason in notes.
 Include a final summary element for flags:
 { "room": "FLAGS", "md": null, "app": null, "notes": "Jonas Hafkin (1st Out-MNC) flexed off. Chris Seibert (2nd Out-MNC) flexed off. 3 APPs unassigned: [names]." }`;
 }
-CRITICAL: Output ONLY the JSON array. Start with [ and end with ]. Nothing else.`;
-}
+
 
 function showAiAssignPreview(plan) {
   const modal = document.getElementById("aiAssignModal");
