@@ -2793,8 +2793,31 @@ async function aiAssign() {
       if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
     }
     if (!Object.keys(needs).length) { alert("All active rooms already have both MD and APP assigned!"); return; }
-    const mainAPPs = staff.filter(s => s.credential !== "MD" && !s.shift.includes("-MN"));
-const mcnairAPPs = staff.filter(s => s.credential !== "MD" && s.shift.includes("-MN"));
+    const mcnairAPPs = staff.filter(s => 
+  s.credential !== "MD" && 
+  s.agency === "Baylor" && 
+  (s.shift.includes("-MN") || s.shift.includes("- MN"))
+);
+const mainBaylorAPPs = staff.filter(s => 
+  s.credential !== "MD" && 
+  s.agency === "Baylor" && 
+  !s.shift.includes("-MN") && 
+  !s.shift.includes("- MN")
+);
+const flexibleAPPs = staff.filter(s => 
+  s.credential !== "MD" && 
+  s.agency !== "Baylor"
+);
+const ss = [
+  "=== MDs (campus determined by shift) ===",
+  staff.filter(s => s.credential === "MD").map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+  "=== MAIN CAMPUS ONLY — Baylor APPs without -MN ===",
+  mainBaylorAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+  "=== McNAIR CAMPUS ONLY — Baylor APPs with -MN ===",
+  mcnairAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+  "=== FLEXIBLE — Locums APPs (assign where needed, either campus) ===",
+  flexibleAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
+].join("\n");
 const mds = staff.filter(s => s.credential === "MD");
 const ss = [
   "=== MDs (campus determined by shift) ===",
