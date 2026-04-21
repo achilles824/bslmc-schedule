@@ -2942,18 +2942,34 @@ The FIRST element of your output array MUST be a WORK block in exactly this shap
 The WORK block's notes field must contain ALL of the following fields, in order, separated by " | " (space pipe space):
 
 1. "ROOMS: M=X, M_LATE=X (list rooms), K=X, O=X, E=X, J=X"
+   - M MUST include Main OR 10 and Main OR 15 (they are always counted as Main OR rooms, even if no cases today). If you're computing M and OR 10 or OR 15 are not in roomsNeeding, still count them.
+
 2. "MD_DEMAND: MAIN=X (formula), McNAIR=X (formula), TOTAL=X"
+
 3. "MD_SUPPLY: A=X, N=X, F=X, TOTAL=X, SURPLUS=X"
-4. "JAMAIL: Ganderson working YES/NO. X rooms. Overflow needed YES/NO (if 5+ rooms). Tier 1 APPs working: list."
-5. "FLEX_OFF: shift-designation + MD name for each flexed MD. Example: '1st Out-MNC (Jonas Hafkin), 2nd Out-MNC (Chris Seibert)'. If no one flexed, write 'NONE'."
-6. "BANNED_MDS: exact names of flexed MDs, comma-separated. These names MUST NOT appear in any room assignment below. If this list is non-empty and any of these names appears in a subsequent assignment, the output is invalid."
-7. "ROUTED_TO_OTM: names of Late-MD-MNC and McNair Call MDs who are NOT flexed but routed to OTM campus. These MDs DO appear in OTM assignments."
+
+4. "JAMAIL: Ganderson working YES/NO. X rooms. Overflow needed YES/NO (if 5+ rooms). Tier 1 APPs working: [explicit names or NONE]."
+   - To fill "Tier 1 APPs working": scan staff list for Karina Kima, Carla Rose, Audra Jackson, Evie Schoene. List each one actually found. Do NOT write "none" unless literally none of the 4 are in the staff list today.
+
+5. "FLEX_OFF: shift-designation + MD name for each flexed MD. Only MDs with shift '1st Out-MNC', '2nd Out-MNC', or '3rd Out-MNC' can be flexed. Example: '1st Out-MNC (Jonas Hafkin), 2nd Out-MNC (Chris Seibert)'. If no one flexed, write 'NONE'."
+
+6. "BANNED_MDS: exact names of flexed MDs only. ONLY names from 1st/2nd/3rd Out-MNC shifts. Late-MD-MNC and McNair Call MDs are NEVER in BANNED_MDS regardless of surplus. If you are about to add a Late-MD-MNC or McNair Call name here, STOP."
+
+7. "ROUTED_TO_OTM: names of Late-MD-MNC and McNair Call MDs (they are NOT flexed; they are routed to OTM OR or OTM Endo). These MDs MUST appear in an OTM room assignment below."
+
 8. "APP_DEMAND: ALL_ROOMS=X, LATE_ROOMS=X, EXTRA_RAD=X, BASELINE=X"
+
 9. "APP_SUPPLY: P_MAIN=X, P_MCN=X, P_FLEX=X, TOTAL=X"
+
 10. "APP_VERDICT: SURPLUS | EXACT | DEFICIT. If SURPLUS, late-start Main OR rooms GET APPs from the D12 / D12(M) pool. If EXACT or DEFICIT, late-start rooms are left without APPs and flagged."
+
 11. "ODD_COUNT_MAIN: non-late-start Main OR count = X. If ODD, one Main MD has 1 room. Designated single-room MD: [name, or 'N/A if even']."
-12. "MAIN_ENDO_MD: [name]. Check weeklyEndoTracking — prior endo this week? YES/NO."
-13. "OTM_ENDO_MDS: list names. For each, note prior endo this week YES/NO."
+
+12. "MAIN_ENDO_MD: [exact name of MD who WILL be assigned Main Endo 1-3 in this output]. Check weeklyEndoTracking — prior endo this week? YES/NO."
+    - This is the MD whose name appears in your Main Endo 1-3 assignments below. Not a plan — observation of your actual planned assignment.
+
+13. "OTM_ENDO_MDS: list exact names of MDs who WILL be assigned OTM Endo rooms in this output. For each, note prior endo this week YES/NO."
+    - This is the list of MD names that appear in your OTM Endo assignments below. Not a plan — observation of your actual planned assignment. If you list "Aggarwal" here but Aggarwal is not in any OTM Endo assignment below, this is an error.
 
 CRITICAL CONSISTENCY RULES:
 
@@ -2963,16 +2979,24 @@ B. If APP_VERDICT is SURPLUS, the output cannot include a FLAGS note saying "lat
 
 C. If APP_VERDICT is DEFICIT, the output MUST include the APP DEFICIT flag in FLAGS.
 
-D. FLEX_OFF count must equal MD SUPPLY minus MD DEMAND. If SURPLUS=3, exactly 3 MDs are flexed (by shift designation 1st → 2nd → 3rd Out-MNC in order).
+D. FLEX_OFF count must equal min(SURPLUS, MAX_FLEX_OFF), where MAX_FLEX_OFF is the count of MDs with shift "1st/2nd/3rd Out-MNC" working today. If SURPLUS=4 but only 3 Out-MNC MDs are working, FLEX_OFF = 3 (not 4).
 
-E. Any MD in ROUTED_TO_OTM must appear in an OTM OR or OTM Endo assignment (they are NOT in BANNED_MDS).
+E. Any MD in ROUTED_TO_OTM must appear in an OTM OR or OTM Endo assignment below. They are NOT in BANNED_MDS. If ROUTED_TO_OTM contains "Joshua Patino" but no assignment below has Patino at an OTM room, this is an error — assign him to an OTM room.
+
+F. WORK block lists (MAIN_ENDO_MD, OTM_ENDO_MDS, JAMAIL Tier 1 APPs, ROUTED_TO_OTM) must be OBSERVATION of what you are actually assigning below — not aspirational. If a name appears in WORK but not in actual assignments, or vice versa, the output is invalid.
+
+G. Kima (if working) must be in a Jamail room assignment. If "Karina Kima" appears in staff list AND Jamail has cases, the output must contain "Jamail OR X → APP: Karina Kima" for some X. No exceptions.
 
 SELF-CONSISTENCY CHECK BEFORE OUTPUTTING:
 - Read your WORK block.
 - Scan every subsequent assignment.
 - If any BANNED_MDS name appears → remove that assignment, reassign the room to a non-banned MD.
+- If any ROUTED_TO_OTM name is absent from OTM assignments → assign them to OTM.
+- If any Tier 1 APP (Kima especially) is absent from Jamail while Jamail has cases → fix.
 - If APP_VERDICT says SURPLUS but late-start rooms are empty → assign APPs from surplus.
-- If FLEX_OFF count ≠ SURPLUS → recompute.
+- If FLEX_OFF count ≠ min(SURPLUS, MAX_FLEX_OFF) → recompute.
+- If MAIN_ENDO_MD or OTM_ENDO_MDS list names that aren't actually in the corresponding assignments → correct the list to match reality.
+- If OR 10, OR 15, Main Endo 1-3, or NIR 1 is missing from assignments → add them.
 
 ---
 
@@ -3076,12 +3100,38 @@ B. Main-anchored MDs all go to Main. (They cannot go elsewhere.) They will be di
 C. Remaining McNair-anchored MDs (excluding Ganderson) are provisionally assigned to McNair campus (OTM OR, OTM Endo, or McNair OR — NOT Jamail; Jamail is Ganderson-only, or locum-only if Ganderson is absent).
 D. Flexible MDs fill Main demand first (MAIN DEMAND − A flexibles needed at Main).
 E. Remaining flexible MDs fill McNair demand (McNAIR CAMPUS DEMAND − N flexibles needed at McNair).
-F. ANY remaining flexible MDs are SURPLUS. Send them to McNair campus and flex off McNair-anchored MDs in strict out-order:
-   1. 1st Out-MNC
-   2. 2nd Out-MNC
-   3. 3rd Out-MNC
-   4. Late MD-MNC (do NOT flex; reassign to OTM)
-   5. McNair Call (do NOT flex; reassign to OTM)
+F. FLEX-OFF — STRICT OUT-ORDER CEILING RULE:
+
+   FIRST, compute the MAX_FLEX_OFF cap:
+   - Count how many McNair-anchored MDs are working today with shift designation "1st Out-MNC", "2nd Out-MNC", or "3rd Out-MNC".
+   - MAX_FLEX_OFF = that count (usually 3, sometimes fewer if some Out-MNC slots are unfilled today).
+   - The number of MDs that can be flexed off is capped at MAX_FLEX_OFF. Even if SURPLUS > MAX_FLEX_OFF, you CANNOT flex more than MAX_FLEX_OFF MDs.
+
+   SECOND, determine actual flex-off count:
+   - ACTUAL_FLEX_OFF = min(SURPLUS, MAX_FLEX_OFF)
+
+   THIRD, flex off in strict out-order:
+   1. 1st Out-MNC (flex off first)
+   2. 2nd Out-MNC (flex off second, if ACTUAL_FLEX_OFF ≥ 2)
+   3. 3rd Out-MNC (flex off third, if ACTUAL_FLEX_OFF ≥ 3)
+
+   FOURTH, handle Late-MD-MNC and McNair Call:
+   - These MDs are NEVER flexed off. EVER. Regardless of SURPLUS.
+   - Late-MD-MNC → ROUTE to OTM OR or OTM Endo. Include name in ROUTED_TO_OTM in the WORK block.
+   - McNair Call → ROUTE to OTM OR or OTM Endo. Include name in ROUTED_TO_OTM in the WORK block.
+   - These names MUST NOT appear in BANNED_MDS under any circumstance. If you find yourself adding them to BANNED_MDS, STOP — you are making a critical error.
+
+   FIFTH, handle excess surplus:
+   - If SURPLUS > MAX_FLEX_OFF, you have more flexible MDs than can be flexed. These EXCESS flexibles are NOT flexed — they are redistributed:
+     a. First: fill any remaining capacity at Main OR (e.g., as late-start 3rd rooms).
+     b. Second: fill any remaining capacity at McNair campus (OTM OR, OTM Endo, McNair OR at ≤ 3 rooms/MD).
+     c. Only if no redistribution is possible (all demand already saturated), flag it as "Unused flexible MD: [name]" in FLAGS. Do NOT ban them.
+   - Excess flexibles are NEVER added to BANNED_MDS.
+
+   BANNED_MDS LIST CONTENTS:
+   - Only MDs with shift "1st Out-MNC", "2nd Out-MNC", or "3rd Out-MNC" who are actually being flexed.
+   - Number of names in BANNED_MDS = ACTUAL_FLEX_OFF.
+   - If MAX_FLEX_OFF = 0 (no Out-MNC MDs working), BANNED_MDS is empty regardless of surplus.
 
 G. LATE-START ABSORPTION CHECK: Every Main OR room with caseTime ≥ 12:00 is absorbable as a 3rd room by an existing 2-room Main MD. These rooms do NOT require their own MD pairing. During Step 4 room assignment, late-start rooms may be distributed as 3rd rooms to existing 2-room Main MDs rather than forming standalone 2-room pairings.
 
@@ -3112,6 +3162,19 @@ BRIDGING PAIRS (the only valid combinations):
 - OTM OR ↔ OTM Endo
 - OTM OR ↔ McNair OR
 - OTM Endo ↔ McNair OR (permitted but uncommon)
+
+FORBIDDEN BRIDGING — NEVER DO THIS:
+- Main OR ↔ OTM OR: FORBIDDEN (Main and McNair are separate campuses)
+- Main OR ↔ OTM Endo: FORBIDDEN
+- Main OR ↔ McNair OR: FORBIDDEN
+- Main OR ↔ Jamail OR: FORBIDDEN
+- Main Endo ↔ anything non-Main: FORBIDDEN (Main Endo MD covers only Main Endo 1-3)
+- Jamail ↔ anything non-Jamail: FORBIDDEN (Ganderson/locum covers only Jamail)
+- Radiology ↔ anything non-radiology: FORBIDDEN (radiology MD covers only radiology)
+
+A flexible MD (Cross Country, Caliber, or Locum) may be assigned to either Main campus OR McNair campus, but NEVER BOTH ON THE SAME DAY. Once a flexible MD is placed at a campus in Step 3, they stay on that campus for all room assignments.
+
+Scan your assignments: for each MD, check that ALL their rooms belong to the same campus (Main or McNair). If an MD has a Main room AND a McNair room, this is a catastrophic error — STOP and move one of the rooms to a different MD.
 
 RESOLUTION IN THIS EXACT ORDER:
 
@@ -3146,6 +3209,20 @@ VERIFICATION BEFORE PROCEEDING TO STEP 4:
 ## STEP 4 — ASSIGN ROOMS TO MDs
 
 Using the MD allocation from Step 3 and the redundancy check from Step 3.5:
+
+MANDATORY ROOMS THAT MUST APPEAR IN OUTPUT (REGARDLESS OF roomsNeeding CONTENT):
+
+The following rooms MUST have assignments in your output array, even if they do not appear in roomsNeeding, even if caseTime is empty, even if no surgeon is listed:
+- Main OR 10 (MD + APP)
+- Main OR 15 (MD + APP)
+- Main Endo 1, Main Endo 2, Main Endo 3 (MD + APP each)
+- NIR 1 (MD + APP)
+
+BEFORE listing assignments, count the Main OR rooms from roomsNeeding. If "Main OR 10" is not present, ADD IT to your mental list. If "Main OR 15" is not present, ADD IT to your mental list. Same for NIR 1, Main Endo 1-3. These rooms must have assignments.
+
+If you reach the end of your output array and any of these rooms is missing, STOP, add them, and try again.
+
+SANITY CHECK: Count the Main OR rooms in your output. This count must equal M (from WORK block). If M includes OR 10 and OR 15 (which it must, per Step 2), and your output does not include OR 10 and OR 15, then M was computed incorrectly — recompute M and re-output.
 
 Main OR:
 - Main-anchored MDs stay on Main campus. Their shift name (e.g., "OR 8 - MD", "OR 10 - MD", "OR 12 - MD") indicates SHIFT HOURS, not a specific OR room number. They can be assigned to ANY 2 Main OR rooms.
@@ -3292,6 +3369,17 @@ ENDO-ONCE-PER-WEEK RULE (APPLIES TO MDs AND APPs, MAIN ENDO AND OTM ENDO):
 ASSIGNMENT ORDER:
 
 1. Jamail OR APPs first (smallest pool). Jamail is the priority assignment for a specific set of APPs:
+
+   MANDATORY TIER 1 PRE-SCAN — DO THIS BEFORE ANY APP ASSIGNMENT:
+   a. Scan the STAFF WORKING TODAY list for these 4 names: Karina Kima, Carla Rose, Audra Jackson, Evie Schoene.
+   b. For each name found in the staff list, add them to your WORK block's "JAMAIL: Tier 1 APPs working" field. DO NOT write "none" unless truly none of the 4 are working.
+   c. If Jamail has cases, every Tier 1 APP working today is LOCKED to Jamail at this point. Do not assign them elsewhere in any subsequent step.
+   d. If Jamail has more rooms than working Tier 1 APPs, fill remaining Jamail rooms from Tier 2 BEFORE proceeding to any other APP assignment.
+
+   KIMA RULE — ABSOLUTE:
+   - If Kima is in the staff list AND Jamail has cases, Kima goes to a Jamail room. Period.
+   - Kima is NEVER assigned to OTM OR, OTM Endo, McNair OR, Main OR, Main Endo, radiology, or any non-Jamail room.
+   - If your output shows Kima in any non-Jamail room while Jamail has cases, this is a catastrophic error — STOP and reassign.
 
    TIER 1 (highest priority — assign to Jamail unless forced out by endo-once-per-week rule):
    - Karina Kima (top priority, Baylor) — NEVER pulled from Jamail for any reason
