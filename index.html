@@ -2953,9 +2953,16 @@ The WORK block's notes field must contain ALL of the following fields, in order,
 
 5. "FLEX_OFF: shift-designation + MD name for each flexed MD. Only MDs with shift '1st Out-MNC', '2nd Out-MNC', or '3rd Out-MNC' can be flexed. Example: '1st Out-MNC (Jonas Hafkin), 2nd Out-MNC (Chris Seibert)'. If no one flexed, write 'NONE'."
 
+5b. "FLEX_OFF_GUARD: MAX_FLEX_OFF=X, PROVISIONAL=X, K=X (McNair OR cases), GUARD_APPLIED=YES/NO, ACTUAL_FLEX_OFF=X. If GUARD_APPLIED=YES, name the kept MD: e.g. 'Kept at McNair OR: Kevin Tran (3rd Out-MNC)'."
+   - This field shows your work for the McNair OR coverage guard (Step 3F THIRD). When K ≥ 1 and PROVISIONAL = MAX_FLEX_OFF, the guard fires and ACTUAL_FLEX_OFF is reduced by 1 to keep one Out-MNC MD on McNair OR.
+
 6. "BANNED_MDS: exact names of flexed MDs only. ONLY names from 1st/2nd/3rd Out-MNC shifts. Late-MD-MNC and McNair Call MDs are NEVER in BANNED_MDS regardless of surplus. If you are about to add a Late-MD-MNC or McNair Call name here, STOP."
 
-7. "ROUTED_TO_OTM: names of Late-MD-MNC and McNair Call MDs (they are NOT flexed; they are routed to OTM OR or OTM Endo). These MDs MUST appear in an OTM room assignment below."
+6b. "McNAIR_OR_MD: name of the MD who WILL cover McNair OR rooms in this output (if K ≥ 1). Must be either (a) an Out-MNC MD kept per Step 3F guard, (b) Patino, (c) Kim, or (d) a bridged block-capable flexible MD from OTM OR. MUST NOT be Ganderson or a Main-anchored MD. If K=0, write 'N/A (no McNair OR cases)'."
+
+7. "ROUTED_TO_OTM: names of Late-MD-MNC and McNair Call MDs who are specifically placed at OTM OR or OTM Endo today. If Patino or Kim is at McNair OR instead of OTM, list them in McNAIR_OR_MD instead — not here. These MDs are NEVER in BANNED_MDS."
+
+7b. "McNAIR_CAMPUS_ASSIGNMENT: for each McNair-anchored MD working today (Out-MNC, Late-MD-MNC, McNair Call), list where they are assigned. Example: '1st Out-MNC (Hafkin): FLEXED | 2nd Out-MNC (Seibert): FLEXED | 3rd Out-MNC (Tran): McNair OR | Late-MD-MNC (Patino): OTM OR | McNair Call (Kim): OTM OR + OTM Endo'. Every McNair-anchored MD must be accounted for here."
 
 8. "APP_DEMAND: ALL_ROOMS=X, LATE_ROOMS=X, EXTRA_RAD=X, BASELINE=X"
 
@@ -2981,22 +2988,34 @@ C. If APP_VERDICT is DEFICIT, the output MUST include the APP DEFICIT flag in FL
 
 D. FLEX_OFF count must equal min(SURPLUS, MAX_FLEX_OFF), where MAX_FLEX_OFF is the count of MDs with shift "1st/2nd/3rd Out-MNC" working today. If SURPLUS=4 but only 3 Out-MNC MDs are working, FLEX_OFF = 3 (not 4).
 
-E. Any MD in ROUTED_TO_OTM must appear in an OTM OR or OTM Endo assignment below. They are NOT in BANNED_MDS. If ROUTED_TO_OTM contains "Joshua Patino" but no assignment below has Patino at an OTM room, this is an error — assign him to an OTM room.
+E. Every McNair-anchored MD working today (Out-MNC, Late-MD-MNC, McNair Call) must be accounted for in the McNAIR_CAMPUS_ASSIGNMENT WORK field AND must have a corresponding actual assignment (or be flexed). If ROUTED_TO_OTM contains "Joshua Patino" but no assignment below has Patino at an OTM room, either (a) move Patino to an OTM room assignment, or (b) remove him from ROUTED_TO_OTM and add him to McNAIR_OR_MD with a corresponding McNair OR assignment.
 
 F. WORK block lists (MAIN_ENDO_MD, OTM_ENDO_MDS, JAMAIL Tier 1 APPs, ROUTED_TO_OTM) must be OBSERVATION of what you are actually assigning below — not aspirational. If a name appears in WORK but not in actual assignments, or vice versa, the output is invalid.
 
-G. Kima (if working) must be in a Jamail room assignment. If "Karina Kima" appears in staff list AND Jamail has cases, the output must contain "Jamail OR X → APP: Karina Kima" for some X. No exceptions.
+G. Every working Tier 1 APP (Kima, Rose, Jackson, Schoene) must be in a Jamail room assignment when Jamail has cases, unless pulled for OTM Endo by the once-per-week rule.
+   - Kima NEVER pulled — she is always at Jamail when working and Jamail has cases.
+   - Rose, Jackson, Schoene: at Jamail by default. Only pulled to OTM Endo if that's the only way to satisfy endo-once-per-week (pull order: Schoene → Jackson → Rose).
+   - If the staff list contains a Tier 1 APP name AND Jamail has cases AND that APP is NOT in a Jamail assignment AND was NOT pulled for OTM Endo per the rule, this is a catastrophic error — fix before outputting.
+
+H. Ganderson must be ONLY at Jamail when working. She must NEVER appear in any non-Jamail assignment.
+   - Scan the output: if "Lauren Ganderson" appears in any room that is not Jamail OR 1-6, this is a catastrophic error.
+   - Remove Ganderson from the non-Jamail room. Reassign that room to the appropriate MD per Step 4 rules (for McNair OR: an Out-MNC MD kept working per coverage guard, or a bridged flexible MD).
+   - Specifically for McNair OR: Ganderson is FORBIDDEN regardless of perceived coverage gaps. Use Step 3F McNair OR coverage guard to ensure an Out-MNC MD is available.
 
 SELF-CONSISTENCY CHECK BEFORE OUTPUTTING:
 - Read your WORK block.
 - Scan every subsequent assignment.
 - If any BANNED_MDS name appears → remove that assignment, reassign the room to a non-banned MD.
 - If any ROUTED_TO_OTM name is absent from OTM assignments → assign them to OTM.
-- If any Tier 1 APP (Kima especially) is absent from Jamail while Jamail has cases → fix.
+- If any Tier 1 APP (Kima especially, Rose, Jackson, Schoene) is absent from Jamail while Jamail has cases → fix.
+- If Ganderson appears in any non-Jamail room → remove and reassign per rule H.
 - If APP_VERDICT says SURPLUS but late-start rooms are empty → assign APPs from surplus.
-- If FLEX_OFF count ≠ min(SURPLUS, MAX_FLEX_OFF) → recompute.
+- If FLEX_OFF count ≠ min(SURPLUS, MAX_FLEX_OFF) after McNair OR coverage guard → recompute.
+- If K ≥ 1 (McNair OR has cases) AND no Out-MNC MD is assigned to McNair OR AND no bridged flexible MD is there → the coverage guard failed; reduce flex-off and reassign.
 - If MAIN_ENDO_MD or OTM_ENDO_MDS list names that aren't actually in the corresponding assignments → correct the list to match reality.
 - If OR 10, OR 15, Main Endo 1-3, or NIR 1 is missing from assignments → add them.
+- If any APP name appears in two non-shared-radiology rooms → remove one assignment, fill from unassigned pool.
+- If any MD's rooms span both Main and McNair campuses → remove one, reassign.
 
 ---
 
@@ -3100,31 +3119,56 @@ B. Main-anchored MDs all go to Main. (They cannot go elsewhere.) They will be di
 C. Remaining McNair-anchored MDs (excluding Ganderson) are provisionally assigned to McNair campus (OTM OR, OTM Endo, or McNair OR — NOT Jamail; Jamail is Ganderson-only, or locum-only if Ganderson is absent).
 D. Flexible MDs fill Main demand first (MAIN DEMAND − A flexibles needed at Main).
 E. Remaining flexible MDs fill McNair demand (McNAIR CAMPUS DEMAND − N flexibles needed at McNair).
-F. FLEX-OFF — STRICT OUT-ORDER CEILING RULE:
+F. FLEX-OFF — STRICT OUT-ORDER CEILING RULE WITH McNAIR OR COVERAGE GUARD:
 
    FIRST, compute the MAX_FLEX_OFF cap:
    - Count how many McNair-anchored MDs are working today with shift designation "1st Out-MNC", "2nd Out-MNC", or "3rd Out-MNC".
    - MAX_FLEX_OFF = that count (usually 3, sometimes fewer if some Out-MNC slots are unfilled today).
    - The number of MDs that can be flexed off is capped at MAX_FLEX_OFF. Even if SURPLUS > MAX_FLEX_OFF, you CANNOT flex more than MAX_FLEX_OFF MDs.
 
-   SECOND, determine actual flex-off count:
-   - ACTUAL_FLEX_OFF = min(SURPLUS, MAX_FLEX_OFF)
+   SECOND, compute the provisional flex-off count:
+   - PROVISIONAL_FLEX_OFF = min(SURPLUS, MAX_FLEX_OFF)
 
-   THIRD, flex off in strict out-order:
+   THIRD, apply McNAIR OR COVERAGE GUARD:
+
+   Check: does McNair OR have any cases today (K > 0)?
+
+   - If K = 0 (no McNair OR cases): skip this guard. Use PROVISIONAL_FLEX_OFF as ACTUAL_FLEX_OFF.
+
+   - If K ≥ 1 (McNair OR has cases): McNair OR MUST have coverage from one of the following:
+     (a) An Out-MNC MD kept working (not flexed off)
+     (b) Patino (Late-MD-MNC) assigned to McNair OR instead of OTM
+     (c) Kim (McNair Call) assigned to McNair OR instead of OTM
+     (d) A block-capable flexible MD bridged from OTM OR (OTM OR ↔ McNair OR is a valid bridging pair)
+
+     GUARD LOGIC:
+     - If Patino or Kim is working today AND could be placed at McNair OR: the guard does NOT need to reduce flex-off. Use ACTUAL_FLEX_OFF = PROVISIONAL_FLEX_OFF.
+     - If Patino and Kim are both absent (not working) OR both are already needed at OTM due to OTM demand: the guard MAY need to reduce flex-off to keep one Out-MNC MD for McNair OR coverage.
+     - Specifically: if ALL of the following are true, reduce PROVISIONAL_FLEX_OFF by 1:
+       1. K ≥ 1 (McNair OR has cases)
+       2. PROVISIONAL_FLEX_OFF = MAX_FLEX_OFF (flexing all Out-MNC MDs)
+       3. Patino is NOT available for McNair OR (not working OR needed at OTM)
+       4. Kim is NOT available for McNair OR (not working OR needed at OTM)
+       5. No block-capable flexible MD can bridge from OTM OR without exceeding caps
+     - Otherwise: ACTUAL_FLEX_OFF = PROVISIONAL_FLEX_OFF.
+
+   The AI chooses the best McNair OR coverage based on the day's staffing. Record the choice in the WORK block's McNAIR_OR_MD field.
+
+   FOURTH, flex off in strict out-order:
    1. 1st Out-MNC (flex off first)
    2. 2nd Out-MNC (flex off second, if ACTUAL_FLEX_OFF ≥ 2)
    3. 3rd Out-MNC (flex off third, if ACTUAL_FLEX_OFF ≥ 3)
 
-   FOURTH, handle Late-MD-MNC and McNair Call:
+   FIFTH, handle Late-MD-MNC and McNair Call:
    - These MDs are NEVER flexed off. EVER. Regardless of SURPLUS.
-   - Late-MD-MNC → ROUTE to OTM OR or OTM Endo. Include name in ROUTED_TO_OTM in the WORK block.
-   - McNair Call → ROUTE to OTM OR or OTM Endo. Include name in ROUTED_TO_OTM in the WORK block.
+   - Late-MD-MNC (Patino) → place at OTM OR, OTM Endo, OR McNair OR — whichever the day needs. List them in McNAIR_CAMPUS_ASSIGNMENT field (not ROUTED_TO_OTM — that field is for when they're specifically at OTM).
+   - McNair Call (Kim) → place at OTM OR, OTM Endo, OR McNair OR — whichever the day needs. Same as above.
    - These names MUST NOT appear in BANNED_MDS under any circumstance. If you find yourself adding them to BANNED_MDS, STOP — you are making a critical error.
 
-   FIFTH, handle excess surplus:
-   - If SURPLUS > MAX_FLEX_OFF, you have more flexible MDs than can be flexed. These EXCESS flexibles are NOT flexed — they are redistributed:
+   SIXTH, handle excess surplus:
+   - If SURPLUS > ACTUAL_FLEX_OFF, you have more flexible MDs than can be flexed. These EXCESS flexibles are NOT flexed — they are redistributed:
      a. First: fill any remaining capacity at Main OR (e.g., as late-start 3rd rooms).
-     b. Second: fill any remaining capacity at McNair campus (OTM OR, OTM Endo, McNair OR at ≤ 3 rooms/MD).
+     b. Second: fill any remaining capacity at McNair campus (OTM OR, OTM Endo at ≤ 3 rooms/MD).
      c. Only if no redistribution is possible (all demand already saturated), flag it as "Unused flexible MD: [name]" in FLAGS. Do NOT ban them.
    - Excess flexibles are NEVER added to BANNED_MDS.
 
@@ -3132,6 +3176,7 @@ F. FLEX-OFF — STRICT OUT-ORDER CEILING RULE:
    - Only MDs with shift "1st Out-MNC", "2nd Out-MNC", or "3rd Out-MNC" who are actually being flexed.
    - Number of names in BANNED_MDS = ACTUAL_FLEX_OFF.
    - If MAX_FLEX_OFF = 0 (no Out-MNC MDs working), BANNED_MDS is empty regardless of surplus.
+   - If McNair OR coverage guard reduced ACTUAL_FLEX_OFF, BANNED_MDS reflects the reduced count.
 
 G. LATE-START ABSORPTION CHECK: Every Main OR room with caseTime ≥ 12:00 is absorbable as a 3rd room by an existing 2-room Main MD. These rooms do NOT require their own MD pairing. During Step 4 room assignment, late-start rooms may be distributed as 3rd rooms to existing 2-room Main MDs rather than forming standalone 2-room pairings.
 
@@ -3237,7 +3282,23 @@ Main OR:
 
 McNair OR:
 - 1 MD covers all 1-3 McNair OR rooms. Never 1 MD per room (see triple-block exception below).
-- Ganderson NEVER covers McNair OR. She is Jamail-only.
+
+McNAIR OR MD SELECTION (who should cover McNair OR?):
+
+The AI chooses from the following valid options based on the day's staffing needs. No strict priority — pick what works best:
+
+  VALID options:
+  - An Out-MNC MD kept working (1st, 2nd, or 3rd Out-MNC not flexed off)
+  - Patino (Late-MD-MNC) — valid at McNair OR OR OTM; AI decides based on day
+  - Kim (McNair Call) — valid at McNair OR OR OTM; AI decides based on day
+  - A block-capable flexible MD bridged from OTM OR
+
+  FORBIDDEN (NEVER choose these for McNair OR):
+  - Lauren Ganderson — she is Jamail-only, ALWAYS. Even if McNair OR appears to have no other coverage, find another solution. Ganderson → Jamail. Period.
+  - A Main-anchored MD (cross-campus violation, Absolute Rule 5)
+
+  COVERAGE CHECK:
+  If McNair OR has cases AND no VALID option can cover it: this is a genuine staffing gap. Flag it: "No McNair OR coverage — schedule review needed." Do NOT fill the gap with Ganderson. Do NOT leave McNair OR unassigned with no flag.
 
 Block case coverage (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed):
 
@@ -3434,9 +3495,30 @@ D12 APPs:
 - Fine to assign to 7:30 AM rooms — they start at 7:00 like everyone else
 - Rule: if a late-start room exists AND Step 2.5 identified SURPLUS APPs, prefer assigning a D12 APP to it (but still assign D12 APPs to 7:30 rooms if needed)
 
-DEDUPLICATION:
-- Each APP appears in exactly ONE room (NIR rooms sharing one APP is the sole exception; IR/CT/MRI sharing one APP is the second exception when not split)
-- Scan all assignments for duplicates before output
+DEDUPLICATION (MANDATORY FINAL SCAN):
+
+APP DEDUPLICATION:
+- Each APP name appears in exactly ONE room assignment.
+- EXCEPTIONS (the only two):
+  - NIR rooms (NIR 1, NIR 2, etc.) may share a single APP.
+  - IR + CT + MRI + RM-IR rooms may share a single APP (when not split).
+- No other duplicates are allowed. An APP at Jamail OR 2 cannot also be at McNair OR 6. An APP at OTM Endo 3 cannot also be at Main OR 14.
+
+APP SCAN PROCEDURE (before outputting):
+1. Extract every APP name that appears in your output.
+2. Count occurrences of each name.
+3. For any name appearing more than once: verify that BOTH rooms are either (a) all NIR rooms OR (b) all non-NIR radiology rooms. If not, this is a duplicate error — remove one of the assignments and fill that room from the pool of unassigned APPs.
+
+MD DEDUPLICATION:
+- An MD may cover multiple rooms (that's the whole point). But every room an MD covers must be on the SAME campus.
+- Scan: for each unique MD name in output, list all rooms they cover. If any MD has rooms on BOTH Main campus AND McNair campus, that is a cross-campus violation — remove one assignment.
+
+MD COUNT RECONCILIATION (before outputting):
+- Count unique MD names in assignments = PLACED_MDS.
+- Count flexed MDs (BANNED_MDS) = FLEXED_MDS.
+- Total working today = MD_SUPPLY (from WORK block).
+- Check: PLACED_MDS + FLEXED_MDS should equal MD_SUPPLY.
+- If PLACED_MDS + FLEXED_MDS < MD_SUPPLY: some MDs are silently missing — find them in the staff list and either assign them a room or add them to a FLAGS entry as "Unused flexible MD: [name]."
 
 APP AVAILABILITY > FLAG CONVENIENCE:
 - "No APP available" is valid only when the campus APP pool is genuinely exhausted
@@ -3585,7 +3667,7 @@ WORK block (first element):
   "room": "WORK",
   "md": null,
   "app": null,
-  "notes": "ROOMS: M=... | MD_DEMAND: ... | MD_SUPPLY: ... | JAMAIL: ... | FLEX_OFF: ... | BANNED_MDS: ... | ROUTED_TO_OTM: ... | APP_DEMAND: ... | APP_SUPPLY: ... | APP_VERDICT: ... | ODD_COUNT_MAIN: ... | MAIN_ENDO_MD: ... | OTM_ENDO_MDS: ..."
+  "notes": "ROOMS: M=... | MD_DEMAND: ... | MD_SUPPLY: ... | JAMAIL: ... | FLEX_OFF: ... | FLEX_OFF_GUARD: ... | BANNED_MDS: ... | McNAIR_OR_MD: ... | ROUTED_TO_OTM: ... | McNAIR_CAMPUS_ASSIGNMENT: ... | APP_DEMAND: ... | APP_SUPPLY: ... | APP_VERDICT: ... | ODD_COUNT_MAIN: ... | MAIN_ENDO_MD: ... | OTM_ENDO_MDS: ..."
 }
 
 Each assignment:
