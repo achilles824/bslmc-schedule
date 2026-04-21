@@ -2890,7 +2890,9 @@ ${JSON.stringify(rules, null, 2)}
 
 5. Main-anchored MDs (shifts like "OR 8 - MD", "OR 10 - MD", "OR 12 - MD") never go to McNair campus. McNair-anchored MDs (shifts containing "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC") never go to Main campus.
 
-6. Lauren Ganderson is always at Jamail OR, never elsewhere.
+6. LAUREN GANDERSON LOCK — ABSOLUTE, NO EXCEPTIONS.
+   Lauren Ganderson is ONLY at Jamail OR. She is NEVER at OTM OR, NEVER at McNair OR, NEVER at OTM Endo, NEVER at any Main location. Her staff shift may be labeled "OR - McNair", but that label is MISLEADING — IGNORE IT. Her actual placement is Jamail OR only, always.
+   Before outputting, scan every non-Jamail room assignment. If Ganderson appears in ANY non-Jamail room, STOP and reassign that room to another McNair-campus MD. This is a catastrophic error if it reaches output. Ganderson → Jamail. Period.
 
 7. Flex-off is determined by shift designation (1st Out-MNC, 2nd Out-MNC, 3rd Out-MNC), not the identity of the MD. Never flex off based on who someone is; only based on their out-order.
 
@@ -2915,7 +2917,7 @@ For each MD in the staff list, tag them:
 - McNAIR-anchored: shift contains "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC", or "OR - McNair"
 - FLEXIBLE: Cross Country, Caliber, or Locums (D5/D8/D10/D12 shifts)
 
-Ganderson is a special McNair-anchored case: she always goes to Jamail only.
+Ganderson is a special McNair-anchored case: she always goes to Jamail only. Her shift label says "OR - McNair" but she is NEVER at McNair OR, OTM OR, or OTM Endo. See Absolute Rule 6.
 
 ---
 
@@ -2976,8 +2978,8 @@ Use this same pattern for today's numbers.
 Do this in order:
 
 A. Main-anchored MDs all go to Main. (They cannot go elsewhere.)
-B. Ganderson goes to Jamail. (She cannot go elsewhere.)
-C. Remaining McNair-anchored MDs are provisionally assigned to McNair campus.
+B. Ganderson goes to Jamail. (She cannot go elsewhere. See Absolute Rule 6. She is NOT a McNair campus option for OTM OR, OTM Endo, or McNair OR.)
+C. Remaining McNair-anchored MDs are provisionally assigned to McNair campus (OTM OR, OTM Endo, or McNair OR — NOT Jamail; Jamail is Ganderson-only).
 D. Flexible MDs fill Main demand first (MAIN DEMAND − A flexibles needed at Main).
 E. Remaining flexible MDs fill McNair demand (McNAIR CAMPUS DEMAND − N flexibles needed at McNair).
 F. ANY remaining flexible MDs are SURPLUS. Send them to McNair campus and flex off McNair-anchored MDs in strict out-order:
@@ -2987,7 +2989,7 @@ F. ANY remaining flexible MDs are SURPLUS. Send them to McNair campus and flex o
    4. Late MD-MNC (do NOT flex; reassign to OTM)
    5. McNair Call (do NOT flex; reassign to OTM)
 
-G. LATE-START ABSORPTION CHECK: Every Main OR room with caseTime ≥ 12:00 is absorbable as a 3rd room by an existing 2-room Main MD. These rooms do NOT require their own MD pairing. During Step 4 room assignment, late-start rooms are distributed as 3rd rooms to existing 2-room Main MDs before any new MD pairing is created for them.
+G. LATE-START ABSORPTION CHECK: Every Main OR room with caseTime ≥ 12:00 is absorbable as a 3rd room by an existing 2-room Main MD. These rooms do NOT require their own MD pairing. During Step 4 room assignment, late-start rooms may be distributed as 3rd rooms to existing 2-room Main MDs rather than forming standalone 2-room pairings.
 
 After this step, the total MDs at each campus should equal the demand for that campus (plus Ganderson).
 
@@ -2997,6 +2999,7 @@ VERIFICATION AFTER STEP 3:
 - MDs flexed off = SURPLUS (after all Main + McNair demand is filled)
 - Every flexible MD is placed at exactly one campus
 - Main MDs each have 2 rooms (plus possible late-start 3rd room). If any Main MD has only 1 room, you have too many MDs at Main — move one to McNair and flex off one more McNair-anchored.
+- Ganderson is at Jamail, NOT at OTM OR, OTM Endo, or McNair OR.
 
 ---
 
@@ -3050,10 +3053,11 @@ Main OR:
 - Main flexible MDs: 2 rooms each
 - Main Endo: 1 flexible MD covers all 3 Main Endo rooms AND NOTHING ELSE. The Main Endo MD does NOT cover any OR room, any radiology room, or any other area. Main Endo = 3 rooms, full stop.
 - Radiology: 1 flexible MD covers IR, NIR, CT, MRI, RM-IR General, RM-IR MRI (all of them, do not flag). This MD does not cover Main Endo or any OR room.
-- Late-start rooms (caseTime ≥ 12:00): these are preferentially assigned as a 3RD ROOM to an existing 2-room Main MD. Before creating a new MD pairing for a late-start room, check whether any Main MD already has 2 earlier-start rooms — if yes, they absorb the late-start room as their 3rd (at cap, flagged). Only if no such MD exists do you assign a late-start room as someone's primary pairing.
+- Late-start rooms (caseTime ≥ 12:00): these are preferentially assigned as a 3RD ROOM to an existing 2-room Main MD. Before creating a new MD pairing for a late-start room, check whether any Main MD already has 2 earlier-start rooms — if yes, they may absorb the late-start room as their 3rd (at cap, flagged). This is a preference, not mandatory.
 
 McNair OR:
 - 1 MD covers all 1-3 McNair OR rooms. Never 1 MD per room.
+- Ganderson NEVER covers McNair OR. She is Jamail-only.
 - If multiple simultaneous 07:30 block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed):
   - PREFERRED: find a block-capable MD already at OTM OR with fewer than 3 rooms; they bridge 1 McNair block room
   - ACCEPTABLE: 1 McNair MD covers all including 2 blocks
@@ -3066,13 +3070,41 @@ OTM OR and OTM Endo:
 - Only 1 MD bridges OTM OR and OTM Endo (not 2, not 3)
 - The bridging MD takes the FEWEST total rooms — if another OTM MD has 2 rooms, the bridging MD has 2 rooms too (1 OTM OR + 1 OTM Endo, not 2+2)
 - Non-bridging OTM MDs concentrate in one area with 2-3 rooms
+- Ganderson NEVER covers OTM OR or OTM Endo.
 
 Jamail OR:
 - Ganderson covers all open Jamail rooms (up to 4, no flag)
+- ONLY Ganderson covers Jamail. No other MD is ever assigned to Jamail unless Ganderson is not working that day.
 
 Mesbah displacement:
 - If Mesbah is at OTM Endo: 3 OTM Endo rooms
 - If displaced to Main: 2 Main OR rooms. Only rebalance Saye/Hankins if they would otherwise have 3+ rooms at Main.
+
+---
+
+## STEP 4.5 — POST-ASSIGNMENT SCAN (MANDATORY BEFORE STEP 5)
+
+After all room assignments are made in Step 4, scan the full assignment list for the following failure states and fix them before proceeding:
+
+GANDERSON SCAN:
+- [ ] Scan every non-Jamail room assignment. Does Ganderson appear in ANY OTM OR, OTM Endo, McNair OR, or Main location? If YES, this is a catastrophic error. Remove Ganderson from that room and reassign the room to another McNair-campus MD (or flex off rules per Step 3). Ganderson goes ONLY to Jamail.
+
+SINGLE-ROOM MD SCAN:
+- [ ] Scan MDs holding exactly 1 room at OTM OR, OTM Endo, or McNair OR. If found:
+   - Option A: Reassign that MD to Main OR to absorb a late-start room (if any remain unabsorbed)
+   - Option B: Redistribute a room from a 3-room same-area MD to them (making both 2-room)
+   - Option C: Flex them off per Step 3 out-order rules
+- A single-room McNair-campus MD is a failure state. Resolve it before outputting.
+- EXCEPTION: A bridging MD with 1+1=2 across two areas is NOT a single-room MD (they have 2 rooms total).
+
+CREDENTIAL SCAN:
+- [ ] For every assignment, verify md.credential = "MD" and app.credential = "CRNA" or "CAA". Any mismatch is a catastrophic error — fix before outputting.
+
+ROOM CAP SCAN:
+- [ ] No MD has 4+ rooms anywhere
+- [ ] Main Endo MD has exactly 3 rooms (Main Endo 1-3) and nothing else
+- [ ] Radiology MD covers only radiology rooms
+- [ ] Ganderson has Jamail rooms only
 
 ---
 
@@ -3159,6 +3191,7 @@ ABSOLUTE RULES:
 - [ ] OR 10 and OR 15 have MD and APP
 - [ ] NIR-1 has MD and APP
 - [ ] Main Endo MD covers ONLY Main Endo 1-3 — not any OR, not radiology
+- [ ] Ganderson is ONLY at Jamail — not at OTM OR, OTM Endo, McNair OR, or Main anywhere
 
 BUDGET / ALLOCATION:
 - [ ] MAIN DEMAND and McNAIR CAMPUS DEMAND computed (with M_LATE subtracted from Main)
@@ -3166,7 +3199,6 @@ BUDGET / ALLOCATION:
 - [ ] McNair campus has exactly McNAIR CAMPUS DEMAND MDs
 - [ ] Flex-off count equals the SURPLUS computed in Step 3
 - [ ] Flex-off is in strict out-order (1st → 2nd → 3rd)
-- [ ] Late-start rooms absorbed as 3rd rooms by existing 2-room Main MDs where possible
 
 CAMPUS SEPARATION:
 - [ ] No Main-anchored MD appears at McNair
@@ -3179,7 +3211,7 @@ CROSS-LOCATION:
 - [ ] Only 1 MD bridges OTM OR ↔ McNair OR (if any)
 - [ ] Only 1 MD bridges OTM Endo ↔ McNair OR (if any)
 - [ ] Every bridging MD has the fewest total rooms (prefer 1+1=2)
-- [ ] No single-room MD exists at any McNair-campus area unless bridging and redistribution are both impossible
+- [ ] No single-room MD exists at any McNair-campus area unless bridging and redistribution are both impossible (post-assignment scan in Step 4.5 completed)
 - [ ] No Main MD covers 1 room alone while other Main rooms still need MDs
 
 APPs:
@@ -3217,6 +3249,13 @@ Final FLAGS element — emit EXACTLY ONE FLAGS row as the final array element. D
   "md": null,
   "app": null,
   "notes": "1st Out-MNC flexed off. 2nd Out-MNC flexed off. Unassigned APPs: [names]. No cases, not staffed: [rooms]."
+}
+
+Output rules for FLAGS:
+- ONE FLAGS row maximum per output
+- FLAGS row appears at the very end of the array, after all room assignments
+- If notes would be empty, do not emit the FLAGS row at all
+- Never emit a FLAGS row in the middle of the array or as a header`;
 }
 
 Output rules for FLAGS:
