@@ -2862,6 +2862,8 @@ function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeedin
 
 CRITICAL OUTPUT RULE: Output ONLY a raw JSON array. No prose, no explanation, no markdown. Start with [ and end with ].
 
+MANDATORY FIRST ELEMENT: The FIRST element of the output array MUST be a "WORK" block that exposes your Step 2, 2.5, and 3 computations. See the WORK BLOCK FORMAT section below. Every subsequent assignment MUST be consistent with the WORK block. If the WORK block says "FLEX OFF: Hafkin" and Hafkin then appears in an assignment, you have produced self-contradictory output — STOP and fix before finalizing. If the WORK block says "APP VERDICT: SURPLUS" and you then flag "late-start rooms without APP (no surplus)," you have produced self-contradictory output — STOP and fix.
+
 ---
 
 ## STAFF WORKING TODAY
@@ -2923,6 +2925,54 @@ MAIN CAMPUS = Main OR + Main Endo + IR + NIR + CT + MRI + RM-IR General + RM-IR 
 McNAIR CAMPUS = McNair OR + OTM OR + OTM Endo + Jamail OR (four separate areas combined)
 
 "McNair OR" is a specific area with rooms 1-7. "McNair campus" is the whole combined area.
+
+---
+
+## WORK BLOCK FORMAT (MANDATORY FIRST OUTPUT ELEMENT)
+
+The FIRST element of your output array MUST be a WORK block in exactly this shape:
+
+{
+  "room": "WORK",
+  "md": null,
+  "app": null,
+  "notes": "<see required fields below — a single string with line breaks as \\n>"
+}
+
+The WORK block's notes field must contain ALL of the following fields, in order, separated by " | " (space pipe space):
+
+1. "ROOMS: M=X, M_LATE=X (list rooms), K=X, O=X, E=X, J=X"
+2. "MD_DEMAND: MAIN=X (formula), McNAIR=X (formula), TOTAL=X"
+3. "MD_SUPPLY: A=X, N=X, F=X, TOTAL=X, SURPLUS=X"
+4. "JAMAIL: Ganderson working YES/NO. X rooms. Overflow needed YES/NO (if 5+ rooms). Tier 1 APPs working: list."
+5. "FLEX_OFF: shift-designation + MD name for each flexed MD. Example: '1st Out-MNC (Jonas Hafkin), 2nd Out-MNC (Chris Seibert)'. If no one flexed, write 'NONE'."
+6. "BANNED_MDS: exact names of flexed MDs, comma-separated. These names MUST NOT appear in any room assignment below. If this list is non-empty and any of these names appears in a subsequent assignment, the output is invalid."
+7. "ROUTED_TO_OTM: names of Late-MD-MNC and McNair Call MDs who are NOT flexed but routed to OTM campus. These MDs DO appear in OTM assignments."
+8. "APP_DEMAND: ALL_ROOMS=X, LATE_ROOMS=X, EXTRA_RAD=X, BASELINE=X"
+9. "APP_SUPPLY: P_MAIN=X, P_MCN=X, P_FLEX=X, TOTAL=X"
+10. "APP_VERDICT: SURPLUS | EXACT | DEFICIT. If SURPLUS, late-start Main OR rooms GET APPs from the D12 / D12(M) pool. If EXACT or DEFICIT, late-start rooms are left without APPs and flagged."
+11. "ODD_COUNT_MAIN: non-late-start Main OR count = X. If ODD, one Main MD has 1 room. Designated single-room MD: [name, or 'N/A if even']."
+12. "MAIN_ENDO_MD: [name]. Check weeklyEndoTracking — prior endo this week? YES/NO."
+13. "OTM_ENDO_MDS: list names. For each, note prior endo this week YES/NO."
+
+CRITICAL CONSISTENCY RULES:
+
+A. Any MD name in BANNED_MDS must NOT appear in any subsequent room assignment. Violating this is a self-contradiction — the output is invalid.
+
+B. If APP_VERDICT is SURPLUS, the output cannot include a FLAGS note saying "late-start rooms without APP (no surplus)." If you wrote SURPLUS, you must assign APPs to late-start rooms from the surplus pool.
+
+C. If APP_VERDICT is DEFICIT, the output MUST include the APP DEFICIT flag in FLAGS.
+
+D. FLEX_OFF count must equal MD SUPPLY minus MD DEMAND. If SURPLUS=3, exactly 3 MDs are flexed (by shift designation 1st → 2nd → 3rd Out-MNC in order).
+
+E. Any MD in ROUTED_TO_OTM must appear in an OTM OR or OTM Endo assignment (they are NOT in BANNED_MDS).
+
+SELF-CONSISTENCY CHECK BEFORE OUTPUTTING:
+- Read your WORK block.
+- Scan every subsequent assignment.
+- If any BANNED_MDS name appears → remove that assignment, reassign the room to a non-banned MD.
+- If APP_VERDICT says SURPLUS but late-start rooms are empty → assign APPs from surplus.
+- If FLEX_OFF count ≠ SURPLUS → recompute.
 
 ---
 
@@ -3420,11 +3470,35 @@ FLAG DISCIPLINE:
 - [ ] 3-room Main MD without late-start: flagged
 - [ ] Exactly ONE FLAGS row at the end of the array (or zero if nothing to flag)
 
+WORK BLOCK CONSISTENCY (CRITICAL — CHECK LAST):
+- [ ] WORK block is the FIRST array element
+- [ ] All BANNED_MDS names are ABSENT from every subsequent assignment
+- [ ] All ROUTED_TO_OTM names ARE PRESENT in an OTM OR or OTM Endo assignment
+- [ ] FLEX_OFF count in WORK equals MD SUPPLY minus MD DEMAND (i.e., the SURPLUS)
+- [ ] If APP_VERDICT is SURPLUS, late-start rooms have APPs assigned (no "late-start without APP" flag)
+- [ ] If APP_VERDICT is DEFICIT, APP DEFICIT flag IS present in FLAGS
+- [ ] MAIN_ENDO_MD name matches the MD in Main Endo 1-3 rooms
+- [ ] OTM_ENDO_MDS names match the MDs in OTM Endo rooms
+- [ ] Numbers in WORK block match the actual room counts in the STAFF WORKING TODAY and ROOMS NEEDING ASSIGNMENT sections
+
 All checks passed? Output the JSON array.
 
 ---
 
 ## OUTPUT FORMAT
+
+Array structure (in this exact order):
+1. WORK block (first element, mandatory — see WORK BLOCK FORMAT section earlier)
+2. Room assignments (one per room)
+3. FLAGS element (last, if any flags to report)
+
+WORK block (first element):
+{
+  "room": "WORK",
+  "md": null,
+  "app": null,
+  "notes": "ROOMS: M=... | MD_DEMAND: ... | MD_SUPPLY: ... | JAMAIL: ... | FLEX_OFF: ... | BANNED_MDS: ... | ROUTED_TO_OTM: ... | APP_DEMAND: ... | APP_SUPPLY: ... | APP_VERDICT: ... | ODD_COUNT_MAIN: ... | MAIN_ENDO_MD: ... | OTM_ENDO_MDS: ..."
+}
 
 Each assignment:
 {
@@ -3442,14 +3516,15 @@ Final FLAGS element — emit EXACTLY ONE FLAGS row as the final array element. D
   "room": "FLAGS",
   "md": null,
   "app": null,
-  "notes": "1st Out-MNC flexed off. 2nd Out-MNC flexed off. Unassigned APPs: [names]. No cases, not staffed: [rooms]."
+  "notes": "1st Out-MNC flexed off (Jonas Hafkin). 2nd Out-MNC flexed off (Chris Seibert). Unassigned APPs: [names]. No cases, not staffed: [rooms]."
 }
 
 Output rules for FLAGS:
 - ONE FLAGS row maximum per output
 - FLAGS row appears at the very end of the array, after all room assignments
 - If notes would be empty, do not emit the FLAGS row at all
-- Never emit a FLAGS row in the middle of the array or as a header`;
+- Never emit a FLAGS row in the middle of the array or as a header
+- FLAGS must be CONSISTENT with the WORK block — if WORK says APP_VERDICT:SURPLUS, FLAGS cannot claim "late-start without APP (no surplus)." Self-contradiction invalidates the output.`;
 }
 
 
