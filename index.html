@@ -2903,9 +2903,10 @@ An MD with shift "OR 8 - MD" is a Main-anchored MD with an 8-hour shift. They ca
 
 5. Main-anchored MDs (shifts like "OR 8 - MD", "OR 10 - MD", "OR 12 - MD") never go to McNair campus. McNair-anchored MDs (shifts containing "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC") never go to Main campus.
 
-6. LAUREN GANDERSON LOCK — ABSOLUTE, NO EXCEPTIONS.
-   Lauren Ganderson is ONLY at Jamail OR. She is NEVER at OTM OR, NEVER at McNair OR, NEVER at OTM Endo, NEVER at any Main location. Her staff shift may be labeled "OR - McNair", but that label is MISLEADING — IGNORE IT. Her actual placement is Jamail OR only, always.
+6. LAUREN GANDERSON LOCK — ABSOLUTE, NO EXCEPTIONS (when working).
+   When Lauren Ganderson appears in the staff list, she is ONLY at Jamail OR. She is NEVER at OTM OR, NEVER at McNair OR, NEVER at OTM Endo, NEVER at any Main location. Her staff shift may be labeled "OR - McNair", but that label is MISLEADING — IGNORE IT. Her actual placement is Jamail OR only, always.
    Before outputting, scan every non-Jamail room assignment. If Ganderson appears in ANY non-Jamail room, STOP and reassign that room to another McNair-campus MD. This is a catastrophic error if it reaches output. Ganderson → Jamail. Period.
+   When Ganderson is NOT in the staff list (vacation/PTO), Jamail coverage falls to a flexible locum MD per Step 4 Jamail rules. The lock does not apply when she is absent.
 
 7. Flex-off is determined by shift designation (1st Out-MNC, 2nd Out-MNC, 3rd Out-MNC), not the identity of the MD. Never flex off based on who someone is; only based on their out-order.
 
@@ -2936,7 +2937,7 @@ Ganderson is a special McNair-anchored case: she always goes to Jamail only. Her
 
 ---
 
-## STEP 2 — COUNT ROOMS AND COMPUTE DEMAND
+## STEP 2 — COUNT ROOMS AND COMPUTE MD DEMAND
 
 Count rooms needing MD coverage:
 - M = Main OR rooms (always include OR 10, OR 15 even if empty)
@@ -2944,12 +2945,13 @@ Count rooms needing MD coverage:
 - K = McNair OR rooms with cases
 - O = OTM OR rooms with cases
 - E = OTM Endo rooms with cases
-- J = Jamail OR rooms with cases (Ganderson handles all)
+- J = Jamail OR rooms with cases (Ganderson handles all up to 4)
 
 Compute MD demand:
 - MAIN DEMAND = ceil((M − M_LATE) / 2) + 1 (Main Endo MD) + 1 (radiology MD)
   → Late-start rooms are absorbable as 3rd rooms by existing 2-room Main MDs, so they do NOT add MD headcount to MAIN DEMAND.
-- McNAIR CAMPUS DEMAND = ceil((K + O + E) / 3) + 1 (Ganderson for Jamail)
+- JAMAIL MD COUNT = 1 if Jamail has 1-4 rooms, 2 if Jamail has 5+ rooms, 0 if no Jamail cases.
+- McNAIR CAMPUS DEMAND = ceil((K + O + E) / 3) + JAMAIL MD COUNT
 
 Count MD supply:
 - A = Main-anchored MDs
@@ -2973,7 +2975,7 @@ Suppose on a day:
 - F = 10 flexible
 
 MAIN DEMAND = ceil((15−2)/2) + 1 + 1 = 7 + 2 = 9
-McNAIR CAMPUS DEMAND = ceil((3+7+7)/3) + 1 = 6 + 1 = 7
+McNAIR CAMPUS DEMAND = ceil((3+7+7)/3) + 1 = 6 + 1 = 7  (J=3, so JAMAIL MD COUNT = 1)
 TOTAL DEMAND = 16
 TOTAL SUPPLY = 3 + 6 + 10 = 19
 SURPLUS = 3
@@ -2988,13 +2990,40 @@ Use this same pattern for today's numbers.
 
 ---
 
+## STEP 2.5 — COUNT ROOMS AND COMPUTE APP DEMAND
+
+Count rooms needing APP coverage:
+- ALL_ROOMS = every case-bearing room + mandatory rooms (OR 10, OR 15, Main Endo 1-3, NIR-1)
+- LATE_ROOMS = rooms with caseTime ≥ 12:00
+- EXTRA_RADIOLOGY = radiology rooms beyond 2 (NIR counts as 1, IR+CT+MRI+RM-IR clustered counts as 1). Any radiology room beyond "NIR + one other" is EXTRA_RADIOLOGY.
+
+APP DEMAND (baseline) = ALL_ROOMS − LATE_ROOMS − EXTRA_RADIOLOGY
+
+Count APP supply:
+- P_MAIN = Main-only APPs (Baylor APPs without "-MN" in shift, plus Main-only locums per Step 5 list)
+- P_MCN = McNair-only APPs (Baylor APPs with "-MN" in shift, plus McNair-only locums per Step 5 list)
+- P_FLEX = flexible APPs (Cross Country / Caliber locums NOT on either locum campus-lock list)
+- TOTAL APP SUPPLY = P_MAIN + P_MCN + P_FLEX
+
+Compare supply to demand:
+- If TOTAL APP SUPPLY > APP DEMAND → SURPLUS. Excess APPs may be assigned, in this order:
+  1. Late-start rooms (one APP per late-start room, preferring D12 / D12(M))
+  2. Extra radiology rooms (splitting the IR/CT/MRI shared APP into separate APPs)
+  3. Remaining APPs unassigned (float) — listed in FLAGS
+- If TOTAL APP SUPPLY = APP DEMAND → EXACT. Late-start rooms and extra radiology rooms get NO dedicated APP. Late-start rooms are left without an APP and flagged.
+- If TOTAL APP SUPPLY < APP DEMAND → DEFICIT. This is a critical short-staffing situation. Emit a dedicated FLAG (see Step 7). Leave non-mandatory case-bearing rooms without APPs in reverse priority order (latest start time first, lowest-priority area first). Mandatory rooms (OR 10, OR 15, Main Endo 1-3, NIR-1) always get APPs; pull from other rooms if needed.
+
+---
+
 ## STEP 3 — ALLOCATE MDs TO CAMPUSES (BEFORE ANY FLEX-OFF)
 
 Do this in order:
 
-A. Main-anchored MDs all go to Main. (They cannot go elsewhere.) They will be distributed across Main OR rooms by room count — they are NOT pinned to specific room numbers based on their shift name.
-B. Ganderson goes to Jamail. (She cannot go elsewhere. See Absolute Rule 6. She is NOT a McNair campus option for OTM OR, OTM Endo, or McNair OR.)
-C. Remaining McNair-anchored MDs are provisionally assigned to McNair campus (OTM OR, OTM Endo, or McNair OR — NOT Jamail; Jamail is Ganderson-only).
+A. Ganderson goes to Jamail. FIRST. (She cannot go elsewhere. See Absolute Rule 6. She is NOT a McNair campus option for OTM OR, OTM Endo, or McNair OR.) Lock her assignment before any other MD is allocated.
+   - If Ganderson is NOT working today (not in staff list), skip this step. Jamail coverage will be handled in Step 4 via the flexible locum overflow rule — reserve one flexible MD for Jamail before filling Main/McNair demand.
+   - If Jamail has 5+ rooms, reserve one additional flexible MD for Jamail overflow before filling Main/McNair demand.
+B. Main-anchored MDs all go to Main. (They cannot go elsewhere.) They will be distributed across Main OR rooms by room count — they are NOT pinned to specific room numbers based on their shift name.
+C. Remaining McNair-anchored MDs (excluding Ganderson) are provisionally assigned to McNair campus (OTM OR, OTM Endo, or McNair OR — NOT Jamail; Jamail is Ganderson-only, or locum-only if Ganderson is absent).
 D. Flexible MDs fill Main demand first (MAIN DEMAND − A flexibles needed at Main).
 E. Remaining flexible MDs fill McNair demand (McNAIR CAMPUS DEMAND − N flexibles needed at McNair).
 F. ANY remaining flexible MDs are SURPLUS. Send them to McNair campus and flex off McNair-anchored MDs in strict out-order:
@@ -3006,15 +3035,20 @@ F. ANY remaining flexible MDs are SURPLUS. Send them to McNair campus and flex o
 
 G. LATE-START ABSORPTION CHECK: Every Main OR room with caseTime ≥ 12:00 is absorbable as a 3rd room by an existing 2-room Main MD. These rooms do NOT require their own MD pairing. During Step 4 room assignment, late-start rooms may be distributed as 3rd rooms to existing 2-room Main MDs rather than forming standalone 2-room pairings.
 
-After this step, the total MDs at each campus should equal the demand for that campus (plus Ganderson).
+H. ODD-COUNT MAIN OR EXCEPTION: If the number of non-late-start Main OR rooms is ODD, pairing every Main MD at 2 rooms is impossible. In this case, exactly ONE Main MD is assigned a single room. Preference order for the single-room MD:
+   1. Charge MD (shift contains "Charge", e.g. "OR 12 - MD / Charge") — preferred
+   2. If no Charge MD is working or the Charge MD must have 2 rooms for another reason, pick any Main-anchored or Main-assigned flexible MD
+   This is the ONLY permitted single-room Main MD scenario. It does not apply when Main OR room count is even.
+
+After this step, the total MDs at each campus should equal the demand for that campus (plus Ganderson or her locum substitute).
 
 VERIFICATION AFTER STEP 3:
 - MDs at Main = MAIN DEMAND
 - MDs at McNair campus = McNAIR CAMPUS DEMAND
 - MDs flexed off = SURPLUS (after all Main + McNair demand is filled)
 - Every flexible MD is placed at exactly one campus
-- Main MDs each have 2 rooms (plus possible late-start 3rd room). If any Main MD has only 1 room, you have too many MDs at Main — move one to McNair and flex off one more McNair-anchored.
-- Ganderson is at Jamail, NOT at OTM OR, OTM Endo, or McNair OR.
+- Main MDs each have 2 rooms (plus possible late-start 3rd room), EXCEPT when the non-late-start Main OR room count is odd — then exactly one Main MD (preferably Charge) has 1 room. If more than one Main MD has only 1 room, you have too many MDs at Main — move one to McNair and flex off one more McNair-anchored.
+- Ganderson is at Jamail, NOT at OTM OR, OTM Endo, or McNair OR (when working).
 
 ---
 
@@ -3045,17 +3079,17 @@ RESOLUTION IN THIS EXACT ORDER:
 
 THE BRIDGING MD MUST STILL HAVE THE FEWEST TOTAL ROOMS. A 1+1=2 bridging MD beats a 2+1=3 bridging MD. Only use 2+1 if no 1+1 option exists.
 
-ONE BRIDGE PER PAIR MAXIMUM:
+ONE BRIDGE PER PAIR MAXIMUM (with one exception):
 - At most 1 MD bridges OTM OR ↔ OTM Endo
-- At most 1 MD bridges OTM OR ↔ McNair OR
+- At most 1 MD bridges OTM OR ↔ McNair OR — EXCEPT on triple 07:30 block days at McNair (see Step 4, McNair OR section), where up to 2 MDs may bridge this pair to distribute block coverage
 - At most 1 MD bridges OTM Endo ↔ McNair OR
-- Never have 2 MDs simultaneously bridging the same pair
+- Never have 2 MDs simultaneously bridging the same pair outside the triple-block exception
 
 VERIFICATION BEFORE PROCEEDING TO STEP 4:
 - [ ] No single-room MD exists at McNair campus unless no bridge partner exists AND redistribution is impossible
 - [ ] If two single-room MDs exist at a bridgeable pair, they have been collapsed
 - [ ] Every bridge is a 1+1=2 pairing unless no such pairing is possible
-- [ ] No more than one bridging MD per valid pair
+- [ ] No more than one bridging MD per valid pair (triple-block McNair exception noted)
 
 ---
 
@@ -3065,21 +3099,36 @@ Using the MD allocation from Step 3 and the redundancy check from Step 3.5:
 
 Main OR:
 - Main-anchored MDs stay on Main campus. Their shift name (e.g., "OR 8 - MD", "OR 10 - MD", "OR 12 - MD") indicates SHIFT HOURS, not a specific OR room number. They can be assigned to ANY 2 Main OR rooms.
-- Charge MDs (shifts containing "Charge", e.g., "OR 12 - MD / Charge"): 2 rooms like any other Main MD. Charge is a responsibility, not a room constraint.
-- Main flexible MDs: ANY 2 Main OR rooms.
-- Target: 2 rooms per MD. 3 rooms acceptable ONLY when one or more of the 3 rooms is a late-start (caseTime ≥ 12:00). Never 4+.
+- Charge MDs (shifts containing "Charge", e.g., "OR 12 - MD / Charge"): typically 2 rooms like any other Main MD. Charge is a responsibility, not a room constraint. EXCEPTION: when non-late-start Main OR count is odd (Step 3H), the Charge MD is preferred as the single-room MD — administrative responsibilities accommodate a lighter room load.
+- Main flexible MDs: ANY 2 Main OR rooms. May be assigned 1 room only if selected as the odd-count single-room MD when no Charge MD is working.
+- Target: 2 rooms per MD. 3 rooms acceptable ONLY when one or more of the 3 rooms is a late-start (caseTime ≥ 12:00). 1 room permitted ONLY for exactly one Main MD when odd-count rule applies (Charge preferred). Never 4+.
 - Shift length matters for late-start absorption: a 12-hour MD ("OR 12 - MD" or D12) can cover a late-start 3rd room through the afternoon. An 8-hour MD ("OR 8 - MD" or D8) ENDS at 3pm and should NOT absorb a late-start room.
 - Main Endo: 1 flexible MD covers all 3 Main Endo rooms AND NOTHING ELSE. The Main Endo MD does NOT cover any OR room, any radiology room, or any other area. Main Endo = 3 rooms, full stop.
+  - ENDO-ONCE-PER-WEEK RULE applies to the Main Endo MD: check weeklyEndoTracking. Choose an MD who has not done Main Endo or OTM Endo earlier this week. If no such MD exists, select any flexible MD and flag the repeat (prefer the earliest prior-endo day — see endo rule below).
 - Radiology: 1 flexible MD covers IR, NIR, CT, MRI, RM-IR General, RM-IR MRI (all of them, do not flag). This MD does not cover Main Endo or any OR room.
 - Late-start rooms (caseTime ≥ 12:00): preferentially absorbed as 3rd rooms by existing 2-room Main MDs. DISTRIBUTE late-start rooms across DIFFERENT MDs when possible — do NOT stack multiple late-start rooms under one MD if other 2-room Main MDs are available to absorb them. Example: if OR 23 and OR 24 are both late-starts, they go to two different 2-room MDs (becoming each of their 3rd rooms), not both to one MD.
 
 McNair OR:
-- 1 MD covers all 1-3 McNair OR rooms. Never 1 MD per room.
+- 1 MD covers all 1-3 McNair OR rooms. Never 1 MD per room (see triple-block exception below).
 - Ganderson NEVER covers McNair OR. She is Jamail-only.
-- If multiple simultaneous 07:30 block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed):
+
+Block case coverage (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed):
+
+- TWO simultaneous 07:30 block cases:
   - PREFERRED: find a block-capable MD already at OTM OR with fewer than 3 rooms; they bridge 1 McNair block room
   - ACCEPTABLE: 1 McNair MD covers all including 2 blocks
   - NEVER: create a 1-room McNair MD
+
+- THREE simultaneous 07:30 block cases (rare but valid):
+  - A single MD cannot physically cover 3 simultaneous 07:30 inductions. The block coverage MUST split across 3 different block-capable MDs — one per block case.
+  - REQUIRED STRUCTURE:
+    - MD #1: covers block case A + non-block McNair rooms (reaches 2-3 rooms)
+    - MD #2: covers block case B + non-block McNair rooms OR bridges to OTM OR (reaches 2-3 rooms)
+    - MD #3: covers block case C + bridges to an OTM OR room (reaches 2 rooms via bridge)
+  - Each of the 3 MDs must end with at least 2 rooms total (bridging across McNair OR ↔ OTM OR counts toward the 2-room minimum per Step 3.5).
+  - This is the ONE scenario where MORE THAN ONE MD bridges McNair OR ↔ OTM OR. The one-bridge-per-pair rule in Step 3.5 is relaxed specifically for triple-block days.
+  - If only 2 block-capable MDs are available (not 3), fall back to: 1 MD covers 2 block cases (acceptable under time pressure — inductions staggered by minutes), 2nd MD covers the 3rd block case + other McNair rooms. Flag this in FLAGS.
+  - NEVER: leave a 07:30 block case covered by a non-block-capable MD.
 
 OTM OR and OTM Endo:
 - Target: 2-3 rooms per MD at each area
@@ -3089,14 +3138,22 @@ OTM OR and OTM Endo:
 - The bridging MD takes the FEWEST total rooms — if another OTM MD has 2 rooms, the bridging MD has 2 rooms too (1 OTM OR + 1 OTM Endo, not 2+2)
 - Non-bridging OTM MDs concentrate in one area with 2-3 rooms
 - Ganderson NEVER covers OTM OR or OTM Endo.
+- ENDO-ONCE-PER-WEEK RULE applies to any MD assigned to OTM Endo rooms: check weeklyEndoTracking. Prefer MDs who have not done Main Endo or OTM Endo earlier this week. If a repeat is unavoidable, flag it (prefer earliest prior-endo day).
 
 Jamail OR:
-- Ganderson covers all open Jamail rooms (up to 4, no flag)
-- ONLY Ganderson covers Jamail. No other MD is ever assigned to Jamail unless Ganderson is not working that day.
+- Ganderson covers all open Jamail rooms (up to 4, no flag).
+- ONLY Ganderson covers Jamail in the standard case. Two exceptions:
 
-Mesbah displacement:
-- Mesbah is a flexible locum MD with no special placement rule. She can be assigned to Main or to McNair campus as needed.
-- Historical note: she was often at OTM Endo doing 3 rooms, but this is not mandatory.
+  (1) JAMAIL OVERFLOW (5+ rooms): If 5 or more Jamail rooms have cases, an additional flexible locum MD is needed.
+     - 5 rooms → 3 (locum) + 2 (Ganderson)
+     - 6+ rooms → even split between Ganderson and the locum MD (e.g. 6 rooms = 3+3, 7 rooms = 3+4 or 4+3)
+     - 5+ rooms is rare; 6+ is essentially hypothetical.
+     Eligible overflow MDs are any flexible locum (Cross Country or Caliber) not needed at Main or McNair. Known candidates: Chen, Ninan, Medrano-England, Nazareth, Ani — all equally eligible, no ranking among them.
+     If no flexible MD is available, flag the overflow.
+
+  (2) GANDERSON ABSENT (vacation / PTO / not on schedule): Ganderson is not in the staff list that day. All Jamail rooms must be covered by another MD. Assign one flexible locum MD (Cross Country or Caliber — Chen, Ninan, Medrano-England, Nazareth, Ani all equally eligible) to cover all open Jamail rooms (up to 4). If Jamail has 5+ rooms AND Ganderson is absent, a second flexible MD covers the overflow with an even split between the two locums.
+
+- In all cases: Jamail is never covered by a Main-anchored or McNair-anchored MD. Jamail MDs must be flexible/locum.
 
 ---
 
@@ -3112,8 +3169,11 @@ SINGLE-ROOM MD SCAN (ALL CAMPUSES):
    - Option A (Main): Redistribute a room from a 3-room same-campus MD to them (making both 2-room). Preferred.
    - Option B (McNair): Reassign to Main OR to absorb a late-start room, bridge with another McNair single-room, or flex off.
    - Option C: Flex them off per Step 3 out-order rules (only after McNair-anchored MDs have been flexed).
-- A single-room MD ANYWHERE is a failure state. Resolve it before outputting.
-- EXCEPTION: Bridging MDs with 1+1=2 across two areas are NOT single-room MDs (they have 2 rooms total).
+- A single-room MD is a failure state EXCEPT in these cases:
+  - Bridging MDs with 1+1=2 across two areas (they have 2 rooms total)
+  - ODD-COUNT MAIN OR: exactly ONE Main MD with 1 room when non-late-start Main OR count is odd (Charge MD preferred — see Step 3H)
+  - TRIPLE-BLOCK McNAIR: on triple 07:30 block days, bridging MDs may have 1 McNair + 1 OTM = 2 rooms; this is not a single-room failure
+- Any other single-room MD must be resolved before outputting.
 
 ANCHORING SCAN:
 - [ ] No MD is assigned ONLY to a specific room number matching their shift name. "OR 8 - MD" does NOT mean OR room 8. "OR 10 - MD" does NOT mean OR room 10. "OR 12 - MD" does NOT mean OR room 12. The number is HOURS. Main-anchored MDs go to ANY Main OR rooms.
@@ -3140,35 +3200,101 @@ Every APP slot in your output MUST be filled from this exact pool. Any person no
 
 The APP pool and the MD list are two DISJOINT closed sets. They never overlap.
 
-Classify each APP:
+Classify each APP by agency FIRST, then apply the appropriate rule:
+
+BAYLOR APPs (agency = Baylor or similar): classified by shift label.
 - MAIN-ONLY: Baylor APPs without "-MN" in their shift. Assign only to Main OR, Main Endo, radiology.
 - McNAIR-ONLY: Baylor APPs with "-MN" in their shift. Assign only to McNair OR, OTM OR, OTM Endo, Jamail OR.
-- FLEXIBLE: Cross Country and Caliber APPs. Assign to either campus.
+
+LOCUM APPs (agency = Cross Country, Caliber, or other locum agency): shift labels are generic and provide no campus signal. Classify by NAME against the lists below:
+
+- McNAIR-ONLY LOCUMS: these 16 locums are campus-locked to McNair (McNair OR, OTM OR, OTM Endo, Jamail OR) regardless of shift label:
+  Sagar Patel, Andrew Bagos, Mark Doria, Lina Eisa, Audra Jackson, Lee Mabry, Tanya McGowan, Amanda Messarra, Adriana Montoya, Tammy Moore, Natty Pitera Okojie, Carla Rose, Evie Schoene, Tracey Sheffield, Khadijah Udu, Young Wright
+
+- MAIN-ONLY LOCUMS: these 2 locums are campus-locked to Main (Main OR, Main Endo, radiology) regardless of shift label:
+  Zamantha Seeman, Zehneel Jiwani
+
+- FLEXIBLE LOCUMS: all other Cross Country / Caliber / locum APPs not appearing in either list above. Assign to either campus.
+
+Before assigning any locum APP, check both lists. If the name matches, the campus lock applies. If it does not match, the locum is flexible.
+
+---
+
+ENDO-ONCE-PER-WEEK RULE (APPLIES TO MDs AND APPs, MAIN ENDO AND OTM ENDO):
+
+- Each MD AND each APP — Baylor or locum — should do endo AT MOST ONCE per work week.
+- Main Endo and OTM Endo BOTH count. Someone who did Main Endo Monday cannot do OTM Endo Wednesday (and vice versa).
+- Check weeklyEndoTracking in rules. This tracks all MDs and APPs assigned to Main Endo or OTM Endo each day Mon-Fri. Reset each Monday. Entries are in the format "Name (MD - Main Endo)" or "Name (APP - OTM Endo 3)" — match by name with role prefix for reliability.
+- Before assigning any MD or APP to Main Endo OR OTM Endo, check if their name appears in weeklyEndoTracking for this week. If yes, choose a different person.
+
+- UNAVOIDABLE-REPEAT TIEBREAKER: If every eligible MD (or every eligible APP) for an endo slot has already done endo this week — meaning a repeat is unavoidable — do NOT pick arbitrarily. Among the candidates who have already done endo, prefer the one whose prior endo was EARLIEST in the week. Ranking:
+  1. Mon (most preferred to repeat — most recovery time since last endo)
+  2. Tue
+  3. Wed
+  4. Thu (least preferred to repeat — did endo most recently)
+  Do NOT assign someone to endo on consecutive days if any candidate with an earlier prior-endo day is available. A Mon → Fri repeat is strongly preferred over a Thu → Fri repeat.
+
+- FLAG (not block): a repeat-endo assignment is sometimes unavoidable if the staff pool is exhausted. Flag these cases per Step 7: "Repeat endo: [name] (role: MD/APP; prior: [day, Main/OTM]; today: [Main Endo / OTM Endo room X])"
+- This rule applies to ALL MDs and ALL APPs (Baylor and locum).
+
+---
 
 ASSIGNMENT ORDER:
-1. Jamail OR APPs first (smallest pool):
-   - Carla Rose (preferred), then Karina Kima, then Audra Jackson, Evie Schoene, Mark Doria
-   - After pool exhausted, fall back to any McNair-eligible APP
+
+1. Jamail OR APPs first (smallest pool). Jamail is the priority assignment for a specific set of APPs:
+
+   TIER 1 (highest priority — assign to Jamail unless forced out by endo-once-per-week rule):
+   - Karina Kima (top priority, Baylor) — NEVER pulled from Jamail for any reason
+   - Carla Rose (locum)
+   - Audra Jackson (locum)
+   - Evie Schoene (locum)
+
+   These 4 APPs should be at Jamail whenever Jamail has cases. Rose, Jackson, and Schoene may be pulled from Jamail to cover OTM Endo rooms ONLY when no other McNair-eligible APP is available due to the once-per-week endo rule. Up to 3 of them may be pulled if OTM Endo demand requires it and no other APPs are eligible. Kima is never pulled.
+
+   TIER 2 (Jamail-eligible pool — assigned to Jamail when Tier 1 is insufficient, or when Jamail has more rooms than Tier 1 can cover):
+   Andrew Bagos, Nina Castro-Koshy, Candice Hude, Angela Lauritano, Sandy Papa, Sagar Patel, Hong Phan, Tracey Sheffield, Diana Suen, Lee Mabry, Mark Doria
+   Plus: any Baylor APP (all Baylor APPs are Jamail-eligible).
+
+   ASSIGNMENT LOGIC:
+   a. Count Jamail rooms needing APPs.
+   b. Fill Jamail rooms from Tier 1 first, in order: Kima → Rose → Jackson → Schoene.
+   c. If Jamail has more rooms than Tier 1 APPs working, fill remaining rooms from Tier 2 (any order).
+   d. If OTM Endo cannot be staffed without pulling Tier 1 APPs (due to endo-once-per-week rule), pull in this order: Schoene → Jackson → Rose. Up to 3 may be pulled if necessary. Kima is never pulled.
+
+   EXCEPTIONS:
+   - If a Tier 1 APP is not working that day, skip them in the priority order.
+   - If Jamail has no cases, Tier 1 APPs (including Kima) become available for other McNair assignments.
+
 2. Main Endo APPs (each room a different APP — 3 unique APPs):
    - Prefer locum APPs over Baylor
-   - HARD CONSTRAINT: once-per-week endo rule. Check weeklyEndoTracking in rules. If a locum APP has already done endo this week, choose a different one. Once-per-week trumps locum preference.
+   - HARD CONSTRAINT: endo-once-per-week rule (see above). Once-per-week trumps locum preference.
+
 3. Radiology APPs (2 APPs default, never less):
    a. APP #1: NIR. One APP covers ALL NIR rooms (NIR 1, NIR 2, etc.) — shared across NIR only.
    b. APP #2: IR + CT + MRI + RM-IR General + RM-IR MRI. ONE different APP covers all of these — shared across non-NIR radiology.
    c. TOTAL RADIOLOGY APPs DEFAULT = 2. The NIR APP is NOT the same person as the IR/CT/MRI APP. They are two distinct people.
-   d. SPLIT UPGRADE (rare): if IR/CT/MRI case times overlap in a way that makes sharing infeasible AND excess APPs are available after every other case-bearing room is staffed, a 3rd APP may be added to split IR/CT/MRI. Otherwise keep the shared arrangement.
+   d. SPLIT UPGRADE (rare): only if Step 2.5 identified SURPLUS APPs AND IR/CT/MRI case times overlap in a way that makes sharing infeasible, a 3rd APP may be added to split IR/CT/MRI. Otherwise keep the shared arrangement.
    e. Staff only radiology rooms where anes type is "General" (exception: NIR always, even non-General).
+
 4. McNair OR, OTM OR, OTM Endo rooms
+   - For OTM Endo assignments: apply the ENDO-ONCE-PER-WEEK RULE (see above). Check weeklyEndoTracking before assigning any APP to OTM Endo. Skip APPs who have already done endo this week (Main or OTM).
+   - Jamail Tier 1 pull exception (see step 1): if no McNair APP is available for OTM Endo due to the endo rule, pull from Jamail Tier 1 (Schoene → Jackson → Rose; never Kima).
+
 5. Main OR rooms
-6. Late-start Main OR rooms last — prefer D12 / D12(M) APPs for these
+
+6. Late-start Main OR rooms last — only assign an APP if Step 2.5 identified SURPLUS APPs; prefer D12 / D12(M) APPs for these. If APP demand is EXACT or DEFICIT, leave late-start rooms without an APP and flag them.
 
 D5 APPs (7a-12p):
-- Default: leave unassigned (float)
-- Alternative: assign to a McNair-campus room whose case finishes by 12:00
+- Default: assign to a McNair-campus room (McNair OR, OTM OR, OTM Endo, or Jamail OR) whose case is scheduled to finish by 12:00. Short endo cases and quick OR cases are typical matches.
+- If no McNair-campus room meeting the finish-by-12:00 criterion is available, leave the D5 APP unassigned (float) and list in FLAGS.
+- D5 APPs should NOT be assigned to:
+  - Main campus rooms (Main OR, Main Endo, radiology) — these typically run past noon
+  - Any room with a case start time that makes a 12:00 finish infeasible
+  - Late-start rooms (caseTime ≥ 12:00) — the D5 shift ends before those cases begin
 
 D12 APPs:
 - Fine to assign to 7:30 AM rooms — they start at 7:00 like everyone else
-- Rule: if a late-start room exists, prefer assigning a D12 APP to it (but still assign D12 APPs to 7:30 rooms if needed)
+- Rule: if a late-start room exists AND Step 2.5 identified SURPLUS APPs, prefer assigning a D12 APP to it (but still assign D12 APPs to 7:30 rooms if needed)
 
 DEDUPLICATION:
 - Each APP appears in exactly ONE room (NIR rooms sharing one APP is the sole exception; IR/CT/MRI sharing one APP is the second exception when not split)
@@ -3190,14 +3316,18 @@ Rooms in roomsNeeding with no cases today, that are NOT mandatory-staff (OR 10, 
 
 Include in FLAGS only:
 - Flex-off by shift designation: "1st Out-MNC flexed off — out-order, surplus allocation"
-- Unassigned APPs: list names
+- Unassigned APPs (surplus / float): list names
+- APP DEFICIT (critical short-staffing): "APP DEFICIT: supply [N] < demand [M]. Rooms without APP: [list]"
+- Late-start rooms without APP (when no surplus): "Late-start rooms without APP (no surplus): [list]"
 - Empty unstaffed rooms: list them
 - Genuine exceptions:
   - Main MD with 3 rooms where NONE are late-start: "3-room Main MD without late-start: [MD name] — rooms [list]"
-  - Repeat-endo APP violations
+  - Repeat endo this week (applies to MDs and APPs, both Main Endo and OTM Endo): "Repeat endo: [name] (role: MD/APP; prior: [day, Main/OTM]; today: [Main Endo / OTM Endo room X])"
   - Short-staffed day
   - Block-case handled without OTM bridge when one was available
   - Multiple late-start rooms stacked under one MD when distribution was possible
+  - Triple-block McNair day with only 2 block-capable MDs available (one MD covered 2 blocks)
+  - Jamail overflow with no flexible MD available
 
 Do NOT include:
 - "Designated MD" informational lines
@@ -3209,6 +3339,7 @@ Do NOT include:
 - 3-room Main MDs when the 3rd room IS a late-start (expected)
 - Late-start D12 APP coverage (expected)
 - Late-start room absorbed as 3rd room by existing Main MD (expected)
+- Single-room Charge MD on odd-count Main OR day (expected, see Step 3H)
 
 ---
 
@@ -3232,25 +3363,30 @@ ABSOLUTE RULES:
 - [ ] OR 10 and OR 15 have MD and APP
 - [ ] NIR-1 has MD and APP
 - [ ] Main Endo MD covers ONLY Main Endo 1-3 — not any OR, not radiology
-- [ ] Ganderson is ONLY at Jamail — not at OTM OR, OTM Endo, McNair OR, or Main anywhere
+- [ ] Ganderson is ONLY at Jamail (when working) — not at OTM OR, OTM Endo, McNair OR, or Main anywhere
 - [ ] No MD is pinned to a specific room number based on their shift hours
 
 BUDGET / ALLOCATION:
-- [ ] MAIN DEMAND and McNAIR CAMPUS DEMAND computed (with M_LATE subtracted from Main)
-- [ ] Main has exactly MAIN DEMAND MDs (no 1-room Main flexibles)
+- [ ] MAIN DEMAND and McNAIR CAMPUS DEMAND computed (with M_LATE subtracted from Main, JAMAIL MD COUNT added to McNair)
+- [ ] APP demand computed per Step 2.5 (ALL_ROOMS − LATE_ROOMS − EXTRA_RADIOLOGY)
+- [ ] If DEFICIT, dedicated APP DEFICIT flag emitted
+- [ ] Main has exactly MAIN DEMAND MDs (no 1-room Main flexibles, except odd-count Charge exception)
 - [ ] McNair campus has exactly McNAIR CAMPUS DEMAND MDs
 - [ ] Flex-off count equals the SURPLUS computed in Step 3
 - [ ] Flex-off is in strict out-order (1st → 2nd → 3rd)
+- [ ] At most ONE Main MD has a single room, and only when non-late-start Main OR count is odd (Charge MD preferred)
 
 CAMPUS SEPARATION:
 - [ ] No Main-anchored MD appears at McNair
 - [ ] No McNair-anchored MD appears at Main
-- [ ] Ganderson is only at Jamail
+- [ ] Ganderson is only at Jamail (when working)
 - [ ] Main-only APPs are only at Main; McNair-only APPs are only at McNair
+- [ ] Locum APPs classified by name list (McNair-only vs Main-only vs flexible), not by shift label
+- [ ] No McNair-only locum appears in a Main assignment; no Main-only locum appears in a McNair assignment
 
 CROSS-LOCATION:
 - [ ] Only 1 MD bridges OTM OR ↔ OTM Endo (if any)
-- [ ] Only 1 MD bridges OTM OR ↔ McNair OR (if any)
+- [ ] Only 1 MD bridges OTM OR ↔ McNair OR (if any) — or up to 2 MDs on triple 07:30 block days at McNair
 - [ ] Only 1 MD bridges OTM Endo ↔ McNair OR (if any)
 - [ ] Every bridging MD has the fewest total rooms (prefer 1+1=2)
 - [ ] No single-room MD exists at any campus unless bridging and redistribution are both impossible (post-assignment scan in Step 4.5 completed)
@@ -3259,14 +3395,24 @@ ROOM DISTRIBUTION:
 - [ ] No 3-room Main MD exists without at least one late-start room
 - [ ] Late-start rooms distributed across different MDs when possible
 
+ENDO RULE:
+- [ ] Main Endo MD: no repeat-endo this week (per endo-once-per-week rule — Main + OTM combined)
+- [ ] Main Endo APPs: 3 unique, prefer locums, no repeat-endo this week
+- [ ] OTM Endo MDs: no repeat-endo this week
+- [ ] OTM Endo APPs: no repeat-endo this week
+- [ ] weeklyEndoTracking in rules consulted before assigning any endo MD or APP
+- [ ] If a repeat-endo was necessary, the chosen person had the EARLIEST prior-endo day among all candidates (prefer Mon repeat over Thu repeat)
+
 APPs:
 - [ ] APP pool built from STAFF WORKING TODAY with credential "CRNA" or "CAA" only
 - [ ] No MD appears in any APP slot
-- [ ] Jamail APPs come from Jamail pool (Carla Rose if working, then Kima)
-- [ ] Main Endo APPs: 3 unique, prefer locums, no repeat-endo this week
+- [ ] Kima is at Jamail (if working and Jamail has cases) — top priority, NEVER pulled
+- [ ] Rose, Jackson, Schoene are at Jamail (if working and Jamail has room capacity) unless pulled for OTM Endo by once-per-week rule
+- [ ] Tier 1 pulls (if any) follow the Schoene → Jackson → Rose order; Kima is never in a non-Jamail assignment when Jamail has cases
 - [ ] Radiology: NIR APP + IR/CT/MRI APP = 2 different people by default (total ≤ 2 unless split conditions met)
 - [ ] No APP appears in 2 rooms (shared NIR and shared IR/CT/MRI are the sole exceptions)
 - [ ] No case-bearing room is missing an APP while unassigned APPs remain
+- [ ] D5 APPs (7a-12p) assigned to a McNair-campus room with case finishing by 12:00, or floated if no match exists
 
 FLAG DISCIPLINE:
 - [ ] No flags narrate expected behaviors
