@@ -2862,10 +2862,10 @@ function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeedin
 
 CRITICAL OUTPUT RULE: Output ONLY a raw JSON array. No prose, no explanation, no markdown. Start with [ and end with ].
 
-MANDATORY FIRST ELEMENT: The FIRST element of the output array MUST be a "WORK" block that exposes your Step 2, 2.5, and 3 computations. See the WORK BLOCK FORMAT section below. Every subsequent assignment MUST be consistent with the WORK block.
+MANDATORY FIRST ELEMENT: The FIRST element of the output array MUST be a "WORK" block that exposes your computations. See the WORK BLOCK FORMAT section below.
 
-VERSION 9 PHILOSOPHY — NO AUTO-FLEX:
-In v9, you do NOT decide who to flex off. Flex-off is a manual decision made by the scheduler AFTER the schedule is produced. Your job is to produce a complete, fully-covered schedule with EVERY MD in the staff list placed somewhere. All McNair-anchored MDs (including all Out-MNC MDs) receive assignments. The scheduler will decide who to send home later. This simplifies the rules significantly — there is no BANNED_MDS, no flex-off guard, no "surplus" decision.
+VERSION 9.1 PHILOSOPHY — NO AUTO-FLEX, WITH EXPLICIT SCANS:
+In v9.1, you do NOT decide who to flex off. Flex-off is a manual decision made by the scheduler AFTER the schedule is produced. Your job is to produce a complete, fully-covered schedule with EVERY MD in the staff list placed somewhere. All McNair-anchored MDs (including all Out-MNC MDs) receive assignments. The scheduler will decide who to send home later. v9.1 adds explicit Step 0 pre-classification scans for Ganderson and Tier 1 APPs to prevent detection failures.
 
 ---
 
@@ -2905,7 +2905,7 @@ An MD with shift "OR 8 - MD" is a Main-anchored MD with an 8-hour shift. They ca
    - OTM OR, McNair OR, OTM Endo MD: MAX 4 rooms
    - Main Endo MD: exactly 3 rooms (Main Endo 1, 2, 3)
    - Radiology MD: covers all case-bearing radiology rooms as ONE role
-   - Jamail MD (Ganderson or locum): up to 4 rooms standard, overflow locum added at 5+
+   - Jamail MD (Ganderson or substitute): up to 4 rooms standard, overflow added at 5+
    If you are about to output an MD with MORE rooms than the cap, STOP. This is NOT a flag-able exception. There is no "exceptional circumstances" override. No flag text like "FLAGS-9", "exceptional circumstances", "due to block requirements", or similar may justify a cap violation. The cap is absolute. If you cannot stay under the cap, redistribute rooms to another MD, bridge a flexible MD across a valid pair, or leave the room unassigned with the STRUCTURAL coverage flag.
 
 3. OR 10 and OR 15 must be staffed (MD + APP) even with no listed cases.
@@ -2919,9 +2919,10 @@ An MD with shift "OR 8 - MD" is a Main-anchored MD with an 8-hour shift. They ca
    - No "cross-assigned" exception exists. The Charge MD does NOT cross campuses. Patino/Kim as McNair-anchored stay at McNair campus.
 
 6. LAUREN GANDERSON LOCK — ABSOLUTE, NO EXCEPTIONS (when working).
-   When Lauren Ganderson appears in the staff list, she is ONLY at Jamail OR. She is NEVER at OTM OR, NEVER at McNair OR, NEVER at OTM Endo, NEVER at any Main location. Her staff shift may be labeled "OR - McNair", but that label is MISLEADING — IGNORE IT. Her actual placement is Jamail OR only, always.
+   When Lauren Ganderson appears in the staff list (detected by Step 0 Scan A), she is ONLY at Jamail OR. She is NEVER at OTM OR, NEVER at McNair OR, NEVER at OTM Endo, NEVER at any Main location. Her staff shift may be labeled "OR - McNair", but that label is MISLEADING — IGNORE IT. Her actual placement is Jamail OR only, always.
+   Detection is by NAME, not by shift label. Any shift label Ganderson may have (including "OR - McNair", "PTO - partial", any other label) does not affect her placement. If her name appears in the staff list, she goes to Jamail. Period.
    Before outputting, scan every non-Jamail room assignment. If Ganderson appears in ANY non-Jamail room, STOP and reassign that room to another McNair-campus MD. Ganderson → Jamail. Period.
-   When Ganderson is NOT in the staff list (vacation/PTO), Jamail coverage falls to a flexible locum MD per Step 4 Jamail rules. The lock does not apply when she is absent.
+   When Ganderson is NOT in the staff list (vacation/PTO — genuine absence confirmed by Step 0 Scan A returning NO), Jamail coverage falls to a flexible MD from the closed substitute list in Step 4 Jamail rules. The lock does not apply when she is absent.
 
 7. The Main Endo MD covers ONLY Main Endo 1-3. Never any OR, never radiology, never anything else. Main Endo = exactly 3 rooms, full stop.
 
@@ -2929,7 +2930,7 @@ An MD with shift "OR 8 - MD" is a Main-anchored MD with an 8-hour shift. They ca
 
 9. NO MD IS ANCHORED TO A SPECIFIC ROOM NUMBER BY SHIFT NAME. Shift names like "OR 8 - MD" refer to HOURS worked, not OR room numbers. Main-anchored MDs can be placed in ANY Main OR rooms.
 
-10. EVERY MD IN THE STAFF LIST IS PLACED. In v9, there is no flex-off. Every MD with a shift today receives a room assignment (or a bridge assignment across two rooms). If you find yourself wanting to omit an MD, STOP — find them a placement per Step 4.
+10. EVERY MD IN THE STAFF LIST IS PLACED. In v9.1, there is no flex-off. Every MD with a shift today receives a room assignment (or a bridge assignment across two rooms). If you find yourself wanting to omit an MD, STOP — find them a placement per Step 4.
 
 ---
 
@@ -2940,6 +2941,38 @@ MAIN CAMPUS = Main OR + Main Endo + IR + NIR + CT + MRI + RM-IR General + RM-IR 
 McNAIR CAMPUS = McNair OR + OTM OR + OTM Endo + Jamail OR (four separate areas combined)
 
 "McNair OR" is a specific area with rooms 1-7. "McNair campus" is the whole combined area.
+
+---
+
+## STEP 0 — PRE-CLASSIFICATION SCANS (MANDATORY FIRST)
+
+Before classifying any MD in Step 1, perform these scans on the staffSummary input. Record results in the WORK block JAMAIL field.
+
+### Scan A — GANDERSON SCAN (by name, not by shift label):
+
+Search staffSummary for the exact strings "Lauren Ganderson" OR "Ganderson, Lauren" OR any variant containing both "Lauren" and "Ganderson".
+
+- If found: set GANDERSON_PRESENT = YES. She is Jamail-only regardless of shift label. Ignore ANY shift label she may have — "OR - McNair", "PTO - partial", "OR 10 - MD", or anything else. Skip her in Step 1 classification — she is pre-assigned to Jamail OR rooms (all open Jamail rooms up to 4). Rule 6 applies.
+
+- If not found: set GANDERSON_PRESENT = NO. Jamail coverage will fall to a substitute from the closed Jamail substitute list in Step 4.
+
+This scan is by NAME, not by shift. Even if her shift today is unusual (half day, PTO partial, reassignment), if the name "Lauren Ganderson" appears in the staff list, she goes to Jamail.
+
+### Scan B — TIER 1 APP SCAN (by name):
+
+Search staffSummary for these exact names (case-insensitive, match first and last name):
+- Karina Kima
+- Carla Rose
+- Audra Jackson
+- Evie Schoene
+
+For each one actually found in the staff list, add to TIER_1_WORKING.
+
+If J > 0 (Jamail has any case-bearing rooms), EVERY name in TIER_1_WORKING is LOCKED to Jamail OR from this point forward. The lock is triggered solely by J > 0, NOT by who covers Jamail as MD. Ganderson present, Ganderson absent with substitute, any other scenario — if J > 0 and the APP is in TIER_1_WORKING, they go to Jamail.
+
+Exception: Rose, Jackson, Schoene may be pulled to OTM Endo ONLY if the once-per-week endo rule forces the pull (pull order Schoene → Jackson → Rose). Kima is NEVER pulled from Jamail under any circumstance when J > 0.
+
+Proceed to Step 1 only after both scans complete. Record in WORK block JAMAIL field: "GANDERSON_PRESENT: YES/NO. Tier 1 APPs working: [names or NONE]."
 
 ---
 
@@ -2956,22 +2989,22 @@ The FIRST element of your output array MUST be a WORK block in exactly this shap
 
 The WORK block's notes field must contain ALL of the following fields, in order:
 
-1. "ROOMS: M=X, M_LATE=X (list rooms), K=X, O=X, E=X, J=X"
+1. "ROOMS: M=X (Main OR only — does NOT include Main Endo), M_LATE=X (list rooms), K=X, O=X, E=X, J=X"
+   - M counts Main OR rooms ONLY. Main Endo is counted separately in the +1 Main Endo term of MAIN DEMAND.
    - M MUST include Main OR 10 and Main OR 15 even if no cases today.
 
 2. "MD_DEMAND: MAIN=X (formula), McNAIR=X (formula), TOTAL=X"
 
 3. "MD_SUPPLY: A=X, N=X, F=X, TOTAL=X"
-   - Note: in v9 there is no SURPLUS field. All MDs are placed.
+   - No SURPLUS field in v9.1. All MDs are placed.
 
-4. "JAMAIL: Ganderson working YES/NO. X rooms. Overflow needed YES/NO (if 5+ rooms). Tier 1 APPs working: [explicit names or NONE]."
-   - Scan staff list for Karina Kima, Carla Rose, Audra Jackson, Evie Schoene. List each actually found.
+4. "JAMAIL: GANDERSON_PRESENT: YES/NO. X rooms. Overflow needed YES/NO (if 5+ rooms). Tier 1 APPs working: [explicit names or NONE]. Jamail MD: [Ganderson if present, or name from closed substitute list if absent]."
 
 5. "McNAIR_OR_MDS: list all MDs assigned to McNair OR rooms today, with room counts. Example: 'Hafkin (1st Out-MNC): McNair OR 1-3 (3 rooms) | Tran (3rd Out-MNC): McNair OR 4-6 (3 rooms) | Seibert (Late-MD-MNC): McNair OR 7 (1 room, bridged to OTM OR X)'. Every MD covering McNair OR must be named here."
 
-6. "OTM_COVERAGE: list MDs at OTM OR and OTM Endo with room counts. Example: 'Ritter (2nd Out-MNC): OTM OR 1,2 | Oliver (McNair Call): OTM OR 4 + OTM Endo 3,4,5 (4 rooms total)'."
+6. "OTM_COVERAGE: list MDs at OTM OR and OTM Endo with room counts. Example: 'Ritter (2nd Out-MNC): OTM OR 1,2 | Oliver (McNair Call): OTM OR 4 + OTM Endo 3,4,5 (4 rooms total)'. Room counts MUST match actual assignments."
 
-7. "MAIN_COVERAGE: list Main-anchored MDs and Main-assigned flexible MDs with room counts. Example: 'Medrano-England: OR 10,11 | Kim (Charge): OR 12 (odd-count single) | Ninan: OR 6,7 + OR 23 (late-start 3rd room)'."
+7. "MAIN_COVERAGE: list Main-anchored MDs and Main-assigned flexible MDs with room counts. Example: 'Medrano-England: OR 10,11 | Kim (Charge): OR 12 (odd-count single) | Ninan: OR 6,7 + OR 23 (late-start 3rd room)'. Room counts MUST match actual assignments."
 
 8. "APP_DEMAND: ALL_ROOMS=X, LATE_ROOMS=X, EXTRA_RAD=X, BASELINE=X"
 
@@ -3000,7 +3033,7 @@ The WORK block's notes field must contain ALL of the following fields, in order:
 
 CRITICAL CONSISTENCY RULES:
 
-A. Every MD in the staff list appears in at least one room assignment. No MD is left unplaced. There is no flex-off in v9.
+A. Every MD in the staff list appears in at least one room assignment. No MD is left unplaced. There is no flex-off in v9.1.
 
 B. APP_VERDICT consistency:
    B1. If APP_VERDICT_MAIN is SURPLUS, no Main room has "No APP available" and late-start Main rooms have APPs.
@@ -3012,62 +3045,65 @@ C. Every McNair-anchored MD (Out-MNC, Late-MD-MNC, McNair Call) has a specific r
 
 D. No Main-anchored MD appears in a McNair room. No McNair-anchored MD appears in a Main room. (Absolute Rule 5.)
 
-E. WORK block lists are OBSERVATION of actual assignments, not aspirational.
+E. WORK BLOCK NARRATIVE AUDIT: The room counts and MD placements shown in McNAIR_OR_MDS, OTM_COVERAGE, and MAIN_COVERAGE narratives MUST exactly match the actual room assignments below. Before outputting, re-count each MD's rooms from the actual assignments and verify the WORK narrative matches. Discrepancy = invalid output.
 
-F. Every working Tier 1 APP (Kima, Rose, Jackson, Schoene) is at Jamail when Jamail has cases, unless pulled for OTM Endo by once-per-week rule. Kima NEVER pulled.
+F. Every working Tier 1 APP (Kima, Rose, Jackson, Schoene) from TIER_1_WORKING is at Jamail when J > 0, regardless of who the Jamail MD is. Kima NEVER pulled.
 
-G. Ganderson is ONLY at Jamail when working.
+G. Ganderson is ONLY at Jamail when detected by Step 0 Scan A.
 
 SELF-CONSISTENCY CHECK BEFORE OUTPUTTING:
 - Read your WORK block.
-- Scan every subsequent assignment.
+- Verify GANDERSON_PRESENT was determined by Step 0 Scan A (name-based), not by shift label inference.
+- Verify TIER_1_WORKING was determined by Step 0 Scan B (name-based).
+- If GANDERSON_PRESENT = YES, Ganderson appears in Jamail OR rooms.
+- If J > 0 and Kima in TIER_1_WORKING, Kima appears in a Jamail OR room.
 - Every MD in staff list has at least one room → if not, find them one.
 - No MD has more rooms than the cap (Main: 3, McNair/OTM: 4, Main Endo: 3, Jamail: 4 base) → if any exceeds, redistribute.
 - No Main-anchored MD at McNair, no McNair-anchored MD at Main → if any, reassign.
-- Ganderson only at Jamail → if elsewhere, reassign.
-- Every Tier 1 APP working with Jamail having cases is at Jamail (Kima especially) → fix if not.
+- Every Tier 1 APP working with J > 0 is at Jamail (Kima especially) → fix if not.
 - APP_VERDICT_MAIN=SURPLUS means no Main "No APP available" → reassign surplus if found.
 - APP_VERDICT_MCNAIR=SURPLUS or EXACT means no McNair "No APP available" → reassign or reclassify.
-- APP_VERDICT_MCNAIR=DEFICIT means single STRUCTURAL flag, no per-room duplicates → consolidate if found.
+- APP_VERDICT_MCNAIR=DEFICIT means single STRUCTURAL flag, no per-room duplicates.
 - OR 10, OR 15, Main Endo 1-3, NIR-1 present in assignments → add if missing.
 - No APP appears in 2 non-shared-radiology rooms → remove duplicate.
 - No MD's rooms span both campuses → remove and reassign.
+- WORK block narratives match actual room assignments (Rule E).
 
 ---
 
 ## STEP 1 — CLASSIFY EVERY MD
 
-For each MD in the staff list, tag them:
-- MAIN-anchored: shift starts with "OR" followed by a number indicating HOURS (e.g., "OR 8 - MD", "OR 10 - MD", "OR 12 - MD", "OR 10 - MD / Charge"). These MDs work Main campus only.
-- McNAIR-anchored: shift contains "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC", or "OR - McNair"
-- FLEXIBLE: Cross Country, Caliber, or Locums (D5/D8/D10/D12 shifts)
+Step 0 is complete. If GANDERSON_PRESENT = YES, skip Ganderson in this classification — she is pre-assigned to Jamail.
 
-Ganderson is a special McNair-anchored case: always Jamail only. See Absolute Rule 6.
+For each remaining MD in the staff list, tag them:
+- MAIN-anchored: shift starts with "OR" followed by a number indicating HOURS (e.g., "OR 8 - MD", "OR 10 - MD", "OR 12 - MD", "OR 10 - MD / Charge"). These MDs work Main campus only.
+- McNAIR-anchored: shift contains "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC". (Note: if "OR - McNair" appears and the MD is NOT Ganderson, treat as McNair-anchored.)
+- FLEXIBLE: Cross Country, Caliber, or Locums (D5/D8/D10/D12 shifts)
 
 ---
 
 ## STEP 2 — COUNT ROOMS AND COMPUTE MD DEMAND
 
 Count rooms needing MD coverage:
-- M = Main OR rooms (always include OR 10, OR 15 even if empty)
+- M = Main OR rooms ONLY (always include OR 10, OR 15 even if empty). Do NOT include Main Endo in M.
 - M_LATE = subset of M with caseTime ≥ 12:00
 - K = McNair OR rooms with cases
 - O = OTM OR rooms with cases
 - E = OTM Endo rooms with cases
 - J = Jamail OR rooms with cases
 
-Compute MD demand (informational only in v9 — all MDs are placed regardless):
-- MAIN DEMAND = ceil((M − M_LATE) / 2) + 1 (Main Endo) + 1 (radiology)
+Compute MD demand (informational in v9.1 — all MDs placed regardless):
+- MAIN DEMAND = ceil((M − M_LATE) / 2) + 1 (Main Endo MD — separate from M) + 1 (radiology MD)
 - JAMAIL MD COUNT = 1 if 1-4 rooms, 2 if 5+ rooms, 0 if none.
 - McNAIR CAMPUS DEMAND = ceil((K + O + E) / 3) + JAMAIL MD COUNT
 
 Count MD supply:
 - A = Main-anchored MDs
-- N = McNair-anchored MDs (including Ganderson)
+- N = McNair-anchored MDs (including Ganderson if GANDERSON_PRESENT = YES)
 - F = flexible MDs
 - TOTAL SUPPLY = A + N + F
 
-In v9, demand vs. supply is informational only. All MDs are placed. If supply > demand, extras absorb as 3rd rooms, bridges, or redistributed coverage. If supply < demand, flag short-staffing.
+In v9.1, demand vs. supply is informational only. All MDs are placed. If supply > demand, extras absorb as 3rd rooms, bridges, or redistributed coverage. If supply < demand, flag short-staffing.
 
 ---
 
@@ -3086,9 +3122,9 @@ Count APP supply:
 - P_FLEX = flexible APPs (other locums)
 - TOTAL APP SUPPLY = P_MAIN + P_MCN + P_FLEX
 
-Compare supply to demand — produce three verdicts:
+Produce three verdicts:
 
-MAIN_APP_DEMAND = Main-campus case-bearing rooms + mandatory Main rooms − LATE_ROOMS_MAIN − EXTRA_RADIOLOGY
+MAIN_APP_DEMAND = Main-campus case-bearing rooms + mandatory Main − LATE_ROOMS_MAIN − EXTRA_RADIOLOGY
 McNAIR_APP_DEMAND = McNair-campus case-bearing rooms (McNair OR + OTM OR + OTM Endo + Jamail OR)
 
 Flex APP allocation:
@@ -3109,13 +3145,13 @@ Decision rules:
 
 ## STEP 3 — ALLOCATE MDs TO CAMPUSES
 
-Do this in order. Remember: every MD gets a placement. No flex-off.
+Every MD gets a placement. No flex-off.
 
-A. Ganderson → Jamail. FIRST. See Absolute Rule 6.
-   - If Ganderson is absent, reserve one flexible locum for Jamail.
-   - If Jamail has 5+ rooms, reserve one additional flexible locum for overflow.
+A. Ganderson → Jamail (if GANDERSON_PRESENT = YES from Step 0). FIRST.
+   - If GANDERSON_PRESENT = NO, assign one MD from the CLOSED JAMAIL SUBSTITUTE LIST (see Step 4) for Jamail coverage.
+   - If Jamail has 5+ rooms, reserve one additional MD from the substitute list for overflow.
 
-B. Main-anchored MDs → Main campus. They can be assigned to ANY Main OR rooms.
+B. Main-anchored MDs → Main campus. Any Main OR rooms.
 
 C. McNair-anchored MDs (excluding Ganderson) → McNair campus. Distribute across:
    - McNair OR: all Out-MNC MDs (1st, 2nd, 3rd) stay here or bridge to OTM OR. At minimum, 2 MDs cover McNair OR when K ≥ 5; 1 MD when K ≤ 4.
@@ -3127,7 +3163,7 @@ D. Flexible MDs fill Main demand first (so every Main OR room is covered), then 
 E. EVERY MD PLACED CHECK: After A-D, every MD in staff list has at least one room. If any MD is unplaced:
    - Place them at the campus with capacity (under cap).
    - If both campuses at cap, add them as a 3rd room for a 2-room Main MD (late-start absorption) or a bridge MD.
-   - If no capacity anywhere, place at OTM with a note (this is rare).
+   - If no capacity anywhere, place at OTM with a note (rare).
 
 F. LATE-START ABSORPTION: Main OR rooms with caseTime ≥ 12:00 are 3rd rooms for existing 2-room Main MDs. Distribute across DIFFERENT MDs when possible.
 
@@ -3185,7 +3221,7 @@ McNair OR:
 - K = 4-6: at least 2 MDs cover (respecting 4-room cap).
 - K = 7: at least 2 MDs cover (e.g., 3+4 or 4+3), or 3 MDs if bridging warrants. NEVER 1 MD at 7 rooms (Absolute Rule 2).
 
-McNAIR OR MD SELECTION (v9 simplified — no flex-off logic):
+McNAIR OR MD SELECTION (v9.1 simplified — no flex-off logic):
 
 Valid MDs for McNair OR:
 - Any Out-MNC MD (1st, 2nd, 3rd) — all placed, not flexed
@@ -3215,34 +3251,73 @@ OTM OR and OTM Endo:
 - Endo-once-per-week rule applies.
 
 Jamail OR:
-- Ganderson covers all open rooms up to 4.
-- 5+ rooms: Ganderson + 1 flexible locum (even split).
-- Ganderson absent: 1 flexible locum covers up to 4 rooms.
-- NEVER covered by Main-anchored or other McNair-anchored MDs.
+
+CLOSED JAMAIL SUBSTITUTE LIST (v9.1 — closed set, no other MDs permitted):
+- Qiping Chen
+- Tara Ninan
+- Karla Medrano-England
+- Veeral Nazareth
+- Chidi Ani
+
+These 5 MDs are the ONLY MDs permitted at Jamail when Ganderson is absent. No other MD — flexible, anchored, or otherwise — may cover Jamail. If an MD not on this list is placed at Jamail (other than Ganderson herself), this is a CATASTROPHIC ERROR.
+
+Jamail coverage rules:
+- GANDERSON_PRESENT = YES: Ganderson covers all open Jamail rooms (up to 4).
+- GANDERSON_PRESENT = YES AND J ≥ 5: Ganderson covers 3-4 rooms + 1 MD from the closed substitute list covers overflow (even split).
+- GANDERSON_PRESENT = NO AND J ≤ 4: 1 MD from the closed substitute list covers all Jamail rooms.
+- GANDERSON_PRESENT = NO AND J ≥ 5: 2 MDs from the closed substitute list (even split).
+
+Selection within the closed list: pick whichever substitute is least needed at Main or McNair that day. No ranking within the list — all 5 are equally eligible.
+
+If GANDERSON_PRESENT = NO AND none of the 5 substitute MDs are in the staff list today: flag "Jamail overflow with no approved substitute available" and leave Jamail unstaffed.
+
+NEVER covered by Main-anchored MDs, McNair-anchored MDs other than Ganderson, or any flexible MD not on the closed list.
 
 ---
 
 ## STEP 4.5 — POST-ASSIGNMENT SCAN (MANDATORY)
 
-After assignments, scan for failures and fix before proceeding:
+After assignments, scan for failures and fix before proceeding.
 
 EVERY-MD-PLACED SCAN:
 - For each MD in staff list, verify they appear in at least one room assignment.
 - If any MD is missing, add them to an appropriate room (bridge, 3rd room, or lightly-loaded area).
 
 GANDERSON SCAN:
-- Ganderson only at Jamail. If elsewhere, remove and reassign room to valid McNair MD.
+- If GANDERSON_PRESENT = YES (from Step 0), verify Ganderson appears ONLY in Jamail OR rooms. If elsewhere, remove and reassign room to valid McNair MD.
+- If GANDERSON_PRESENT = NO, verify no one named Ganderson appears in any assignment.
+
+JAMAIL SUBSTITUTE SCAN:
+- If GANDERSON_PRESENT = NO, verify the Jamail MD is from the CLOSED JAMAIL SUBSTITUTE LIST (Chen, Ninan, Medrano-England, Nazareth, Ani).
+- If the Jamail MD is NOT on the closed list, this is a CATASTROPHIC ERROR — reassign to a substitute or flag the overflow.
+
+TIER 1 APP LOCK SCAN:
+- If J > 0, scan the Jamail OR assignments. For every name in TIER_1_WORKING (from Step 0 Scan B), verify they appear in a Jamail OR room.
+- Kima NEVER at non-Jamail room if J > 0.
+- Rose, Jackson, Schoene at Jamail unless explicitly pulled for OTM Endo by once-per-week exception (document the pull in a repeat-endo flag).
 
 CROSS-CAMPUS SCAN:
 - No Main-anchored MD at McNair. No McNair-anchored MD at Main.
 - If found, this is a CATASTROPHIC ERROR — reassign before outputting.
 
-HARD CAP SCAN (rewrites, not flags):
-- Main OR MD > 3 rooms: redistribute 1 room to another Main MD under cap.
-- McNair/OTM MD > 4 rooms: redistribute to another McNair MD or bridge.
-- Main Endo MD not at exactly 3 rooms: fix.
-- Radiology MD with non-radiology rooms: reassign non-radiology rooms.
-- If no redistribution possible, leave rooms unassigned with STRUCTURAL flag. NEVER invent an exception flag.
+HARD CAP ENFORCEMENT (rewrite, not checklist):
+For each MD in your assignments:
+  room_count = count of rooms assigned to this MD
+  Compute applicable cap:
+    - Main-anchored or Main-assigned flexible: cap = 3
+    - Main Endo MD: cap = 3 (must be exactly 3)
+    - Radiology MD: cap = infinity (all radiology rooms, no cap)
+    - Jamail MD: cap = 4
+    - McNair-anchored or McNair-assigned (OTM OR, McNair OR, OTM Endo): cap = 4
+
+  If room_count > cap:
+    - Identify excess rooms (room_count - cap rooms).
+    - Take low-priority rooms first (endo rooms over ORs, later case times over earlier, non-block over block).
+    - Move excess to another MD at the same campus under cap, OR bridge to a flexible MD with room.
+    - If no redistribution possible, leave the excess room unassigned with a flag using one of: "3-room Main MD without late-start", "Jamail overflow with no approved substitute available", or "Short-staffed day" — whichever applies.
+    - NEVER invent an exception flag like "block coverage requirements" to justify staying over cap.
+
+After HARD CAP ENFORCEMENT, re-verify no MD exceeds cap. This is a rewrite step, not a flag step.
 
 SINGLE-ROOM MD SCAN:
 - Single-room MDs allowed only for: bridging (1+1=2), odd-count Main (1 MD), or triple-block McNair bridges.
@@ -3255,8 +3330,14 @@ CREDENTIAL SCAN:
 - md.credential = "MD", app.credential = "CRNA" or "CAA".
 
 LATE-START SCAN:
-- 3-room Main MD with no late-start: flag and redistribute.
+- 3-room Main MD with no late-start: flag "3-room Main MD without late-start: [name] — rooms [list]" AND redistribute. The flag is mandatory when the condition exists.
 - Late-starts distributed across different MDs when possible.
+
+WORK BLOCK NARRATIVE AUDIT:
+- For each MD name in McNAIR_OR_MDS, OTM_COVERAGE, MAIN_COVERAGE narratives:
+  - Count the rooms listed in the narrative vs the actual assignments.
+  - If mismatch, rewrite the narrative to match actual assignments.
+- The WORK block is OBSERVATION of the schedule, not aspiration.
 
 ---
 
@@ -3265,7 +3346,7 @@ LATE-START SCAN:
 **BUILD THE APP POOL FIRST:**
 From STAFF WORKING TODAY, extract every person with credential "CRNA" or "CAA". This is your closed APP pool.
 
-Every APP slot uses someone from this pool. No MD in an APP slot ever. If tempting to put an MD in an APP slot, STOP.
+Every APP slot uses someone from this pool. No MD in an APP slot ever.
 
 Classify each APP by agency FIRST, then apply rule:
 
@@ -3291,13 +3372,11 @@ ENDO-ONCE-PER-WEEK RULE (MDs and APPs, Main Endo and OTM Endo):
 ASSIGNMENT ORDER:
 
 1. Jamail OR APPs first.
-   MANDATORY TIER 1 PRE-SCAN:
-   - Scan staff for Karina Kima, Carla Rose, Audra Jackson, Evie Schoene.
-   - List each in WORK JAMAIL field.
-   - If Jamail has cases, every Tier 1 APP working is LOCKED to Jamail.
-   - Fill remaining Jamail from Tier 2.
 
-   KIMA RULE — ABSOLUTE: Kima in staff + Jamail has cases → Kima at Jamail. Never elsewhere.
+   TIER 1 LOCK (from Step 0 Scan B):
+   If J > 0, every name in TIER_1_WORKING is LOCKED to Jamail OR. This lock is triggered solely by J > 0. It does NOT depend on who the Jamail MD is. Ganderson present, Ganderson absent with substitute, any other coverage scenario — if J > 0 and the APP is in TIER_1_WORKING, they go to Jamail.
+
+   KIMA RULE — ABSOLUTE: If Kima is in TIER_1_WORKING AND J > 0 → Kima at Jamail. Never pulled.
 
    TIER 1 (Jamail priority): Kima (NEVER pulled), Rose, Jackson, Schoene.
    TIER 2 (Jamail-eligible): Andrew Bagos, Nina Castro-Koshy, Candice Hude, Angela Lauritano, Sandy Papa, Sagar Patel, Hong Phan, Tracey Sheffield, Diana Suen, Lee Mabry, Mark Doria, plus any Baylor APP.
@@ -3344,8 +3423,8 @@ Permitted FLAG templates:
 - "Short-staffed day: MD supply=[x] < MD demand=[y]"
 - "Multiple late-start rooms stacked under one MD when distribution was possible: [MD], rooms [list]"
 - "Triple-block McNair with only 2 block-capable MDs available (one MD covered 2 blocks)"
-- "Jamail overflow with no flexible MD available"
-- "Unplaced MD: [name]" (should never happen in v9 — flag and investigate)
+- "Jamail overflow with no approved substitute available"
+- "Unplaced MD: [name]" (should never happen in v9.1 — flag and investigate)
 
 Do NOT flag expected behaviors:
 - Mandatory room staffing (OR 10/15/NIR-1)
@@ -3355,6 +3434,8 @@ Do NOT flag expected behaviors:
 - 3-room Main with late-start
 - Late-start D12 APP coverage
 - Single-room Charge MD on odd-count Main day
+
+Do NOT invent exception flags like "FLAGS-9", "exceptional circumstances", "due to block requirements". If no template fits, fix the situation.
 
 ---
 
@@ -3369,19 +3450,31 @@ For each assignment:
 
 ## SELF-CHECK (COMPLETE BEFORE OUTPUTTING)
 
+STEP 0 SCANS:
+- [ ] Step 0 Scan A completed — GANDERSON_PRESENT determined by name search
+- [ ] If GANDERSON_PRESENT = YES, Ganderson is at Jamail and nowhere else
+- [ ] Step 0 Scan B completed — TIER_1_WORKING list built
+- [ ] If J > 0, every name in TIER_1_WORKING is at Jamail OR (except documented OTM Endo pulls for Rose/Jackson/Schoene)
+- [ ] Kima never at non-Jamail room when J > 0
+
 ABSOLUTE RULES:
 - [ ] No MD in APP slot; no APP in MD slot
 - [ ] No MD has > 3 Main rooms or > 4 McNair/OTM rooms
 - [ ] OR 10, OR 15, NIR-1 staffed
 - [ ] Main Endo MD has exactly 3 Main Endo rooms, nothing else
 - [ ] Radiology MD covers only radiology rooms
-- [ ] No cross-campus MD assignments (Main-anchored NOT at McNair, McNair-anchored NOT at Main)
+- [ ] No cross-campus MD assignments
 - [ ] Ganderson only at Jamail when working
 - [ ] No MD pinned to room number matching shift hours
 - [ ] Every MD in staff list has at least one room assignment
 
+JAMAIL:
+- [ ] If GANDERSON_PRESENT = NO, Jamail MD is from closed list (Chen, Ninan, Medrano-England, Nazareth, Ani)
+- [ ] No Jamail MD is outside the approved set
+
 BUDGET:
-- [ ] MAIN DEMAND and McNAIR CAMPUS DEMAND computed
+- [ ] M counts Main OR only, not Main Endo
+- [ ] MAIN DEMAND and McNAIR CAMPUS DEMAND computed correctly
 - [ ] APP_VERDICT_MAIN, APP_VERDICT_MCNAIR, APP_VERDICT_OVERALL in WORK block
 - [ ] Split verdict consistency rules followed (B1-B4)
 
@@ -3391,7 +3484,7 @@ CAMPUS SEPARATION:
 - [ ] Locum APPs classified by name list, not shift
 
 ROOM DISTRIBUTION:
-- [ ] No 3-room Main MD without late-start
+- [ ] No 3-room Main MD without late-start (flag if exists)
 - [ ] Late-starts distributed across different MDs
 - [ ] McNair OR at K=7 covered by ≥2 MDs
 
@@ -3402,23 +3495,25 @@ ENDO:
 
 APPs:
 - [ ] APP pool closed-set (credential CRNA or CAA)
-- [ ] Kima at Jamail if working and Jamail has cases (never pulled)
+- [ ] Kima at Jamail if in TIER_1_WORKING and J > 0 (never pulled)
 - [ ] Rose, Jackson, Schoene at Jamail (pulled only for OTM Endo exception)
 - [ ] Radiology: 2 APPs (NIR ≠ IR/CT/MRI)
 - [ ] No APP in 2 non-shared-radiology rooms
 - [ ] D5 APPs to McNair-campus room finishing by 12:00 or floated
 
 FLAG DISCIPLINE:
-- [ ] Only whitelist flag templates used — NO invented flags like "FLAGS-9" or "exceptional circumstances"
+- [ ] Only whitelist flag templates used — NO invented flags
 - [ ] No flags narrate expected behaviors
 - [ ] Exactly ONE FLAGS row at end (or zero)
 
 WORK BLOCK:
 - [ ] WORK block is FIRST array element
-- [ ] All McNair-anchored MDs listed in their assignments (none flexed/missing)
+- [ ] Step 0 scan results recorded in JAMAIL field
+- [ ] All McNair-anchored MDs listed in assignments (none omitted)
 - [ ] APP_VERDICT fields consistent with FLAGS and room-level notes
 - [ ] MAIN_ENDO_MD, OTM_ENDO_MDS, RADIOLOGY_MD match actual assignments
 - [ ] Numbers match actual room and staff counts
+- [ ] Rule E — WORK narratives (McNAIR_OR_MDS, OTM_COVERAGE, MAIN_COVERAGE) room counts match actual assignments exactly
 
 All checks passed? Output the JSON array.
 
@@ -3436,7 +3531,7 @@ WORK block:
   "room": "WORK",
   "md": null,
   "app": null,
-  "notes": "ROOMS: ... | MD_DEMAND: ... | MD_SUPPLY: ... | JAMAIL: ... | McNAIR_OR_MDS: ... | OTM_COVERAGE: ... | MAIN_COVERAGE: ... | APP_DEMAND: ... | APP_SUPPLY: ... | APP_VERDICT_MAIN: ... | APP_VERDICT_MCNAIR: ... | APP_VERDICT_OVERALL: ... | ODD_COUNT_MAIN: ... | MAIN_ENDO_MD: ... | OTM_ENDO_MDS: ... | RADIOLOGY_MD: ..."
+  "notes": "ROOMS: ... | MD_DEMAND: ... | MD_SUPPLY: ... | JAMAIL: GANDERSON_PRESENT: ... Tier 1 APPs working: ... Jamail MD: ... | McNAIR_OR_MDS: ... | OTM_COVERAGE: ... | MAIN_COVERAGE: ... | APP_DEMAND: ... | APP_SUPPLY: ... | APP_VERDICT_MAIN: ... | APP_VERDICT_MCNAIR: ... | APP_VERDICT_OVERALL: ... | ODD_COUNT_MAIN: ... | MAIN_ENDO_MD: ... | OTM_ENDO_MDS: ... | RADIOLOGY_MD: ..."
 }
 
 Each assignment:
