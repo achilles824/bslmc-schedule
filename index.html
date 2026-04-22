@@ -2845,13 +2845,39 @@ const ss = [
     const jsonStr = fullJson.substring(0, arrayEnd + 1);
     const parsed = JSON.parse(jsonStr);
     if (Array.isArray(parsed)) {
-  const assignmentsObj = {};
-  parsed.forEach(item => {
-    if (item.room) assignmentsObj[item.room] = { md: item.md || null, app: item.app || null, notes: item.notes || "" };
-  });
-  _aiAssignPlan = { assignments: assignmentsObj, flags: parsed.flatMap(i => i.notes ? [i.notes] : []) };
-} else {
-  _aiAssignPlan = parsed;
+      const assignmentsObj = {};
+      let flagsText = "";
+      let workText = "";
+      parsed.forEach(item => {
+        if (!item.room) return;
+        if (item.room === "FLAGS") {
+          flagsText = item.notes || "";
+          return;
+        }
+        if (item.room === "WORK") {
+          workText = item.notes || "";
+          return;
+        }
+        assignmentsObj[item.room] = {
+          md: item.md || null,
+          app: item.app || null,
+          notes: item.notes || ""
+        };
+      });
+      const flagsArr = flagsText
+        ? flagsText.split(/(?<=\.)\s+|\s*\|\s*/).map(s => s.trim()).filter(Boolean)
+        : [];
+      _aiAssignPlan = {
+        assignments: assignmentsObj,
+        flags: flagsArr,
+        work: workText
+      };
+    } else {
+      _aiAssignPlan = parsed;
+    }
+    showAiAssignPreview(_aiAssignPlan);
+  } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "AI Assign"; }
 }
 function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System. Assign MDs and APPs to OR rooms for ${date}.
