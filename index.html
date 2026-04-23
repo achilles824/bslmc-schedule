@@ -830,7 +830,7 @@
         <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="lockAdmin()">Lock</button>
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearDay()">Clear Day</button>
         <button id="finalizeBtn" class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="toggleFinalize()">✓ Finalize</button>
-                <button id="aiAssignBtn" class="view-btn" style="background:none;border:1px solid #10b981;color:#10b981;" onclick="aiAssign()">&#x1F916; AI Assign</button>
+                <button id="aiAssignBtn" class="view-btn" style="background:none;border:1px solid #10b981;color:#10b981;" onclick="aiAssignStart()">&#x1F916; AI Assign</button>
 <button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
         <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
@@ -2769,11 +2769,92 @@ if (window.firebaseReady) {
 // ==== AI ASSIGN FEATURE ====
 let _aiAssignPlan = null;
 
-async function aiAssign() {
+// ================================================================
+// SPLIT-PASS AI ASSIGN — McNair pass, Main pass, and Full-Day fallback
+// ================================================================
+//
+// REPLACES the existing aiAssign() function with:
+//   - aiAssignStart() — entry point triggered by the AI Assign button; shows campus picker
+//   - aiAssignMcnair() — runs McNair pass (Jamail, McNair OR, OTM OR, OTM Endo)
+//   - aiAssignMain() — runs Main pass (Main OR, Main Endo, Radiology)
+//   - aiAssignFullDay() — renamed original function, kept as legacy fallback
+//   - _aiRunPass() — shared helper for the API call + parsing
+//
+// Also updates showAiAssignPreview() to accept a retry callback so the
+// new Retry button can re-run the same pass.
+//
+// ================================================================
+
+// Track which pass is currently in the preview modal (used for Retry)
+let _aiCurrentPass = null; // "mcnair" | "main" | "fullday" | null
+
+// ---------------------------------------------------------------
+// Entry point — called by the "AI Assign" button
+// ---------------------------------------------------------------
+async function aiAssignStart() {
+  const date = document.getElementById("adminDatePicker") && document.getElementById("adminDatePicker").value;
+  if (!date) { alert("Please select a date first."); return; }
+
+  const choice = prompt(
+    "Which pass would you like to run?\n\n" +
+    "  1 = McNair (Jamail, McNair OR, OTM OR, OTM Endo)\n" +
+    "  2 = Main (Main OR, Main Endo, Radiology)\n" +
+    "  3 = Full Day (legacy v9.3 — all at once)\n\n" +
+    "Type 1, 2, or 3:"
+  );
+
+  if (choice === "1") return aiAssignMcnair();
+  if (choice === "2") return aiAssignMain();
+  if (choice === "3") return aiAssignFullDay();
+  // Cancel or invalid input — do nothing
+}
+
+// ---------------------------------------------------------------
+// McNair pass
+// ---------------------------------------------------------------
+async function aiAssignMcnair() {
+  _aiCurrentPass = "mcnair";
+  await _aiRunPass({
+    label: "McNair",
+    promptBuilder: buildMcnairPrompt,
+    systemPrompt: "You are an anesthesiology scheduling assistant assigning the McNair campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose."
+  });
+}
+
+// ---------------------------------------------------------------
+// Main pass
+// ---------------------------------------------------------------
+async function aiAssignMain() {
+  _aiCurrentPass = "main";
+  await _aiRunPass({
+    label: "Main",
+    promptBuilder: buildMainPrompt,
+    systemPrompt: "You are an anesthesiology scheduling assistant assigning the Main campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose."
+  });
+}
+
+// ---------------------------------------------------------------
+// Full-day legacy pass (v9.3)
+// ---------------------------------------------------------------
+async function aiAssignFullDay() {
+  _aiCurrentPass = "fullday";
+  await _aiRunPass({
+    label: "Full Day",
+    promptBuilder: buildAiAssignPrompt,
+    systemPrompt: "You are an anesthesiology scheduling assistant. You MUST output ONLY a raw JSON array. No prose, no markdown, no explanation, no pre-work narrative. Your entire response must start with [ and end with ]. Do your reasoning silently and output only the final JSON array."
+  });
+}
+
+// ---------------------------------------------------------------
+// Shared pass runner
+// ---------------------------------------------------------------
+async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
   const btn = document.getElementById("aiAssignBtn");
   const date = document.getElementById("adminDatePicker") && document.getElementById("adminDatePicker").value;
   if (!date) { alert("Please select a date first."); return; }
-  btn.disabled = true; btn.textContent = "Thinking...";
+  btn.disabled = true;
+  btn.textContent = label + ": Thinking...";
+
   try {
     const [keyResp, rulesResp, assignResp] = await Promise.all([
       fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/config/anthropicKey.json"),
@@ -2786,78 +2867,75 @@ async function aiAssign() {
     const cur = (await assignResp.json()) || {};
     if (!apiKey || typeof apiKey !== "string") { alert("API key not found in Firebase at /config/anthropicKey"); return; }
     if (!rules || !rules.version) { alert("Assignment rules not found in Firebase at /config/assignmentRules"); return; }
+
     const closed = cur.__closed || {};
     const needs = {};
-    for (const [k,v] of Object.entries(cur)) {
+    for (const [k, v] of Object.entries(cur)) {
       if (k === "__closed" || closed[k] || !v || typeof v !== "object") continue;
       if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
     }
     if (!Object.keys(needs).length) { alert("All active rooms already have both MD and APP assigned!"); return; }
-    const mcnairAPPs = staff.filter(s => 
-  s.credential !== "MD" && 
-  s.agency === "Baylor" && 
-  (s.shift.includes("-MN") || s.shift.includes("- MN"))
-);
-const mainBaylorAPPs = staff.filter(s => 
-  s.credential !== "MD" && 
-  s.agency === "Baylor" && 
-  !s.shift.includes("-MN") && 
-  !s.shift.includes("- MN")
-);
-const flexibleAPPs = staff.filter(s => 
-  s.credential !== "MD" && 
-  s.agency !== "Baylor"
-);
-const ss = [
-  "=== MDs (campus determined by shift) ===",
-  staff.filter(s => s.credential === "MD").map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== MAIN CAMPUS ONLY - Baylor APPs (no -MN in shift) ===",
-  mainBaylorAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== McNAIR CAMPUS ONLY - Baylor APPs (-MN in shift) ===",
-  mcnairAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
-  "=== FLEXIBLE - Locums APPs (Caliber, Cross Country - assign where needed) ===",
-  flexibleAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
-].join("\n");
 
-    const prompt = buildAiAssignPrompt(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2), rules);
+    // Build staff summary — include all staff, the prompt handles filtering
+    const mcnairAPPs = staff.filter(s =>
+      s.credential !== "MD" &&
+      s.agency === "Baylor" &&
+      (s.shift.includes("-MN") || s.shift.includes("- MN"))
+    );
+    const mainBaylorAPPs = staff.filter(s =>
+      s.credential !== "MD" &&
+      s.agency === "Baylor" &&
+      !s.shift.includes("-MN") &&
+      !s.shift.includes("- MN")
+    );
+    const flexibleAPPs = staff.filter(s =>
+      s.credential !== "MD" &&
+      s.agency !== "Baylor"
+    );
+    const ss = [
+      "=== MDs (campus determined by shift) ===",
+      staff.filter(s => s.credential === "MD").map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+      "=== MAIN CAMPUS ONLY - Baylor APPs (no -MN in shift) ===",
+      mainBaylorAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+      "=== McNAIR CAMPUS ONLY - Baylor APPs (-MN in shift) ===",
+      mcnairAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n"),
+      "=== FLEXIBLE - Locums APPs (Caliber, Cross Country - assign where needed) ===",
+      flexibleAPPs.map(s => s.credential + " | " + s.name + " | " + s.agency + " | " + s.shift).join("\n")
+    ].join("\n");
+
+    const prompt = promptBuilder(date, ss, JSON.stringify(cur, null, 2), JSON.stringify(needs, null, 2), rules);
+
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 16000,
-        system: "You are an anesthesiology scheduling assistant. You MUST output ONLY a raw JSON array. No prose, no markdown, no explanation, no pre-work narrative. Your entire response must start with [ and end with ]. Do your reasoning silently and output only the final JSON array.",
+        system: systemPrompt,
         messages: [
-          {role: "user", content: prompt},
-          {role: "assistant", content: "["}
+          { role: "user", content: prompt },
+          { role: "assistant", content: "[" }
         ]
       })
     });
     const res = await r.json();
     if (!res.content || !res.content[0]) throw new Error("No response from Claude: " + JSON.stringify(res));
-    const continuation = res.content
-      .filter(item => item.type === "text")
-      .map(item => item.text)
-      .join("");
+
+    const continuation = res.content.filter(item => item.type === "text").map(item => item.text).join("");
     const fullJson = "[" + continuation;
     const arrayEnd = fullJson.lastIndexOf("]");
-    if (arrayEnd === -1) throw new Error("Incomplete JSON from Claude. Started with: " + fullJson.substring(0, 200));
+    if (arrayEnd === -1) throw new Error("Incomplete JSON. Started with: " + fullJson.substring(0, 200));
     const jsonStr = fullJson.substring(0, arrayEnd + 1);
     const parsed = JSON.parse(jsonStr);
+
     if (Array.isArray(parsed)) {
       const assignmentsObj = {};
       let flagsText = "";
       let workText = "";
       parsed.forEach(item => {
         if (!item.room) return;
-        if (item.room === "FLAGS") {
-          flagsText = item.notes || "";
-          return;
-        }
-        if (item.room === "WORK") {
-          workText = item.notes || "";
-          return;
-        }
+        if (item.room === "FLAGS") { flagsText = item.notes || ""; return; }
+        if (item.room === "WORK") { workText = item.notes || ""; return; }
         assignmentsObj[item.room] = {
           md: item.md || null,
           app: item.app || null,
@@ -2870,14 +2948,43 @@ const ss = [
       _aiAssignPlan = {
         assignments: assignmentsObj,
         flags: flagsArr,
-        work: workText
+        work: workText,
+        passLabel: label
       };
     } else {
       _aiAssignPlan = parsed;
     }
+
     showAiAssignPreview(_aiAssignPlan);
-  } catch(e) { console.error(e); alert("AI Assign failed: " + e.message); }
-  finally { btn.disabled = false; btn.textContent = "AI Assign"; }
+  } catch (e) {
+    console.error(e);
+    alert("AI Assign (" + label + ") failed: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "AI Assign";
+  }
+}
+
+// ---------------------------------------------------------------
+// Retry button handler — re-runs the current pass
+// ---------------------------------------------------------------
+function aiAssignRetry() {
+  // Close the modal first so the user sees the "Thinking..." status
+  document.getElementById("aiAssignModal").style.display = "none";
+  _aiAssignPlan = null;
+  if (_aiCurrentPass === "mcnair") aiAssignMcnair();
+  else if (_aiCurrentPass === "main") aiAssignMain();
+  else if (_aiCurrentPass === "fullday") aiAssignFullDay();
+  else alert("No pass to retry.");
+}
+
+// ---------------------------------------------------------------
+// Cancel button handler
+// ---------------------------------------------------------------
+function aiAssignCancel() {
+  document.getElementById("aiAssignModal").style.display = "none";
+  _aiAssignPlan = null;
+  _aiCurrentPass = null;
 }
 function buildAiAssignPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System. Assign MDs and APPs to OR rooms for ${date}.
@@ -3403,41 +3510,802 @@ If no APP AND campus verdict = DEFICIT: "app": null, empty note. STRUCTURAL flag
 One FLAGS block max, at end. No mid-array FLAGS. Flag content must be consistent with WORK block.`;
 }
 
+  function buildMcnairPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
+  return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System. Your task is to assign MDs and APPs to the McNAIR CAMPUS only for ${date}.
+
+OUTPUT: Raw JSON array only. Start with [, end with ]. No prose. First element is WORK block. Last element (if any) is FLAGS block. All other elements are McNair-campus room assignments.
+
+SCOPE — McNAIR CAMPUS ONLY:
+You are assigning these areas:
+- McNair OR (rooms 1-7)
+- OTM OR
+- OTM Endo
+- Jamail OR
+
+You will NOT assign:
+- Main OR, Main Endo, Radiology (IR, NIR, CT, MRI, RM-IR) — these are handled by a separate pass
+
+If you see Main-campus rooms in roomsNeeding, ignore them. Only assign rooms in the four McNair areas above.
+
+---
+
+## STAFF AVAILABLE FOR McNAIR PASS
+${staffSummary}
+
+## CURRENT ASSIGNMENTS (already saved — do not reassign, and do not re-use these MDs)
+${currentAssignments}
+
+Any MD or APP appearing in currentAssignments is NOT available for this pass. Treat them as unavailable — they have already been assigned by a prior pass.
+
+## ROOMS NEEDING ASSIGNMENT
+${roomsNeeding}
+
+## RULES REFERENCE
+${JSON.stringify(rules, null, 2)}
+
+---
+
+## CRITICAL TERMINOLOGY
+
+Shift names with numbers = HOURS, not room numbers. "OR 12 - MD" = 12-hour shift, not OR room 12.
+
+---
+
+## ABSOLUTE RULES
+
+1. CREDENTIALS: MDs (credential "MD") only in MD slots. APPs (credential "CRNA" or "CAA") only in APP slots.
+
+2. HARD ROOM CAPS:
+   - McNair OR MD: MAX 4 rooms
+   - OTM OR MD: MAX 4 rooms
+   - OTM Endo MD: MAX 4 rooms
+   - Jamail MD: up to 4 rooms standard, overflow at 5+
+   If you would exceed cap, redistribute, bridge, or leave unassigned with STRUCTURAL flag. NEVER invent an exception flag ("FLAGS-9", "exceptional circumstances") to justify a cap violation.
+
+3. FORBIDDEN AT McNAIR (any area):
+   - Main-anchored MDs (shifts like "OR 8 - MD", "OR 10 - MD", "OR 12 - MD / Charge"). These do not belong on this pass. If you see them in staff, do not place them.
+   - The Main-only locum APPs: Zamantha Seeman, Zehneel Jiwani. These only go to Main campus.
+   - Any Baylor APP without "-MN" in their shift (Main-only Baylor APPs).
+
+4. NO ROOM ANCHORING: Shift names are hours, not room numbers.
+
+5. EVERY McNAIR-ANCHORED MD IS PLACED. There is no flex-off. Every MD with shift "1st Out-MNC", "2nd Out-MNC", "3rd Out-MNC", "Late MD-MNC", "McNair Call", "OR - McNair" (including Ganderson) must receive an assignment.
+
+---
+
+## STEP 1 — JAMAIL BLOCK (do this FIRST)
+
+Jamail is self-contained. Assign Jamail MD and APPs first, lock them, move on.
+
+### 1A — Ganderson detection (by name)
+
+Search staffSummary for "Lauren Ganderson" or "Ganderson, Lauren". Name match only — ignore shift label.
+
+- Found: GANDERSON_PRESENT = YES. She is Jamail-only, regardless of shift label.
+- Not found: GANDERSON_PRESENT = NO.
+
+### 1B — Tier 1 APP roll call (MANDATORY — emit each answer literally)
+
+You MUST emit these four answers in your WORK block. Do not skip. Do not default to NO.
+
+- "Kima working: YES" if "Kima" appears in staffSummary, otherwise "Kima working: NO"
+- "Rose working: YES" if "Rose" appears in staffSummary, otherwise "Rose working: NO"
+- "Jackson working: YES" if "Jackson" appears in staffSummary, otherwise "Jackson working: NO"
+- "Schoene working: YES" if "Schoene" appears in staffSummary, otherwise "Schoene working: NO"
+
+TIER_1_WORKING = list of names whose answer is YES. Only "NONE" if all four are absent.
+
+### 1C — Jamail MD
+
+Count Jamail rooms with cases (J).
+
+- GANDERSON_PRESENT = YES AND J ≤ 4: Ganderson covers all Jamail rooms.
+- GANDERSON_PRESENT = YES AND J ≥ 5: Ganderson + 1 MD from CLOSED JAMAIL SUBSTITUTE LIST (even split).
+- GANDERSON_PRESENT = NO AND J ≤ 4: 1 MD from CLOSED JAMAIL SUBSTITUTE LIST.
+- GANDERSON_PRESENT = NO AND J ≥ 5: 2 MDs from CLOSED JAMAIL SUBSTITUTE LIST (even split).
+
+CLOSED JAMAIL SUBSTITUTE LIST (only these 5 MDs permitted when Ganderson absent):
+  Qiping Chen, Tara Ninan, Karla Medrano-England, Veeral Nazareth, Chidi Ani
+
+If none of the 5 are in staffSummary and Ganderson is absent, emit "Jamail overflow with no approved substitute available" flag and leave Jamail unstaffed.
+
+### 1D — Jamail APPs (Tier 1 lock)
+
+If J > 0, every name in TIER_1_WORKING is LOCKED to Jamail OR. This lock triggers on J > 0 alone. Does NOT depend on Jamail MD identity.
+
+Order within Jamail:
+- Kima first (if working). Kima NEVER placed outside Jamail when J > 0.
+- Rose, Jackson, Schoene next.
+- Fill remaining Jamail rooms from Tier 2: Andrew Bagos, Nina Castro-Koshy, Candice Hude, Angela Lauritano, Sandy Papa, Sagar Patel, Hong Phan, Tracey Sheffield, Diana Suen, Lee Mabry, Mark Doria, or any Baylor APP with "-MN" shift.
+
+### 1E — Lock Jamail
+
+Jamail is finalized. Do NOT revisit Jamail rooms in subsequent steps.
+
+Exception (Step 5 only): Rose/Jackson/Schoene may be pulled to OTM Endo if once-per-week endo rule forces it (order: Schoene → Jackson → Rose). Kima never pulled.
+
+---
+
+## STEP 2 — CLASSIFY REMAINING McNAIR-ANCHORED AND FLEXIBLE MDs
+
+Ganderson is already placed. For every other MD in staffSummary (excluding any in currentAssignments):
+
+- McNAIR-anchored: shift contains "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC"
+- FLEXIBLE: Cross Country, Caliber, Locums (D5/D8/D10/D12)
+- IGNORE Main-anchored MDs (shifts like "OR 8 - MD", "OR 10 - MD / Charge") — they are not for this pass.
+
+---
+
+## STEP 3 — COUNT McNAIR ROOMS, COMPUTE DEMAND
+
+Count:
+- K = McNair OR rooms with cases
+- O = OTM OR rooms with cases
+- E = OTM Endo rooms with cases
+- J = Jamail OR rooms with cases (already handled in Step 1)
+
+McNAIR MD DEMAND = ceil((K + O + E) / 3) + (1 if Jamail needs overflow else 0)
+
+MD supply (excluding placed-at-Jamail, excluding currentAssignments, excluding Main-anchored):
+- N = McNair-anchored MDs
+- F = flexible MDs available for McNair
+
+APP demand and supply (McNair campus only):
+- McNAIR_ALL_ROOMS = K + O + E + J
+- McNAIR_APP_DEMAND = McNAIR_ALL_ROOMS (no radiology adjustment — no radiology on this pass)
+- P_MCN = Baylor APPs with "-MN" + McNair-only locums not in currentAssignments
+- F_MCN = flexible APPs available (not Main-only locums, not in currentAssignments)
+
+McNair-only locum APP names (16):
+  Sagar Patel, Andrew Bagos, Mark Doria, Lina Eisa, Audra Jackson, Lee Mabry, Tanya McGowan, Amanda Messarra, Adriana Montoya, Tammy Moore, Natty Pitera Okojie, Carla Rose, Evie Schoene, Tracey Sheffield, Khadijah Udu, Young Wright
+
+Main-only locum APPs (FORBIDDEN on McNair pass): Zamantha Seeman, Zehneel Jiwani
+
+APP_VERDICT_MCNAIR = SURPLUS | EXACT | DEFICIT based on supply vs demand.
+
+If DEFICIT, emit single STRUCTURAL_McNAIR_APP_DEFICIT flag. Do NOT emit per-room "No APP available" duplicates.
+
+---
+
+## STEP 4 — ALLOCATE MDs TO McNAIR AREAS
+
+Every McNair-anchored MD not at Jamail is placed. Flexible MDs are placed if needed for McNair areas (they may also be needed by the Main pass, so only claim them when you genuinely need them — e.g., for OTM bridging or Jamail substitute).
+
+A. Out-MNC MDs (1st, 2nd, 3rd) → McNair OR primarily, or OTM OR if K is low.
+
+B. Late-MD-MNC → OTM OR (default).
+
+C. McNair Call → OTM OR + OTM Endo (default bridge).
+
+D. Flexibles (claim only as needed):
+   - Jamail substitute (if Ganderson absent)
+   - OTM bridging if caps force it
+   - OTM Endo coverage if McNair-anchored MDs don't fill it
+
+E. Every McNair-anchored MD has at least one room after this step. If any unplaced, find a bridge, 3rd room, or redundant coverage slot.
+
+---
+
+## STEP 4.5 — McNAIR OR DISTRIBUTION
+
+- K ≤ 3: 1 MD covers all McNair OR rooms.
+- K = 4: 1 MD at cap (4 rooms) OR 2 MDs (2+2, 3+1 with bridge).
+- K = 5-6: ≥ 2 MDs.
+- K = 7: ≥ 2 MDs, cap 4 each. Distribution examples: 4+3 (2 MDs), 3+3+1 (3 MDs with 3rd bridging to OTM OR), 3+2+2.
+- NEVER 1 MD at 5+ rooms in McNair OR.
+
+Block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed):
+- 2 simultaneous 07:30 blocks: 1 MD if staggered; otherwise 2 MDs.
+- 3 simultaneous: 3 separate block-capable MDs (triple-block exception allows 2 McNair OR ↔ OTM OR bridges).
+
+---
+
+## STEP 4.6 — OTM OR AND OTM ENDO
+
+- Target 2-3 rooms per MD. Cap 4.
+- 1 bridge OTM OR ↔ OTM Endo (bridging MD has FEWEST rooms).
+- Late-MD-MNC and McNair Call default here.
+- Valid bridging pairs: OTM OR ↔ OTM Endo, OTM OR ↔ McNair OR, OTM Endo ↔ McNair OR.
+- 1 bridge per pair max, except triple-block McNair exception.
+
+---
+
+## STEP 5 — ASSIGN APPs (McNair-only pool)
+
+### APP pool
+From staffSummary, extract every APP (credential CRNA or CAA), EXCLUDING:
+- Anyone in currentAssignments (already claimed)
+- Main-only Baylor APPs (Baylor without "-MN")
+- Main-only locum APPs: Zamantha Seeman, Zehneel Jiwani
+
+The pool that remains = eligible for McNair placement.
+
+### Once-per-week endo rule
+- Each person does endo at most once per work week.
+- Check weeklyEndoTracking. If name present, choose someone else.
+- Unavoidable repeat: prefer earliest prior-endo day (Mon > Thu).
+- Flag: "Repeat endo: [name] (role: MD/APP; prior: [day, Main/OTM]; today: [room])"
+
+### Order
+1. Jamail already done (Step 1).
+2. McNair OR, OTM OR: fill from McNair-only pool first, then flexibles.
+3. OTM Endo: apply once-per-week.
+4. If OTM Endo cannot be staffed within eligible pool (everyone has prior endo this week), pull Tier 1 from Jamail in order Schoene → Jackson → Rose. Kima never pulled. Document with repeat-endo flag.
+
+### Deduplication
+Each APP in exactly ONE room. No exceptions on this pass (radiology sharing is a Main pass concern).
+
+---
+
+## STEP 6 — APP COVERAGE AUDIT
+
+For every case-bearing McNair room:
+
+If no APP AND APP_VERDICT_MCNAIR = SURPLUS or EXACT:
+- Find an unassigned APP from the McNair pool. Assign.
+- Repeat until every room has an APP or pool is empty.
+
+If no APP AND APP_VERDICT_MCNAIR = DEFICIT:
+- Leave unassigned. STRUCTURAL flag covers.
+
+"Unassigned APPs (surplus)" flag valid ONLY when every case-bearing McNair room has APP AND APPs remain.
+
+---
+
+## STEP 7 — POST-ASSIGNMENT ENFORCEMENT
+
+### EVERY-MCNAIR-MD-PLACED
+Every McNair-anchored MD in staffSummary has at least one room (excluding any in currentAssignments). If missing, place.
+
+### GANDERSON
+If YES, only at Jamail. Otherwise reassign.
+
+### NO-MAIN-MDS
+No Main-anchored MD appears in any assignment. If any appear, remove.
+
+### HARD CAP
+- McNair OR MD > 4 rooms: redistribute.
+- OTM OR / OTM Endo MD > 4: redistribute or bridge.
+- Jamail MD > 4: add overflow substitute.
+
+### TIER 1 LOCK
+If J > 0:
+- Kima in Jamail OR only.
+- Rose, Jackson, Schoene in Jamail unless documented OTM Endo pull with flag.
+
+### CREDENTIALS
+md.credential = "MD". app.credential = "CRNA" or "CAA". No names in both roles.
+
+### JAMAIL MD CLOSED LIST
+If GANDERSON_PRESENT = NO, Jamail MD is from {Chen, Ninan, Medrano-England, Nazareth, Ani}.
+
+### SINGLE-ROOM MD
+Single-room McNair MDs allowed only for bridging (1+1=2) or triple-block McNair bridges. Otherwise redistribute.
+
+---
+
+## STEP 8 — EMIT WORK NARRATIVE (observe, don't aspire)
+
+Write the WORK block AFTER all assignments are final. Count actual rooms per MD. Narrative must match actual assignments exactly.
+
+### Narrative fields (all required, in order, separated by " | "):
+
+"PASS: McNair"
+
+"ROOMS: K=X, O=X, E=X, J=X"
+
+"MD_DEMAND: McNAIR=X"
+
+"MD_SUPPLY: N=X, F=X available, TOTAL=X"
+
+"JAMAIL: GANDERSON_PRESENT=YES/NO | Kima=YES/NO | Rose=YES/NO | Jackson=YES/NO | Schoene=YES/NO | J=X rooms | Jamail MD: [name] | Jamail APPs: [list]"
+
+"McNAIR_OR_MDS: [name]: rooms [list] (count) | [name]: rooms [list] (count) | ..."
+
+"OTM_OR_MDS: [name]: rooms [list] (count) | ..."
+
+"OTM_ENDO_MDS: [name]: rooms [list] (count) | ..."
+
+"APP_DEMAND: McNAIR_ALL_ROOMS=X"
+
+"APP_SUPPLY: P_MCN=X, F_MCN=X available, TOTAL=X"
+
+"APP_VERDICT_MCNAIR: SURPLUS | EXACT | DEFICIT"
+
+"OTM_ENDO_MDS_PRIOR_ENDO: [name (YES/NO)], ..."
+
+"CLAIMED_FLEXIBLES: [names of flexible MDs actually assigned in this pass, or NONE]"
+
+### Narrative audit
+Every MD named in a narrative — room list and count must match actual assignments exactly.
+
+---
+
+## STEP 9 — FLAGS (closed whitelist)
+
+Permitted templates only:
+- "Unassigned APPs (surplus): [names]" — only if every room has APP
+- "STRUCTURAL_McNAIR_APP_DEFICIT: [N] McNair rooms unstaffed. P_MCN=[x], McNair demand=[y]. Known structural shortage."
+- "No cases, not staffed: [rooms]"
+- "Repeat endo: [name] (role: MD/APP; prior: [day, Main/OTM]; today: [room])"
+- "Multiple late-start rooms stacked under one MD when distribution was possible: [MD], rooms [list]"
+- "Triple-block McNair with only 2 block-capable MDs available"
+- "Jamail overflow with no approved substitute available"
+- "Unplaced McNair MD: [name]"
+
+Do NOT invent exception flags.
+
+---
+
+## STEP 10 — FINAL AUDIT
+
+Any failure → fix, do not output.
+
+- Every McNair-anchored MD placed
+- No Main-anchored MD in any assignment
+- No room caps exceeded
+- Ganderson (if present) only at Jamail
+- TIER 1 lock enforced (Kima at Jamail; Rose/Jackson/Schoene at Jamail unless pulled)
+- Jamail MD from closed list if Ganderson absent
+- Credentials correct, no dual-role names
+- WORK narrative counts match actual assignments
+- Only whitelist flags used
+- One FLAGS block max at end, or omit if empty
+
+---
+
+## OUTPUT FORMAT
+
+Array:
+1. WORK block
+2. McNair room assignments (Jamail, McNair OR, OTM OR, OTM Endo)
+3. FLAGS block (last, omit if empty)
+
+WORK:
+{
+  "room": "WORK",
+  "md": null,
+  "app": null,
+  "notes": "PASS: McNair | ROOMS: ... | MD_DEMAND: ... | MD_SUPPLY: ... | JAMAIL: ... | McNAIR_OR_MDS: ... | OTM_OR_MDS: ... | OTM_ENDO_MDS: ... | APP_DEMAND: ... | APP_SUPPLY: ... | APP_VERDICT_MCNAIR: ... | OTM_ENDO_MDS_PRIOR_ENDO: ... | CLAIMED_FLEXIBLES: ..."
+}
+
+Room:
+{
+  "room": "Jamail OR 1",
+  "md": { "name": "...", "credential": "MD", "agency": "..." },
+  "app": { "name": "...", "credential": "CRNA", "agency": "..." },
+  "notes": ""
+}
+
+FLAGS (omit if empty):
+{
+  "room": "FLAGS",
+  "md": null,
+  "app": null,
+  "notes": "flag text 1. flag text 2. ..."
+}`;
+}
+  function buildMainPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
+  return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System. Your task is to assign MDs and APPs to the MAIN CAMPUS only for ${date}.
+
+OUTPUT: Raw JSON array only. Start with [, end with ]. No prose. First element is WORK block. Last element (if any) is FLAGS block. All other elements are Main-campus room assignments.
+
+SCOPE — MAIN CAMPUS ONLY:
+You are assigning these areas:
+- Main OR (rooms 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 18, 21, 23, 24, 25, etc.)
+- Main Endo (rooms 1, 2, 3)
+- Radiology: IR, NIR, CT, MRI, RM-IR General, RM-IR MRI
+
+You will NOT assign:
+- McNair OR, OTM OR, OTM Endo, Jamail OR — these are handled by a separate pass
+
+If you see McNair-campus rooms in roomsNeeding, ignore them.
+
+---
+
+## STAFF AVAILABLE FOR MAIN PASS
+${staffSummary}
+
+## CURRENT ASSIGNMENTS (already saved — do not reassign, and do not re-use these MDs or APPs)
+${currentAssignments}
+
+Any MD or APP appearing in currentAssignments is NOT available for this pass. They have already been claimed by a prior pass.
+
+## ROOMS NEEDING ASSIGNMENT
+${roomsNeeding}
+
+## RULES REFERENCE
+${JSON.stringify(rules, null, 2)}
+
+---
+
+## CRITICAL TERMINOLOGY
+
+Shift names with numbers = HOURS, not room numbers. "OR 8 - MD" = 8-hour Main shift, not OR room 8.
+
+---
+
+## ABSOLUTE RULES
+
+1. CREDENTIALS: MDs only in MD slots. APPs only in APP slots.
+
+2. HARD ROOM CAPS:
+   - Main OR MD: MAX 3 rooms. Cap is 3 regardless of late-start count. A 4-room Main MD is a violation even if all 4 are late-starts.
+   - Main Endo MD: exactly 3 rooms (Main Endo 1, 2, 3)
+   - Radiology MD: all case-bearing radiology rooms (no cap — one MD covers all)
+   If over cap, redistribute, or leave unassigned with flag. NEVER invent an exception flag.
+
+3. MANDATORY ROOMS (always staffed with MD + APP, even if no cases listed):
+   - Main OR 10, Main OR 15
+   - Main Endo 1, 2, 3
+   - NIR 1
+
+4. FORBIDDEN AT MAIN (any area):
+   - McNair-anchored MDs (shifts containing "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC", "OR - McNair"). Ganderson never at Main. Out-MNC MDs never at Main.
+   - McNair-only locum APPs (16 names): Sagar Patel, Andrew Bagos, Mark Doria, Lina Eisa, Audra Jackson, Lee Mabry, Tanya McGowan, Amanda Messarra, Adriana Montoya, Tammy Moore, Natty Pitera Okojie, Carla Rose, Evie Schoene, Tracey Sheffield, Khadijah Udu, Young Wright. These go to McNair campus only.
+   - Any Baylor APP with "-MN" in their shift (McNair-only Baylor APPs).
+
+5. MAIN ENDO EXCLUSIVE: The Main Endo MD covers ONLY Main Endo 1-3. Never any OR, never radiology.
+
+6. RADIOLOGY EXCLUSIVE: The Radiology MD covers ONLY radiology rooms (IR, NIR, CT, MRI, RM-IR). Never any OR, never Main Endo.
+
+7. NO ROOM ANCHORING: Shift names are hours, not room numbers. A Main-anchored MD with shift "OR 8 - MD" can go to any Main OR rooms.
+
+8. EVERY MAIN-ANCHORED MD IS PLACED. No flex-off on this pass. Every Main-anchored MD must receive an assignment.
+
+---
+
+## STEP 1 — CLASSIFY MAIN-AVAILABLE MDs
+
+For every MD in staffSummary EXCLUDING those in currentAssignments:
+
+- MAIN-anchored: shift starts with "OR" + hours (e.g., "OR 8 - MD", "OR 10 - MD / Charge", "OR 12 - MD")
+- FLEXIBLE (available to Main): Cross Country, Caliber, Locums (D5/D8/D10/D12) who are NOT in currentAssignments
+- IGNORE any McNair-anchored MD. They are not for this pass.
+
+Identify the Charge MD if any (shift contains "Charge").
+
+---
+
+## STEP 2 — COUNT MAIN ROOMS, COMPUTE DEMAND
+
+Count (Main OR and Main Endo are SEPARATE — do NOT lump them):
+- M = Main OR rooms ONLY (always include OR 10, OR 15 even if no cases)
+- M_LATE = Main OR rooms with caseTime ≥ 12:00
+- RADIOLOGY_ROOMS = count of case-bearing radiology rooms (IR, NIR, CT, MRI, RM-IR General, RM-IR MRI) + NIR 1 (always mandatory)
+
+MD demand:
+- MAIN OR DEMAND = ceil((M − M_LATE) / 2) + 1 (Main Endo MD) + 1 (Radiology MD)
+- Late-start rooms are absorbable as 3rd rooms by existing 2-room MDs — do NOT add MD headcount for them.
+
+MD supply:
+- A = Main-anchored MDs
+- F = flexible MDs available for Main
+
+APP demand and supply (Main-campus only):
+- ALL_MAIN_ROOMS = M + 3 (Main Endo) + case-bearing radiology rooms + 1 (NIR mandatory)
+- LATE_ROOMS_MAIN = M_LATE
+- EXTRA_RADIOLOGY = radiology rooms beyond 2 (NIR=1, IR+CT+MRI+RM-IR clustered=1)
+- MAIN_APP_DEMAND = ALL_MAIN_ROOMS − LATE_ROOMS_MAIN − EXTRA_RADIOLOGY
+
+APP pool (eligible for Main, not in currentAssignments, not McNair-locked):
+- P_MAIN = Baylor APPs without "-MN" shift
+- Main-only locums (2 names permitted): Zamantha Seeman, Zehneel Jiwani
+- F_MAIN = flexible locums available (not on McNair-only list, not in currentAssignments)
+- TOTAL_MAIN_APPs = P_MAIN + Main-only locums available + F_MAIN
+
+APP_VERDICT_MAIN = SURPLUS | EXACT | DEFICIT based on TOTAL_MAIN_APPs vs MAIN_APP_DEMAND.
+
+- SURPLUS: assign APPs to late-start Main rooms too (prefer D12/D12(M))
+- EXACT or DEFICIT: late-start rooms get no APP; flag "Late-start rooms without APP (no Main surplus)"
+- DEFICIT: emit APP DEFICIT (MAIN) flag
+
+---
+
+## STEP 3 — ASSIGN MAIN ENDO AND RADIOLOGY FIRST
+
+Do these two exclusive roles before Main OR assignment, because they claim MDs and APPs that then can't be used for Main OR.
+
+### Main Endo
+- 1 flexible MD covers all 3 Main Endo rooms (Main Endo 1, 2, 3).
+- Apply ENDO-ONCE-PER-WEEK RULE: check weeklyEndoTracking. Skip MDs with prior endo this week.
+- Unavoidable repeat: prefer earliest prior-endo day (Mon > Thu to repeat). Flag the repeat.
+- 3 unique APPs for Main Endo. Prefer locums. Apply once-per-week to APPs too.
+
+### Radiology
+- 1 flexible MD covers ALL case-bearing radiology rooms (IR, NIR, CT, MRI, RM-IR). Different MD from Main Endo.
+- 2 APPs, ALWAYS 2 DIFFERENT PEOPLE:
+  - APP #1: all NIR rooms (NIR 1, NIR 2, etc.)
+  - APP #2: IR + CT + MRI + RM-IR shared
+  - Same person on NIR and IR/CT/MRI is a violation. If only 1 APP available, assign to NIR (mandatory); flag IR/CT/MRI uncovered.
+  - Staff only radiology rooms where anes type = General, exception NIR-1 always.
+
+---
+
+## STEP 4 — LATE-START DISTRIBUTION (before Main OR room assignment)
+
+M_LATE = list of Main OR rooms with caseTime ≥ 12:00. These are absorbed as 3rd rooms by 2-room Main MDs — they do NOT require their own MD.
+
+Procedure:
+1. Decide how many 2-room Main MDs you'll have: count Main-anchored + Main-assigned flexibles (minus Main Endo MD and Radiology MD).
+2. For each late-start room: pick a 2-room Main MD to absorb it as 3rd room. Distribute across DIFFERENT MDs — do NOT stack multiple late-starts on one MD if others are available.
+3. Shift length constraint: an 8-hour MD ("OR 8 - MD") ends at 3pm and CANNOT absorb a late-start. Skip 8-hour MDs when choosing 3rd-room absorbers. 12-hour MDs (OR 12, D12) are preferred.
+
+Forbidden outcomes:
+- 3-room Main MD where NONE of the 3 rooms is late-start (Cap 3 allowed only IF at least 1 is late-start). Flag and redistribute.
+- 1-room Main MD covering only a single late-start (should be absorbed by a 2-room MD). Flag and redistribute.
+- Stacked late-starts on one MD while others have room (distribution failure). Flag.
+
+---
+
+## STEP 5 — ASSIGN MAIN OR ROOM NUMBERS
+
+Remaining MDs (Main-anchored + Main-assigned flexibles NOT used for Main Endo or Radiology): assign 2 rooms each.
+
+MANDATORY ROOMS (always staffed): Main OR 10, OR 15. Add if missing from roomsNeeding.
+
+### Main-anchored MDs
+- 2 rooms each (ANY 2 Main OR rooms — not pinned to shift hours).
+- 3 rooms ONLY if 1 is late-start (assigned in Step 4).
+
+### Charge MD
+- Typically 2 rooms like any other Main MD.
+- EXCEPTION: on ODD-COUNT MAIN days (non-late-start Main OR count is odd), the Charge MD is preferred as the single-room MD. This is the ONLY scenario for a 1-room Main MD.
+
+### Flexible MDs (not claimed by Main Endo or Radiology)
+- 2 rooms (any Main OR). 
+- Single room only on odd-count day if no Charge MD available.
+
+### Shift hour constraints for late-start absorption
+- OR 12 - MD: can absorb late-start (12-hour shift, ends 7pm).
+- OR 10 - MD: can absorb late-start (10-hour shift, ends 5pm).
+- OR 8 - MD: CANNOT absorb late-start (shift ends 3pm).
+- D12 flexibles: can absorb late-start.
+- D8 flexibles: cannot absorb late-start.
+
+### ODD-COUNT RULE
+If non-late-start Main OR count is odd, exactly ONE Main MD has 1 room. Preference:
+1. Charge MD (preferred)
+2. Any Main-anchored or Main-assigned flexible
+
+No other single-room Main MDs allowed.
+
+---
+
+## STEP 6 — ASSIGN MAIN APPs
+
+### APP pool
+From staffSummary, extract APPs (credential CRNA or CAA) EXCLUDING:
+- Anyone in currentAssignments (claimed by McNair pass)
+- McNair-only Baylor APPs (Baylor with "-MN")
+- McNair-only locums (the 16-name list)
+
+Eligible pool: Main-only Baylor APPs + Main-only locums (Seeman, Jiwani) + flexibles not on McNair-only list, not in currentAssignments.
+
+### Assignment order
+1. Main Endo APPs (3 unique, from Step 3).
+2. Radiology APPs (2, from Step 3).
+3. Main OR rooms (not late-start).
+4. Late-start Main OR rooms LAST — assign APPs ONLY if APP_VERDICT_MAIN = SURPLUS. Prefer D12/D12(M) for late-starts.
+
+### D5 APPs (7a-12p)
+These should not be at Main (shifts end at noon, Main rooms usually run past noon). If a D5 APP has no McNair placement, leave floating and flag.
+
+### D12 APPs
+Fine at 7:30 AM rooms. Preferred for late-start rooms when APP_VERDICT_MAIN = SURPLUS.
+
+### Deduplication
+Each APP in exactly ONE room. Exceptions: shared NIR APP across NIR rooms, shared IR/CT/MRI APP across non-NIR radiology rooms. No other sharing.
+
+---
+
+## STEP 7 — APP COVERAGE AUDIT
+
+For every case-bearing Main room and every mandatory room:
+
+If no APP AND APP_VERDICT_MAIN = SURPLUS or EXACT:
+- Find unassigned APP from Main pool. Assign.
+- Repeat until every room has APP or pool is empty.
+
+If no APP AND APP_VERDICT_MAIN = DEFICIT:
+- Leave unassigned. APP DEFICIT (MAIN) flag covers it.
+
+"Unassigned APPs (surplus)" flag valid ONLY when every case-bearing Main room has APP AND APPs remain.
+
+---
+
+## STEP 8 — POST-ASSIGNMENT ENFORCEMENT
+
+### EVERY-MAIN-MD-PLACED
+Every Main-anchored MD in staffSummary (not in currentAssignments) has at least one room.
+
+### NO McNAIR MDs
+No McNair-anchored MD appears in any Main assignment. If any appear, remove.
+
+### HARD CAP
+Main OR MD > 3: redistribute.
+Main Endo MD != exactly 3 rooms: fix.
+Radiology MD with non-radiology rooms: reassign.
+
+### LATE-START
+3-room Main MD without late-start: flag "3-room Main MD without late-start: [MD] — rooms [list]" AND redistribute.
+1-room Main MD on a late-start only: redistribute (absorb into 2-room MD).
+Stacked late-starts: redistribute.
+
+### RADIOLOGY APPs
+NIR APP ≠ IR/CT/MRI APP. Fix if violated.
+
+### MAIN ENDO MD = EXACTLY 3 ROOMS
+Not more, not less. Same MD on all three.
+
+### ODD-COUNT
+If non-late-start Main OR is odd, exactly ONE Main MD has 1 room (Charge preferred).
+
+### CREDENTIALS
+md.credential = "MD". app.credential = "CRNA" or "CAA". No dual-role names.
+
+---
+
+## STEP 9 — EMIT WORK NARRATIVE (observe, don't aspire)
+
+Write WORK block AFTER all assignments final. Count actual rooms per MD. Narrative must match actual assignments.
+
+### Narrative fields (all required, in order, separated by " | "):
+
+"PASS: Main"
+
+"ROOMS: M=X (Main OR only), M_LATE=X (list rooms), RADIOLOGY_ROOMS=X"
+
+"MD_DEMAND: MAIN OR=X (formula), TOTAL=X"
+
+"MD_SUPPLY: A=X, F=X available, TOTAL=X"
+
+"MAIN_COVERAGE: [name]: rooms [list] (count) | ..."
+
+"MAIN_ENDO_MD: [name]. Prior endo this week? YES/NO"
+
+"RADIOLOGY_MD: [name]"
+
+"APP_DEMAND: ALL_MAIN_ROOMS=X, LATE_ROOMS=X, EXTRA_RAD=X, BASELINE=X"
+
+"APP_SUPPLY: P_MAIN=X, Main-locums-available=X, F_MAIN=X, TOTAL=X"
+
+"APP_VERDICT_MAIN: SURPLUS | EXACT | DEFICIT"
+
+"ODD_COUNT_MAIN: non-late-start count = X. Single-room MD: [name or N/A]"
+
+"CLAIMED_FLEXIBLES: [names of flexibles assigned on this pass, or NONE]"
+
+### Narrative audit
+Every MD named — room list and count must match actual assignments exactly.
+
+---
+
+## STEP 10 — FLAGS (closed whitelist)
+
+Permitted templates only:
+- "Unassigned APPs (surplus): [names]" — only if every Main room has APP
+- "APP DEFICIT (MAIN): supply [N] < demand [M]. Rooms without APP: [list]"
+- "Late-start rooms without APP (no Main surplus): [list]"
+- "No cases, not staffed: [rooms]"
+- "3-room Main MD without late-start: [MD name] — rooms [list]"
+- "1-room Main MD on late-start only: [MD name] — room [name]"
+- "Multiple late-start rooms stacked under one MD when distribution was possible: [MD], rooms [list]"
+- "Repeat endo: [name] (role: MD/APP; prior: [day, Main/OTM]; today: [room])"
+- "Short-staffed day: MD supply=[x] < MD demand=[y]"
+- "Unplaced Main MD: [name]"
+- "Radiology IR/CT/MRI uncovered: only 1 radiology APP available"
+
+Do NOT flag expected behaviors.
+Do NOT invent exception flags.
+
+---
+
+## STEP 11 — FINAL AUDIT
+
+- Every Main-anchored MD placed
+- No McNair-anchored MD in any assignment
+- No McNair-only APPs (locums or Baylor -MN) at Main
+- Main Endo MD exactly 3 rooms, Main Endo only
+- Radiology MD all radiology only
+- NIR APP ≠ IR/CT/MRI APP
+- No Main MD > 3 rooms
+- 3-room Main MD has a late-start (or flagged)
+- Odd-count rule: at most 1 single-room Main MD (Charge preferred)
+- Credentials correct
+- WORK narrative matches actual assignments
+- Only whitelist flags used
+- One FLAGS block max or omit
+
+---
+
+## OUTPUT FORMAT
+
+Array:
+1. WORK block
+2. Main room assignments
+3. FLAGS block (last, omit if empty)
+
+WORK:
+{
+  "room": "WORK",
+  "md": null,
+  "app": null,
+  "notes": "PASS: Main | ROOMS: ... | MD_DEMAND: ... | MD_SUPPLY: ... | MAIN_COVERAGE: ... | MAIN_ENDO_MD: ... | RADIOLOGY_MD: ... | APP_DEMAND: ... | APP_SUPPLY: ... | APP_VERDICT_MAIN: ... | ODD_COUNT_MAIN: ... | CLAIMED_FLEXIBLES: ..."
+}
+
+Room:
+{
+  "room": "Main OR 10",
+  "md": { "name": "...", "credential": "MD", "agency": "..." },
+  "app": { "name": "...", "credential": "CRNA", "agency": "..." },
+  "notes": ""
+}
+
+FLAGS (omit if empty):
+{
+  "room": "FLAGS",
+  "md": null,
+  "app": null,
+  "notes": "flag text 1. flag text 2."
+}`;
+}
+  
+// ================================================================
+// MODAL AND showAiAssignPreview UPDATES
+// ================================================================
+//
+// Two changes:
+//   1. showAiAssignPreview now shows the current pass label in the header
+//   2. Modal HTML gets a Retry button alongside Cancel and Apply (Accept)
+//
+// ---------------------------------------------------------------
+// CHANGE 1 — Replace showAiAssignPreview with this version
+// ---------------------------------------------------------------
+
 function showAiAssignPreview(plan) {
   const modal = document.getElementById("aiAssignModal");
   const content = document.getElementById("aiAssignContent");
   const flagsDiv = document.getElementById("aiAssignFlags");
+  const headerLabel = document.getElementById("aiAssignPassLabel");
+
+  // Show pass label (McNair / Main / Full Day) in the header if available
+  if (headerLabel) {
+    if (plan.passLabel) {
+      headerLabel.textContent = plan.passLabel + " pass";
+      headerLabel.style.display = "inline-block";
+    } else {
+      headerLabel.style.display = "none";
+    }
+  }
+
   const secs = {};
   const asgn = plan.assignments || {};
   for (const rk in asgn) {
-    // Support both "Section|Number" and "Section Number" key formats
     let s, num;
     if (rk.includes("|")) {
       [s, num] = rk.split("|");
     } else {
-      // Split off the trailing number/identifier
       const m = rk.match(/^(.*?)\s+(\S+)$/);
       if (m) { s = m[1]; num = m[2]; }
       else { s = rk; num = ""; }
     }
-    // Skip meta elements — WORK and FLAGS are not rooms and should not render as sections
     if (s === "WORK" || s === "FLAGS") continue;
     if (!secs[s]) secs[s] = [];
     secs[s].push({ room: rk, section: s, num: num, md: asgn[rk].md, app: asgn[rk].app });
   }
 
-  // Sort rooms within each section numerically (handles "10" vs "2" correctly)
+  // Numerical sort within each section
   for (const s in secs) {
     secs[s].sort((a, b) => {
       const numA = parseInt((a.num || "").match(/\d+/)?.[0] || "0", 10);
       const numB = parseInt((b.num || "").match(/\d+/)?.[0] || "0", 10);
       if (numA !== numB) return numA - numB;
-      // Tie-breaker: compare the raw num strings (handles non-numeric suffixes like "MRI")
       return (a.num || "").localeCompare(b.num || "");
     });
   }
 
-  const ord = ["Main OR","Main Endo","IR","NIR","CT","MRI","RM-IR","OTM OR","OTM Endo","Jamail OR","McNair OR"];
+  const ord = ["Main OR", "Main Endo", "IR", "NIR", "CT", "MRI", "RM-IR", "OTM OR", "OTM Endo", "Jamail OR", "McNair OR"];
   const keys = ord.filter(s => secs[s]).concat(Object.keys(secs).filter(s => !ord.includes(s)));
   let html = "";
   for (const sec of keys) {
@@ -3453,10 +4321,65 @@ function showAiAssignPreview(plan) {
   }
   if (plan.notes && plan.notes.length) html += '<div style="margin-top:12px;padding:12px;background:#f8f9fa;border-radius:8px;font-size:12px;color:var(--muted);line-height:1.8;">' + plan.notes.map(n => "• " + n).join("<br>") + '</div>';
   content.innerHTML = html;
-  if (plan.flags && plan.flags.length) { flagsDiv.style.display = "block"; flagsDiv.innerHTML = "<strong>Flags:</strong><br>" + plan.flags.map(f => "• " + f).join("<br>"); }
-  else flagsDiv.style.display = "none";
+
+  if (plan.flags && plan.flags.length) {
+    flagsDiv.style.display = "block";
+    flagsDiv.innerHTML = "<strong>Flags:</strong><br>" + plan.flags.map(f => "• " + f).join("<br>");
+  } else {
+    flagsDiv.style.display = "none";
+  }
+
   modal.style.display = "block";
 }
+
+// ---------------------------------------------------------------
+// CHANGE 2 — Replace the modal HTML
+// ---------------------------------------------------------------
+//
+// Find the existing modal block near the bottom of index.html that looks like:
+//
+//   <div id="aiAssignModal" ...>
+//     <h2>...AI Assignment Preview</h2>
+//     ...existing buttons...
+//   </div>
+//
+// REPLACE it with:
+
+/*
+
+<!-- AI Assign Modal -->
+<div id="aiAssignModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;overflow-y:auto;">
+  <div style="background:#1e2235;margin:40px auto;max-width:820px;border-radius:12px;padding:32px;box-shadow:0 8px 32px rgba(0,0,0,0.5);color:#e8eaf2;">
+    <h2 style="margin:0 0 8px;font-family:'DM Serif Display',serif;">
+      &#x1F916; AI Assignment Preview
+      <span id="aiAssignPassLabel" style="display:none;font-size:14px;font-family:sans-serif;font-weight:normal;background:#3b4368;color:#fff;padding:4px 10px;border-radius:6px;margin-left:12px;vertical-align:middle;"></span>
+    </h2>
+    <p style="color:var(--muted);margin:0 0 20px;font-size:14px;">Review proposed assignments. Already-assigned rooms are skipped.</p>
+    <div id="aiAssignFlags" style="display:none;background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;line-height:1.6;color:#7a4f00;"></div>
+    <div id="aiAssignContent" style="font-size:14px;max-height:60vh;overflow-y:auto;"></div>
+    <div style="margin-top:24px;display:flex;gap:12px;justify-content:flex-end;align-items:center;">
+      <span id="aiAssignStatus" style="font-size:13px;color:var(--muted);flex:1;"></span>
+      <button onclick="aiAssignCancel()" style="padding:10px 20px;border-radius:8px;border:1px solid var(--muted);background:none;cursor:pointer;color:var(--text);">Cancel</button>
+      <button onclick="aiAssignRetry()" style="padding:10px 20px;border-radius:8px;border:none;background:#eab308;color:#fff;cursor:pointer;font-weight:600;">Retry</button>
+      <button id="aiAssignConfirmBtn" onclick="applyAiAssignments()" style="padding:10px 24px;border-radius:8px;border:none;background:#10b981;color:#fff;cursor:pointer;font-weight:600;">Accept</button>
+    </div>
+  </div>
+</div>
+
+*/
+
+// ---------------------------------------------------------------
+// CHANGE 3 — Update the AI Assign button's onclick handler
+// ---------------------------------------------------------------
+//
+// Find the button that currently says:
+//   <button id="aiAssignBtn" onclick="aiAssignStart()">AI Assign</button>
+//
+// Change onclick to:
+//   onclick="aiAssignStart()"
+//
+// (Keep the button ID and label the same. The new aiAssignStart() function
+// shows the campus picker prompt before running a pass.)
 async function applyAiAssignments() {
   if (!_aiAssignPlan) return;
   const date = document.getElementById("adminDatePicker").value;
