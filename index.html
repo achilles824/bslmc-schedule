@@ -3049,6 +3049,9 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
             const filledRooms = new Set(autoAssignments.map(a => a.room));
             const stillDeficit = overflowRooms.filter(r => !filledRooms.has(r));
 
+            // Helper to convert Firebase-format keys ("OTM OR|5") to display ("OTM OR 5")
+            const toDisplay = k => k.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+
             // Remove old deficit flag
             const newFlags = flagsArr.filter(f => !/McNair backfill deficit/i.test(f));
 
@@ -3058,13 +3061,13 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
               (byMd[a.md] = byMd[a.md] || []).push(a.room);
             });
             const fixSummary = Object.entries(byMd)
-              .map(([md, rooms]) => md + " → " + rooms.join(", "))
+              .map(([md, rooms]) => md + " → " + rooms.map(toDisplay).join(", "))
               .join(" | ");
             newFlags.push("Client-side backfill applied (model left idle flexibles): " + fixSummary);
 
             // If any deficit remains, re-emit the deficit flag with the reduced list
             if (stillDeficit.length > 0) {
-              newFlags.push("McNair backfill deficit: " + stillDeficit.join(", "));
+              newFlags.push("McNair backfill deficit: " + stillDeficit.map(toDisplay).join(", "));
             }
 
             flagsArr.length = 0;
@@ -3086,6 +3089,46 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
       // ─────────────────────────────────────────────────────────────
       if (label === "McNair") {
         const AREA_DROP_PRIORITY = ["OTM Endo", "OTM OR", "McNair OR"];
+
+        // Helper to convert room keys. assignmentsObj uses "Main OR|10" (Firebase format);
+        // the prompt expects display format "Main OR 10" in flags and notes.
+        const toDisplayRoom = k => k.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+
+        // MAIN-ANCHORED MD CHECK — Absolute Rule 3 forbids Main-anchored MDs on
+        // McNair side. The model occasionally violates this when demand is high.
+        // Scan the proposal, remove any Main-anchored MD, leave rooms md:null.
+        const MAIN_ANCHORED_SHIFT = s => /^OR\s*\d+\s*-\s*MD/i.test(s);
+        const staffByName = {};
+        for (const s of staff) staffByName[s.name] = s;
+
+        const mainAnchoredRemoved = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          const mdInfo = staffByName[v.md.name];
+          if (!mdInfo) continue; // unknown MD — leave alone
+          if (mdInfo.credential !== "MD") continue;
+          if (mdInfo.agency === "Baylor" && MAIN_ANCHORED_SHIFT(mdInfo.shift)) {
+            const existingApp = v.app;
+            assignmentsObj[room] = {
+              md: null,
+              app: existingApp || null,
+              notes: "Main-anchored MD removed from McNair pass - Main pass to fill"
+            };
+            mainAnchoredRemoved.push({ md: v.md.name, room });
+          }
+        }
+
+        if (mainAnchoredRemoved.length > 0) {
+          const byMd = {};
+          mainAnchoredRemoved.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(toDisplayRoom(x.room));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " from " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side enforcement: Main-anchored MDs removed from McNair pass (" + summary + ")");
+          console.log("[Client-side Main-anchored removal]", mainAnchoredRemoved);
+        }
 
         // GANDERSON OFF-DUTY CHECK — if Jamail has no cases today, Ganderson
         // is not working. Remove her from any non-Jamail room the model placed her in.
@@ -3114,7 +3157,7 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
             const keepFlags = flagsArr.filter(f =>
               !/Ganderson/i.test(f) || /not assigned/i.test(f)
             );
-            keepFlags.push("Client-side enforcement: Ganderson removed from " + gandersonRemoved.join(", ") + " (Jamail closed)");
+            keepFlags.push("Client-side enforcement: Ganderson removed from " + gandersonRemoved.map(toDisplayRoom).join(", ") + " (Jamail closed)");
             if (!keepFlags.some(f => /Ganderson not assigned/i.test(f))) {
               keepFlags.push("Ganderson not assigned (Jamail closed)");
             }
@@ -3174,10 +3217,10 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
             !/over.*cap|exceeds.*cap|cap violation/i.test(f)
           );
           const summary = Object.entries(droppedByMd)
-            .map(([md, rms]) => md + " → " + rms.join(", "))
+            .map(([md, rms]) => md + " → " + rms.map(toDisplayRoom).join(", "))
             .join(" | ");
           keepFlags.push("Client-side cap enforcement (model exceeded 3-room cap): dropped " + summary);
-          keepFlags.push("McNair pass left rooms for Main pass: " + droppedRooms.join(", "));
+          keepFlags.push("McNair pass left rooms for Main pass: " + droppedRooms.map(toDisplayRoom).join(", "));
           flagsArr.length = 0;
           flagsArr.push(...keepFlags);
           console.log("[Client-side McNair cap enforcement]", droppedByMd);
@@ -3811,7 +3854,7 @@ Shift names with numbers = HOURS, not room numbers. "OR 12 - MD" = 12-hour shift
    NEVER invent an exception flag ("FLAGS-9", "exceptional circumstances") to justify a cap violation.
 
 3. FORBIDDEN AT McNAIR (any area):
-   - Main-anchored MDs (shifts like "OR 8 - MD", "OR 10 - MD", "OR 12 - MD / Charge"). These do not belong on this pass. If you see them in staff, do not place them.
+   - Main-anchored MDs (shifts like "OR 8 - MD", "OR 10 - MD", "OR 10 - MD / Charge", "OR 12 - MD"). These do not belong on this pass, under ANY circumstances, EVEN if McNair demand exceeds McNair-anchored supply. If McNair-anchored MDs are all capped and rooms remain, those rooms go md:null (Main pass backfills with flexibles). NEVER reach for a Main-anchored MD like Tony Kim, Omojola, Saye, Deoskar, or Maldonado Villalba to patch McNair coverage gaps.
    - The Main-only locum APPs: Zamantha Seeman, Zehneel Jiwani. These only go to Main campus.
    - Any Baylor APP without "-MN" in their shift (Main-only Baylor APPs).
 
