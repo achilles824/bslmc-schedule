@@ -4380,6 +4380,21 @@ function showAiAssignPreview(plan) {
 //
 // (Keep the button ID and label the same. The new aiAssignStart() function
 // shows the campus picker prompt before running a pass.)
+// Convert model's room label ("Main OR 10") to Firebase/admin key format ("Main OR|10")
+function _aiRoomLabelToKey(label) {
+  // Try to match each known site group as a prefix
+  for (const group of Object.keys(ALL_SITES)) {
+    if (label === group) return group + "|";          // e.g., "CT" -> "CT|"
+    if (label.startsWith(group + " ")) {
+      const rest = label.slice(group.length + 1);     // everything after "group "
+      return group + "|" + rest;                      // e.g., "Main OR 10" -> "Main OR|10"
+    }
+  }
+  // Fallback: no matching group prefix — return as-is with bar
+  // This keeps the write working even if a new section shows up
+  return label;
+}
+
 async function applyAiAssignments() {
   if (!_aiAssignPlan) return;
   const date = document.getElementById("adminDatePicker").value;
@@ -4392,7 +4407,8 @@ async function applyAiAssignments() {
     let count = 0;
     for (const rk of keys) {
       const a = asgn[rk];
-      const enc = encodeURIComponent(rk);
+      const adminKey = _aiRoomLabelToKey(rk);   // convert "Main OR 10" -> "Main OR|10"
+      const enc = encodeURIComponent(adminKey); // Firebase-safe encoding of "Main OR|10"
       const base = "https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + "/" + enc;
       if (a.md && a.md.name) await fetch(base + "/md.json", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(a.md)});
       if (a.app && a.app.name) await fetch(base + "/app.json", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(a.app)});
@@ -4404,7 +4420,7 @@ async function applyAiAssignments() {
     if (typeof window.startAssignmentListener === "function") window.startAssignmentListener(date);
     alert(count + " rooms assigned successfully!");
   } catch(e) { console.error(e); alert("Failed: " + e.message); }
-  finally { btn.disabled = false; btn.textContent = "Apply Assignments"; if (status) status.textContent = ""; }
+  finally { btn.disabled = false; btn.textContent = "Accept"; if (status) status.textContent = ""; }
 }
 // ==== END AI ASSIGN ====
 </script>
