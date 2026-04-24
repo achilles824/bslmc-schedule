@@ -4002,16 +4002,33 @@ FLAGS (omit if empty):
 
 OUTPUT: Raw JSON array only. Start with [, end with ]. No prose. First element is WORK block. Last element (if any) is FLAGS block. All other elements are Main-campus room assignments.
 
-SCOPE — MAIN CAMPUS ONLY:
-You are assigning these areas:
+SCOPE — MAIN CAMPUS + McNAIR-SIDE OVERFLOW BACKFILL:
+
+You are primarily assigning the MAIN campus:
 - Main OR (rooms 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 18, 21, 23, 24, 25, etc.)
 - Main Endo (rooms 1, 2, 3)
 - Radiology: IR, NIR, CT, MRI, RM-IR General, RM-IR MRI
 
-You will NOT assign:
-- McNair OR, OTM OR, OTM Endo, Jamail OR — these are handled by a separate pass
+You ALSO backfill McNair-campus rooms that the McNair pass left unassigned (md:null). These rooms will appear in roomsNeeding and currentAssignments with md:null — that is your signal to backfill with a flexible MD.
 
-If you see McNair-campus rooms in roomsNeeding, ignore them.
+Areas where McNair backfill MAY occur:
+- McNair OR (rooms 1-7)
+- OTM OR
+- OTM Endo
+- Jamail OR (rare; only if McNair pass was short on Ganderson substitutes)
+
+Rules for McNair backfill:
+- ONLY fill McNair-side rooms where md is null in currentAssignments (McNair pass's explicit handoff). Do NOT touch McNair-side rooms that already have an MD assigned — those are locked.
+- Use ONLY flexible MDs (Cross Country, Caliber, locums). Never use a Main-anchored MD for McNair backfill.
+- The 3-room TOTAL cap applies to every flexible MD across all rooms they cover in this pass (Main + McNair backfill combined).
+- Keep any APP the McNair pass already placed on the overflow room. Just add the MD.
+- If all flexibles are at cap and McNair rooms remain with md:null, leave them md:null and add flag "McNair backfill deficit: [rooms]".
+
+You will NOT assign:
+- McNair-campus rooms that already have an MD (locked by McNair pass)
+- Jamail rooms covered by Ganderson (locked)
+
+If a McNair-side room is missing from roomsNeeding but has md:null in currentAssignments, still treat it as needing backfill.
 
 ---
 
@@ -4052,10 +4069,12 @@ Shift names with numbers = HOURS, not room numbers. "OR 8 - MD" = 8-hour Main sh
    - Main Endo 1, 2, 3
    - NIR 1
 
-4. FORBIDDEN AT MAIN (any area):
+4. FORBIDDEN AT MAIN (any Main-campus area):
    - McNair-anchored MDs (shifts containing "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC", "OR - McNair"). Ganderson never at Main. Out-MNC MDs never at Main.
    - McNair-only locum APPs (16 names): Sagar Patel, Jesus Bagos, Mark Doria, Lina Eisa, Audra Jackson, Lee Mabry, Tanya McGowan, Amanda Messarra, Adriana Montoya, Tammy Moore, Natty Pitera Okojie, Carla Rose, Evie Schoene, Tracey Sheffield, Khadijah Udu, Young Wright. These go to McNair campus only.
    - Any Baylor APP with "-MN" in their shift (McNair-only Baylor APPs).
+
+   Note: McNair-anchored MDs are also forbidden from McNair backfill (the pass's secondary scope) — but that's academic since they're already placed by the McNair pass. Only FLEXIBLE MDs may be used for McNair backfill.
 
 5. MAIN ENDO EXCLUSIVE: The Main Endo MD covers ONLY Main Endo 1-3. Never any OR, never radiology.
 
@@ -4184,6 +4203,51 @@ No other single-room Main MDs allowed.
 
 ---
 
+## STEP 5.5 — McNAIR BACKFILL (flexible MDs into McNair overflow rooms)
+
+After Main OR is assigned, identify McNair-side rooms left unassigned by the McNair pass.
+
+### Identify McNair overflow rooms
+Scan currentAssignments. A room qualifies for backfill if ALL of these are true:
+- Room label starts with "McNair OR", "OTM OR", "OTM Endo", or "Jamail OR"
+- The room's md field is null (or missing) AND md.name is empty/missing
+- The room has a case (it appears in the overflow list from the McNair pass, typically flagged in the McNair pass's output)
+
+Any McNair-side room with an MD already assigned is LOCKED — do not modify.
+
+### Flexible MD pool for backfill
+Flexible MDs who are:
+- Still under the 3-room cap after Main OR + Main Endo + Radiology assignments (count Main rooms they already hold in THIS pass)
+- Not in currentAssignments from McNair pass
+- Not Main-anchored (Main-anchored MDs stay at Main)
+
+Note: a flexible who took 2 Main OR rooms has 1 slot left (cap = 3). A flexible who took 3 Main OR rooms is capped, cannot backfill.
+
+### Backfill procedure
+1. Sort overflow rooms by priority: Jamail OR > McNair OR > OTM OR > OTM Endo.
+2. For each overflow room in priority order:
+   - Find a flexible MD with remaining capacity (rooms used in this pass < 3).
+   - Prefer flexibles already adjacent (e.g., a flexible who has 2 rooms in OTM OR is preferred for backfilling a third OTM OR room).
+   - Prefer flexibles with HOME-AREA affinity (e.g., a D10 flexible who took no Main rooms may be claimed entirely for McNair backfill).
+   - Assign: room.md = flexible MD. Keep any APP the McNair pass already placed.
+3. After each assignment, increment that flexible's pass room count.
+
+### Cap enforcement during backfill
+- Before every backfill placement, count the flexible's rooms across ALL rooms in this Main pass (Main OR + Main Endo + Radiology + McNair backfill combined). If already at 3, skip that flexible.
+- Area-first rule: if a flexible MD is being claimed purely for McNair backfill (no Main rooms), fill one McNair area to cap (up to 3) before bridging them across McNair areas.
+
+### If backfill cannot cover all overflow rooms
+- Leave remaining rooms md:null.
+- Emit flag: "McNair backfill deficit: [list of rooms]".
+
+### Do NOT do any of the following
+- Do NOT place a Main-anchored MD in any McNair-side room, ever.
+- Do NOT remove or modify any McNair-side assignment that already has an MD.
+- Do NOT bridge a flexible MD past 3 total rooms to cover more backfill.
+- Do NOT touch Jamail rooms that are covered by Ganderson.
+
+---
+
 ## STEP 6 — ASSIGN MAIN APPs
 
 ### APP pool
@@ -4231,13 +4295,17 @@ If no APP AND APP_VERDICT_MAIN = DEFICIT:
 ### EVERY-MAIN-MD-PLACED
 Every Main-anchored MD in staffSummary (not in currentAssignments) has at least one room.
 
-### NO McNAIR MDs
-No McNair-anchored MD appears in any Main assignment. If any appear, remove.
+### NO McNAIR-ANCHORED MDs ON EITHER SIDE
+No McNair-anchored MD (Out-MNC, McNair Call, Late MD-MNC, OR - McNair, Ganderson) appears in ANY Main assignment. McNair-anchored MDs also never appear in Main's McNair backfill (they're already placed by McNair pass).
+
+### NO MAIN-ANCHORED MDs ON McNAIR SIDE
+Main-anchored MDs (shifts "OR 8 - MD", "OR 10 - MD / Charge", "OR 12 - MD", etc.) never appear on McNair-side rooms. Only flexibles may backfill McNair overflow.
 
 ### HARD CAP
 Main OR MD > 3: redistribute.
 Main Endo MD != exactly 3 rooms: fix.
 Radiology MD with non-radiology rooms: reassign.
+Flexible MD with more than 3 rooms TOTAL across Main + McNair backfill: redistribute, remove backfill assignments first, leave room md:null if needed.
 
 ### LATE-START
 3-room Main MD without late-start: flag "3-room Main MD without late-start: [MD] — rooms [list]" AND redistribute.
@@ -4288,6 +4356,12 @@ Write WORK block AFTER all assignments final. Count actual rooms per MD. Narrati
 
 "CLAIMED_FLEXIBLES: [names of flexibles assigned on this pass, or NONE]"
 
+"McNAIR_OVERFLOW_DETECTED: [list of McNair-side rooms with md:null in currentAssignments, or NONE]"
+
+"McNAIR_BACKFILL_APPLIED: [flexible name] → [room list] | [flexible name] → [room list] | ... (or NONE if no backfill occurred)"
+
+"McNAIR_BACKFILL_DEFICIT: [rooms still md:null after backfill, or NONE]"
+
 ### Narrative audit
 Every MD named — room list and count must match actual assignments exactly.
 
@@ -4307,6 +4381,8 @@ Permitted templates only:
 - "Short-staffed day: MD supply=[x] < MD demand=[y]"
 - "Unplaced Main MD: [name]"
 - "Radiology IR/CT/MRI uncovered: only 1 radiology APP available"
+- "McNair backfill deficit: [rooms]" — McNair-side overflow rooms that could not be filled because all flexibles are at cap
+- "McNair backfill applied: [MD] → [room list]" — informational, tracks which flexibles backfilled which McNair rooms
 
 Do NOT flag expected behaviors.
 Do NOT invent exception flags.
@@ -4316,12 +4392,16 @@ Do NOT invent exception flags.
 ## STEP 11 — FINAL AUDIT
 
 - Every Main-anchored MD placed
-- No McNair-anchored MD in any assignment
+- No McNair-anchored MD in any assignment (Main OR McNair-side)
+- No Main-anchored MD on any McNair-side room (only flexibles may backfill)
 - No McNair-only APPs (locums or Baylor -MN) at Main
 - Main Endo MD exactly 3 rooms, Main Endo only
 - Radiology MD all radiology only
 - NIR APP ≠ IR/CT/MRI APP
 - No Main MD > 3 rooms
+- No flexible MD > 3 rooms TOTAL (across Main + McNair backfill combined)
+- McNair-side rooms that started with an MD assigned (from McNair pass) remain untouched
+- Only McNair-side rooms with md:null in currentAssignments were eligible for backfill
 - 3-room Main MD has a late-start (or flagged)
 - Odd-count rule: at most 1 single-room Main MD (Charge preferred)
 - Credentials correct
