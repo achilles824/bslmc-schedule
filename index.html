@@ -3077,6 +3077,114 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
       }
       // ─────────────────────────────────────────────────────────────
 
+      // ─────────────────────────────────────────────────────────────
+      // CLIENT-SIDE MCNAIR-PASS CAP ENFORCER
+      // If the McNair pass placed any MD in > 3 rooms, auto-drop the
+      // excess rooms to md:null so they can be backfilled by Main pass.
+      // Drop order: OTM Endo → OTM OR → McNair OR (keep home-area rooms
+      // when possible). Ganderson at Jamail allowed 4 rooms.
+      // ─────────────────────────────────────────────────────────────
+      if (label === "McNair") {
+        const AREA_DROP_PRIORITY = ["OTM Endo", "OTM OR", "McNair OR"];
+
+        // GANDERSON OFF-DUTY CHECK — if Jamail has no cases today, Ganderson
+        // is not working. Remove her from any non-Jamail room the model placed her in.
+        const jamailCaseRooms = Object.keys(cur).filter(k =>
+          k !== "__closed" &&
+          k.startsWith("Jamail OR") &&
+          !(cur.__closed || {})[k] &&
+          cur[k] && cur[k].caseTime
+        );
+        const jamailClosed = jamailCaseRooms.length === 0;
+
+        if (jamailClosed) {
+          const gandersonRemoved = [];
+          for (const [room, v] of Object.entries(assignmentsObj)) {
+            if (v.md && v.md.name === "Lauren Ganderson") {
+              const existingApp = v.app;
+              assignmentsObj[room] = {
+                md: null,
+                app: existingApp || null,
+                notes: "Ganderson removed (Jamail closed) - Main pass to fill"
+              };
+              gandersonRemoved.push(room);
+            }
+          }
+          if (gandersonRemoved.length > 0) {
+            const keepFlags = flagsArr.filter(f =>
+              !/Ganderson/i.test(f) || /not assigned/i.test(f)
+            );
+            keepFlags.push("Client-side enforcement: Ganderson removed from " + gandersonRemoved.join(", ") + " (Jamail closed)");
+            if (!keepFlags.some(f => /Ganderson not assigned/i.test(f))) {
+              keepFlags.push("Ganderson not assigned (Jamail closed)");
+            }
+            flagsArr.length = 0;
+            flagsArr.push(...keepFlags);
+            console.log("[Client-side Ganderson off-duty]", gandersonRemoved);
+          }
+        }
+
+        // Count rooms per MD in this pass (AFTER Ganderson removal above)
+        const mdRooms = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (v.md && v.md.name) {
+            (mdRooms[v.md.name] = mdRooms[v.md.name] || []).push(room);
+          }
+        }
+
+        const droppedRooms = [];
+        const droppedByMd = {};
+
+        for (const [mdName, rooms] of Object.entries(mdRooms)) {
+          // Ganderson exception: up to 4 rooms if all are Jamail
+          const isGanderson = mdName === "Lauren Ganderson";
+          const allJamail = rooms.every(r => r.startsWith("Jamail OR"));
+          const cap = (isGanderson && allJamail) ? 4 : 3;
+
+          if (rooms.length <= cap) continue;
+
+          // Over cap. Sort rooms by drop priority (drop OTM Endo first, then OTM OR, then McNair OR, then Jamail last).
+          const sorted = rooms.slice().sort((a, b) => {
+            const areaA = AREA_DROP_PRIORITY.findIndex(x => a.startsWith(x));
+            const areaB = AREA_DROP_PRIORITY.findIndex(x => b.startsWith(x));
+            // findIndex returns -1 for Jamail; those go last (keep)
+            const rankA = areaA === -1 ? 99 : areaA;
+            const rankB = areaB === -1 ? 99 : areaB;
+            return rankA - rankB;
+          });
+
+          // Drop rooms beyond the cap. `sorted` has drop-first rooms at front.
+          // We keep cap rooms starting from the END (highest priority to retain).
+          const toDrop = sorted.slice(0, sorted.length - cap);
+          for (const room of toDrop) {
+            const existingApp = assignmentsObj[room] && assignmentsObj[room].app;
+            assignmentsObj[room] = {
+              md: null,
+              app: existingApp || null,
+              notes: "Unassigned by McNair pass (client-side cap fix) - Main pass to fill"
+            };
+            droppedRooms.push(room);
+            (droppedByMd[mdName] = droppedByMd[mdName] || []).push(room);
+          }
+        }
+
+        if (droppedRooms.length > 0) {
+          // Remove stale cap-related flags that no longer apply
+          const keepFlags = flagsArr.filter(f =>
+            !/over.*cap|exceeds.*cap|cap violation/i.test(f)
+          );
+          const summary = Object.entries(droppedByMd)
+            .map(([md, rms]) => md + " → " + rms.join(", "))
+            .join(" | ");
+          keepFlags.push("Client-side cap enforcement (model exceeded 3-room cap): dropped " + summary);
+          keepFlags.push("McNair pass left rooms for Main pass: " + droppedRooms.join(", "));
+          flagsArr.length = 0;
+          flagsArr.push(...keepFlags);
+          console.log("[Client-side McNair cap enforcement]", droppedByMd);
+        }
+      }
+      // ─────────────────────────────────────────────────────────────
+
       _aiAssignPlan = {
         assignments: assignmentsObj,
         flags: flagsArr,
@@ -3711,6 +3819,8 @@ Shift names with numbers = HOURS, not room numbers. "OR 12 - MD" = 12-hour shift
 
 5. EVERY McNAIR-ANCHORED MD GETS AT LEAST ONE ROOM (if rooms exist). There is no flex-off. Every MD with shift "1st Out-MNC", "2nd Out-MNC", "3rd Out-MNC", "Late MD-MNC", "McNair Call", "OR - McNair" (including Ganderson) receives at least one assignment when case-bearing rooms are available. HOWEVER: the cap in Rule 2 takes precedence. If all McNair-anchored MDs are at their 3-room cap and rooms remain, those rooms go UNASSIGNED (md:null) rather than over-assigning any MD.
 
+EXCEPTION TO RULE 5 — GANDERSON: If J = 0 (no Jamail cases today), Ganderson is not working. Do NOT assign her to McNair OR, OTM OR, OTM Endo, or any other room. She is excluded from assignment entirely on Jamail-closed days. Flag: "Ganderson not assigned (Jamail closed)". This is expected behavior, not a failure.
+
 ---
 
 ## STEP 1 — JAMAIL BLOCK (do this FIRST)
@@ -3739,6 +3849,7 @@ TIER_1_WORKING = list of names whose answer is YES. Only "NONE" if all four are 
 
 Count Jamail rooms with cases (J).
 
+- **J = 0 (no Jamail cases): SKIP Jamail entirely.** Ganderson, if present in staffSummary, is NOT working today and is excluded from all assignments on this pass. Do not place her at McNair OR, OTM OR, OTM Endo, or any other room. Emit flag "Ganderson not assigned (Jamail closed)". Skip to Step 2.
 - GANDERSON_PRESENT = YES AND J ≤ 4: Ganderson covers all Jamail rooms.
 - GANDERSON_PRESENT = YES AND J ≥ 5: Ganderson + 1 MD from CLOSED JAMAIL SUBSTITUTE LIST (even split).
 - GANDERSON_PRESENT = NO AND J ≤ 4: 1 MD from CLOSED JAMAIL SUBSTITUTE LIST.
@@ -3782,7 +3893,7 @@ Ganderson is already placed. For every other MD in staffSummary (excluding any i
 
 ---
 
-## STEP 3 — COUNT McNAIR ROOMS, COMPUTE DEMAND
+## STEP 3 — COUNT McNAIR ROOMS, COMPUTE DEMAND AND CAPACITY
 
 Count:
 - K = McNair OR rooms with cases
@@ -3790,11 +3901,42 @@ Count:
 - E = OTM Endo rooms with cases
 - J = Jamail OR rooms with cases (already handled in Step 1)
 
-McNAIR MD DEMAND = ceil((K + O + E) / 3) + (1 if Jamail needs overflow else 0)
+### MD DEMAND vs CAPPED CAPACITY — critical check for under-staffed days
 
-MD supply (excluding placed-at-Jamail, excluding currentAssignments, excluding Main-anchored):
+ROOMS_NEEDED = K + O + E (Jamail already placed in Step 1)
+
+MD supply (excluding placed-at-Jamail, excluding currentAssignments, excluding Main-anchored, excluding Ganderson when J=0):
+- N = McNair-anchored MDs available for McNair OR / OTM OR / OTM Endo
+- If J = 0 and Ganderson is in staffSummary, EXCLUDE her from N. She does not work on Jamail-closed days.
+- Note: flexibles are NOT counted here. Flexibles are for the Main pass to use for backfill.
+
+CAPPED_CAPACITY = N × 3
+(This is the maximum number of rooms this pass can cover while respecting the 3-room-per-MD cap.)
+
+CAPACITY_VERDICT:
+- If ROOMS_NEEDED ≤ CAPPED_CAPACITY: verdict = FULL_COVERAGE_POSSIBLE. Place all rooms.
+- If ROOMS_NEEDED > CAPPED_CAPACITY: verdict = UNDER_STAFFED. Place exactly CAPPED_CAPACITY rooms (N × 3). Leave (ROOMS_NEEDED − CAPPED_CAPACITY) rooms UNASSIGNED (md:null) for Main pass backfill. Emit flag "McNair pass under-staffed: [N] rooms left for Main pass backfill".
+
+### CRITICAL: UNDER_STAFFED behavior
+
+If CAPACITY_VERDICT = UNDER_STAFFED, you MUST:
+1. Identify which (ROOMS_NEEDED − CAPPED_CAPACITY) rooms to leave unassigned. Prefer dropping from OTM Endo first (lowest operational priority), then OTM OR, then McNair OR.
+2. Place the remaining rooms using home-area rule and 3-cap.
+3. Do NOT stretch any MD past 3 rooms to force full coverage. Piling on is the WRONG answer.
+4. Under-staffed is a legitimate, expected state. It is NOT a failure — it is the system working correctly. The Main pass backfills the leftovers.
+
+WORKED EXAMPLE (under-staffed day):
+  K=5, O=7, E=8 → ROOMS_NEEDED = 20. Six McNair-anchored MDs working (N=6). CAPPED_CAPACITY = 6 × 3 = 18.
+  Verdict: UNDER_STAFFED. Place 18 rooms. Leave 2 rooms unassigned (drop 2 OTM Endo rooms).
+  Each MD ends with exactly 3 rooms. Flag: "McNair pass under-staffed: OTM Endo X, OTM Endo Y left for Main pass backfill."
+
+WRONG behavior for the same example:
+  ❌ Model gives MD_A 4 rooms + MD_B 4 rooms + MD_C 5 rooms + MD_D 3 + MD_E 2 + MD_F 2 = 20 total (cap violations to force coverage).
+  ✅ Correct: every MD at 3, 2 rooms left md:null, done.
+
+MD supply (again, for clarity, for APP sizing below):
 - N = McNair-anchored MDs
-- F = flexible MDs available for McNair
+- F = flexible MDs (not used on this pass; reserved for Main pass)
 
 APP demand and supply (McNair campus only):
 - McNAIR_ALL_ROOMS = K + O + E + J
@@ -3991,7 +4133,8 @@ If no APP AND APP_VERDICT_MCNAIR = DEFICIT:
 Every McNair-anchored MD in staffSummary gets at least one room (excluding any in currentAssignments) IF uncapped rooms remain. If all remaining rooms can only be filled by pushing an already-capped MD past 3, prefer leaving the MD unplaced and the rooms unassigned. Flag unplaced MDs as "Unused McNair-anchored MD: [name]".
 
 ### GANDERSON
-If YES, only at Jamail. Otherwise reassign.
+- If J > 0 and GANDERSON_PRESENT = YES: Ganderson ONLY at Jamail. If she appears at any non-Jamail room, remove her from that room and redistribute.
+- If J = 0 and GANDERSON_PRESENT = YES: Ganderson must NOT appear in any assignment (she is off on Jamail-closed days). If she appears anywhere, remove her. Flag: "Ganderson not assigned (Jamail closed)".
 
 ### NO-MAIN-MDS
 No Main-anchored MD appears in any assignment. If any appear, remove.
@@ -4030,6 +4173,8 @@ Write the WORK block AFTER all assignments are final. Count actual rooms per MD.
 "ROOMS: K=X, O=X, E=X, J=X"
 
 "MD_DEMAND: McNAIR=X"
+
+"ROOMS_NEEDED: X (K+O+E). CAPPED_CAPACITY: N*3=X. CAPACITY_VERDICT: FULL_COVERAGE_POSSIBLE | UNDER_STAFFED"
 
 "MD_SUPPLY: N=X, F=X available, TOTAL=X"
 
@@ -4072,6 +4217,8 @@ Permitted templates only:
 - "Jamail overflow with no approved substitute available"
 - "Unplaced McNair MD: [name]"
 - "McNair pass left rooms for Main pass: [rooms]" — rooms where all McNair-anchored MDs were at the 3-room cap, awaiting flexible MD from Main pass
+- "McNair pass under-staffed: [N] rooms left for Main pass backfill ([room list])" — when ROOMS_NEEDED exceeds CAPPED_CAPACITY (N × 3). This is the expected flag on high-demand days.
+- "Ganderson not assigned (Jamail closed)" — emitted when J = 0 (no Jamail cases) and Ganderson is on the roster. She is off on Jamail-closed days.
 - "Unused McNair-anchored MD: [name]" — an MD who ended with zero rooms because all case-bearing rooms were covered by capped peers
 
 Do NOT invent exception flags.
@@ -4084,10 +4231,11 @@ Any failure → fix, do not output.
 
 - No McNair-anchored MD exceeds 3 rooms TOTAL (summed across McNair OR + OTM OR + OTM Endo)
 - No MD bridges to a non-home area while their home area still has unassigned case-bearing rooms (exception: triple-block McNair)
-- Ganderson (if present) ≤ 4 rooms at Jamail only
+- Ganderson (if present) ≤ 4 rooms at Jamail only when J > 0
+- Ganderson NOT assigned anywhere when J = 0 (Jamail closed — she is off)
 - Any other Jamail MD ≤ 3 rooms
 - No Main-anchored MD in any assignment
-- Every McNair-anchored MD has ≥ 1 room OR is flagged as "Unused McNair-anchored MD"
+- Every McNair-anchored MD (except Ganderson when J=0) has ≥ 1 room OR is flagged as "Unused McNair-anchored MD"
 - Rooms left with md:null are flagged as "McNair pass left rooms for Main pass"
 - TIER 1 lock enforced (Kima at Jamail; Rose/Jackson/Schoene at Jamail unless pulled with flag)
 - Jamail MD from closed list if Ganderson absent
