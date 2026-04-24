@@ -2945,6 +2945,138 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
       const flagsArr = flagsText
         ? flagsText.split(/(?<=\.)\s+|\s*\|\s*/).map(s => s.trim()).filter(Boolean)
         : [];
+
+      // ─────────────────────────────────────────────────────────────
+      // CLIENT-SIDE IDLE-FLEXIBLE BACKFILL VALIDATOR (Main pass only)
+      // If any flexible MD ended with 0 rooms AND any McNair-side
+      // room still has md:null, auto-assign idle flexibles to cover
+      // the deficit. Area-first, 3-room cap.
+      // ─────────────────────────────────────────────────────────────
+      if (label === "Main") {
+        const McNAIR_AREAS = ["Jamail OR", "McNair OR", "OTM OR", "OTM Endo"];
+        const AREA_PRIORITY = ["Jamail OR", "McNair OR", "OTM OR", "OTM Endo"];
+        const MAIN_ANCHORED = s => /^OR\s*\d+\s*-\s*MD/i.test(s);
+        const MCNAIR_ANCHORED = s =>
+          /McNair|MNC|Out-MNC|Late MD-MNC|McNair Call|OR - McNair/i.test(s);
+
+        // Build set of MDs already placed by McNair pass (in cur, not in assignmentsObj)
+        const mcnairPassMDs = new Set();
+        for (const [room, v] of Object.entries(cur)) {
+          if (room === "__closed" || !v || typeof v !== "object") continue;
+          if (v.md && v.md.name) mcnairPassMDs.add(v.md.name);
+        }
+
+        // Count each MD's rooms in THIS pass (Main pass assignmentsObj only)
+        const passRoomCount = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (v.md && v.md.name) {
+            passRoomCount[v.md.name] = (passRoomCount[v.md.name] || 0) + 1;
+          }
+        }
+
+        // Find flexibles: non-Baylor MDs who are not McNair-anchored, not Main-anchored,
+        // and not already placed in the McNair pass
+        const flexibleMDs = staff.filter(s =>
+          s.credential === "MD" &&
+          s.agency !== "Baylor" &&
+          !mcnairPassMDs.has(s.name) &&
+          !MAIN_ANCHORED(s.shift) &&
+          !MCNAIR_ANCHORED(s.shift)
+        );
+
+        // Identify idle flexibles (0 rooms in this pass)
+        const idleFlexibles = flexibleMDs.filter(f => !passRoomCount[f.name]);
+
+        // Identify overflow rooms (md:null on McNair side).
+        // These are in cur where the room is McNair-side and md is null/missing,
+        // AND NOT assigned by the current Main pass either.
+        const overflowRooms = [];
+        for (const [roomKey, v] of Object.entries(cur)) {
+          if (roomKey === "__closed" || !v || typeof v !== "object") continue;
+          const isMcnairSide = McNAIR_AREAS.some(a => roomKey.startsWith(a));
+          if (!isMcnairSide) continue;
+          const hasMdInCur = v.md && v.md.name;
+          if (hasMdInCur) continue;
+          const mainPassAssignment = assignmentsObj[roomKey];
+          if (mainPassAssignment && mainPassAssignment.md && mainPassAssignment.md.name) continue;
+          overflowRooms.push(roomKey);
+        }
+
+        // If idle flexibles exist AND overflow rooms exist, auto-assign
+        if (idleFlexibles.length > 0 && overflowRooms.length > 0) {
+          const autoAssignments = []; // {md, room} for flagging
+
+          // Group overflow rooms by area, in priority order
+          const overflowByArea = {};
+          for (const a of AREA_PRIORITY) overflowByArea[a] = [];
+          for (const room of overflowRooms) {
+            for (const a of AREA_PRIORITY) {
+              if (room.startsWith(a)) { overflowByArea[a].push(room); break; }
+            }
+          }
+
+          // Assign idle flexibles area-first, up to 3 rooms each
+          let flexPool = idleFlexibles.slice();
+          for (const area of AREA_PRIORITY) {
+            const rooms = overflowByArea[area];
+            while (rooms.length > 0 && flexPool.length > 0) {
+              const flex = flexPool[0];
+              const currentCount = passRoomCount[flex.name] || 0;
+              const slotsLeft = 3 - currentCount;
+              if (slotsLeft <= 0) { flexPool.shift(); continue; }
+              const take = Math.min(slotsLeft, rooms.length);
+              for (let i = 0; i < take; i++) {
+                const room = rooms.shift();
+                const existingApp = (assignmentsObj[room] && assignmentsObj[room].app)
+                  || (cur[room] && cur[room].app)
+                  || null;
+                assignmentsObj[room] = {
+                  md: { name: flex.name, credential: flex.credential, agency: flex.agency },
+                  app: existingApp,
+                  notes: "Client-side backfill: auto-assigned idle flexible"
+                };
+                passRoomCount[flex.name] = (passRoomCount[flex.name] || 0) + 1;
+                autoAssignments.push({ md: flex.name, room });
+              }
+              // flex at 3 rooms now, advance to next flex
+              flexPool.shift();
+            }
+          }
+
+          // Clean up flags: if auto-backfill filled some or all deficit rooms,
+          // rewrite or drop the deficit flag
+          if (autoAssignments.length > 0) {
+            const filledRooms = new Set(autoAssignments.map(a => a.room));
+            const stillDeficit = overflowRooms.filter(r => !filledRooms.has(r));
+
+            // Remove old deficit flag
+            const newFlags = flagsArr.filter(f => !/McNair backfill deficit/i.test(f));
+
+            // Emit a client-side-fix flag (grouped by MD)
+            const byMd = {};
+            autoAssignments.forEach(a => {
+              (byMd[a.md] = byMd[a.md] || []).push(a.room);
+            });
+            const fixSummary = Object.entries(byMd)
+              .map(([md, rooms]) => md + " → " + rooms.join(", "))
+              .join(" | ");
+            newFlags.push("Client-side backfill applied (model left idle flexibles): " + fixSummary);
+
+            // If any deficit remains, re-emit the deficit flag with the reduced list
+            if (stillDeficit.length > 0) {
+              newFlags.push("McNair backfill deficit: " + stillDeficit.join(", "));
+            }
+
+            flagsArr.length = 0;
+            flagsArr.push(...newFlags);
+
+            // Console log so the user can see what happened
+            console.log("[Client-side backfill]", autoAssignments);
+          }
+        }
+      }
+      // ─────────────────────────────────────────────────────────────
+
       _aiAssignPlan = {
         assignments: assignmentsObj,
         flags: flagsArr,
