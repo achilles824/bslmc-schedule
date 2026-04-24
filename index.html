@@ -4223,28 +4223,47 @@ Flexible MDs who are:
 
 Note: a flexible who took 2 Main OR rooms has 1 slot left (cap = 3). A flexible who took 3 Main OR rooms is capped, cannot backfill.
 
-### Backfill procedure
-1. Sort overflow rooms by priority: Jamail OR > McNair OR > OTM OR > OTM Endo.
-2. For each overflow room in priority order:
-   - Find a flexible MD with remaining capacity (rooms used in this pass < 3).
-   - Prefer flexibles already adjacent (e.g., a flexible who has 2 rooms in OTM OR is preferred for backfilling a third OTM OR room).
-   - Prefer flexibles with HOME-AREA affinity (e.g., a D10 flexible who took no Main rooms may be claimed entirely for McNair backfill).
-   - Assign: room.md = flexible MD. Keep any APP the McNair pass already placed.
-3. After each assignment, increment that flexible's pass room count.
+### Backfill procedure (AREA-FIRST, exhaust all flexibles before declaring deficit)
+
+1. Group overflow rooms by area: {Jamail OR: [...], McNair OR: [...], OTM OR: [...], OTM Endo: [...]}.
+2. Process areas in priority order: Jamail OR → McNair OR → OTM OR → OTM Endo.
+3. For each area with overflow rooms:
+   a. Find the flexible MD with the most remaining capacity AND no current McNair-side rooms (a clean-slate flexible). Assign them to this area's overflow rooms, filling up to 3 rooms (or until the area's overflow list is exhausted, whichever comes first).
+   b. If that flexible hits 3 rooms and this area still has overflow, pick the next clean-slate flexible and continue filling the same area.
+   c. Only AFTER every flexible is either capped (3 rooms total this pass) OR has been tried for THIS area, may you bridge a flexible across to the next area.
+4. After processing each area, recount: any flexible still at 0 rooms total AND overflow rooms still remain → that flexible MUST be used next (area-first within their remaining options).
 
 ### Cap enforcement during backfill
-- Before every backfill placement, count the flexible's rooms across ALL rooms in this Main pass (Main OR + Main Endo + Radiology + McNair backfill combined). If already at 3, skip that flexible.
-- Area-first rule: if a flexible MD is being claimed purely for McNair backfill (no Main rooms), fill one McNair area to cap (up to 3) before bridging them across McNair areas.
 
-### If backfill cannot cover all overflow rooms
-- Leave remaining rooms md:null.
+- Before every backfill placement, count the flexible's rooms across ALL rooms in this Main pass (Main OR + Main Endo + Radiology + McNair backfill combined). If already at 3, skip that flexible.
+- Area-first rule inside backfill: a flexible claimed for backfill should fill one McNair area to 3 rooms before being considered for bridging across McNair areas. If a flexible has only 1–2 rooms left under cap and their current area is exhausted, they may bridge.
+
+### MANDATORY IDLE-FLEXIBLE CHECK (pre-deficit gate)
+
+Before you are allowed to emit "McNair backfill deficit" flag, run this check:
+
+1. List every flexible MD in staffSummary who is:
+   - Not in currentAssignments from McNair pass
+   - Not Main-anchored
+2. For each of them, count total rooms assigned in this Main pass (Main OR + Main Endo + Radiology + McNair backfill combined).
+3. If ANY flexible has 0 rooms AND any McNair overflow room still has md:null:
+   - This is a VIOLATION. You cannot emit a deficit flag while a flexible sits idle.
+   - Assign the idle flexible to the remaining overflow room(s), up to 3 rooms, following area-first.
+   - Re-run the idle check until: (a) every flexible has at least 1 room OR is at cap, AND (b) no overflow rooms remain.
+4. Only after step 3 is satisfied may you emit "McNair backfill deficit" for any rooms still md:null.
+
+### If backfill legitimately cannot cover all overflow rooms
+
+- Leave remaining rooms md:null (only after the idle-flexible check has passed).
 - Emit flag: "McNair backfill deficit: [list of rooms]".
+- Emit flag: "Unplaced flexible MD: [name]" for any flexible that ended with 0 rooms when the idle check determined no room they could cover existed (rare — would only happen if flexible restrictions prevent them from taking any overflow room).
 
 ### Do NOT do any of the following
 - Do NOT place a Main-anchored MD in any McNair-side room, ever.
 - Do NOT remove or modify any McNair-side assignment that already has an MD.
 - Do NOT bridge a flexible MD past 3 total rooms to cover more backfill.
 - Do NOT touch Jamail rooms that are covered by Ganderson.
+- Do NOT emit a deficit flag while any flexible has 0 rooms and overflow remains.
 
 ---
 
@@ -4294,6 +4313,9 @@ If no APP AND APP_VERDICT_MAIN = DEFICIT:
 
 ### EVERY-MAIN-MD-PLACED
 Every Main-anchored MD in staffSummary (not in currentAssignments) has at least one room.
+
+### EVERY-FLEXIBLE-USED-WHEN-OVERFLOW-REMAINS
+If any McNair-side overflow room has md:null, no flexible MD may end the pass with 0 rooms. A flexible with 0 rooms while overflow remains = VIOLATION. Assign them to the remaining overflow room(s) before finalizing. Only when overflow is fully cleared OR every flexible is at cap (3 rooms) OR some specific constraint blocks them, may a flexible end with 0 rooms (and that must be flagged).
 
 ### NO McNAIR-ANCHORED MDs ON EITHER SIDE
 No McNair-anchored MD (Out-MNC, McNair Call, Late MD-MNC, OR - McNair, Ganderson) appears in ANY Main assignment. McNair-anchored MDs also never appear in Main's McNair backfill (they're already placed by McNair pass).
@@ -4383,6 +4405,7 @@ Permitted templates only:
 - "Radiology IR/CT/MRI uncovered: only 1 radiology APP available"
 - "McNair backfill deficit: [rooms]" — McNair-side overflow rooms that could not be filled because all flexibles are at cap
 - "McNair backfill applied: [MD] → [room list]" — informational, tracks which flexibles backfilled which McNair rooms
+- "Unplaced flexible MD: [name]" — a flexible MD who ended the pass with 0 rooms. Only permitted when every McNair overflow room is filled AND every other flexible is at cap.
 
 Do NOT flag expected behaviors.
 Do NOT invent exception flags.
@@ -4400,6 +4423,7 @@ Do NOT invent exception flags.
 - NIR APP ≠ IR/CT/MRI APP
 - No Main MD > 3 rooms
 - No flexible MD > 3 rooms TOTAL (across Main + McNair backfill combined)
+- No flexible MD has 0 rooms while McNair overflow rooms remain with md:null
 - McNair-side rooms that started with an MD assigned (from McNair pass) remain untouched
 - Only McNair-side rooms with md:null in currentAssignments were eligible for backfill
 - 3-room Main MD has a late-start (or flagged)
