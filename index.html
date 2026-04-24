@@ -3555,12 +3555,20 @@ Shift names with numbers = HOURS, not room numbers. "OR 12 - MD" = 12-hour shift
 
 1. CREDENTIALS: MDs (credential "MD") only in MD slots. APPs (credential "CRNA" or "CAA") only in APP slots.
 
-2. HARD ROOM CAPS:
-   - McNair OR MD: MAX 4 rooms
-   - OTM OR MD: MAX 4 rooms
-   - OTM Endo MD: MAX 4 rooms
-   - Jamail MD: up to 4 rooms standard, overflow at 5+
-   If you would exceed cap, redistribute, bridge, or leave unassigned with STRUCTURAL flag. NEVER invent an exception flag ("FLAGS-9", "exceptional circumstances") to justify a cap violation.
+2. HARD ROOM CAPS (TOTAL rooms per MD, summed across ALL areas):
+   - Every McNair-anchored MD: MAX 3 rooms TOTAL. This counts rooms across McNair OR + OTM OR + OTM Endo combined. A single MD covering 2 OTM OR + 2 OTM Endo = 4 rooms = VIOLATION.
+   - Jamail MD (Ganderson): MAX 4 rooms, Jamail only.
+   - Jamail MD (substitute, when Ganderson absent): MAX 3 rooms. If Jamail has >3 rooms, add a second substitute.
+   - Flexible MD (if claimed): MAX 3 rooms TOTAL.
+
+   OVERFLOW HANDLING — CRITICAL:
+   When every eligible MD is at their cap and rooms still lack an MD, LEAVE THOSE ROOMS UNASSIGNED.
+   Emit the room object with:
+     "md": null
+     "app": null  (or the assigned APP if one fits; leaving only MD null is fine)
+     "notes": "Unassigned by McNair pass - overflow past MD cap, Main pass to fill"
+   Do NOT stretch any MD past 3 rooms to force full coverage. The Main pass has flexible MDs who will backfill these rooms.
+   NEVER invent an exception flag ("FLAGS-9", "exceptional circumstances") to justify a cap violation.
 
 3. FORBIDDEN AT McNAIR (any area):
    - Main-anchored MDs (shifts like "OR 8 - MD", "OR 10 - MD", "OR 12 - MD / Charge"). These do not belong on this pass. If you see them in staff, do not place them.
@@ -3569,7 +3577,7 @@ Shift names with numbers = HOURS, not room numbers. "OR 12 - MD" = 12-hour shift
 
 4. NO ROOM ANCHORING: Shift names are hours, not room numbers.
 
-5. EVERY McNAIR-ANCHORED MD IS PLACED. There is no flex-off. Every MD with shift "1st Out-MNC", "2nd Out-MNC", "3rd Out-MNC", "Late MD-MNC", "McNair Call", "OR - McNair" (including Ganderson) must receive an assignment.
+5. EVERY McNAIR-ANCHORED MD GETS AT LEAST ONE ROOM (if rooms exist). There is no flex-off. Every MD with shift "1st Out-MNC", "2nd Out-MNC", "3rd Out-MNC", "Late MD-MNC", "McNair Call", "OR - McNair" (including Ganderson) receives at least one assignment when case-bearing rooms are available. HOWEVER: the cap in Rule 2 takes precedence. If all McNair-anchored MDs are at their 3-room cap and rooms remain, those rooms go UNASSIGNED (md:null) rather than over-assigning any MD.
 
 ---
 
@@ -3669,30 +3677,27 @@ If DEFICIT, emit single STRUCTURAL_McNAIR_APP_DEFICIT flag. Do NOT emit per-room
 
 ## STEP 4 — ALLOCATE MDs TO McNAIR AREAS
 
-Every McNair-anchored MD not at Jamail is placed. Flexible MDs are placed if needed for McNair areas (they may also be needed by the Main pass, so only claim them when you genuinely need them — e.g., for OTM bridging or Jamail substitute).
+Every McNair-anchored MD not at Jamail is placed in at least one room. Flexible MDs are generally NOT claimed on this pass — the Main pass will use them to fill any rooms this pass leaves unassigned.
 
-A. Out-MNC MDs (1st, 2nd, 3rd) → McNair OR primarily, or OTM OR if K is low.
+A. Out-MNC MDs (1st, 2nd, 3rd) → McNair OR primarily, or OTM OR if K is low. Cap 3 rooms each (total).
 
-B. Late-MD-MNC → OTM OR (default).
+B. Late-MD-MNC → OTM OR (default). Cap 3 rooms.
 
-C. McNair Call → OTM OR + OTM Endo (default bridge).
+C. McNair Call → OTM OR + OTM Endo (default bridge). Cap 3 rooms TOTAL (not 3 per area).
 
-D. Flexibles (claim only as needed):
-   - Jamail substitute (if Ganderson absent)
-   - OTM bridging if caps force it
-   - OTM Endo coverage if McNair-anchored MDs don't fill it
+D. Flexibles — CLAIM ONLY FOR JAMAIL SUBSTITUTE when Ganderson is absent. Do NOT claim flexibles for OTM OR bridging, OTM Endo coverage, or McNair OR overflow. Those gaps are left as md:null for the Main pass.
 
-E. Every McNair-anchored MD has at least one room after this step. If any unplaced, find a bridge, 3rd room, or redundant coverage slot.
+E. Every McNair-anchored MD has at least one room after this step IF rooms still need coverage. If all remaining rooms are already covered by capped MDs at their limit, a McNair-anchored MD with zero rooms is acceptable (unusual but not a violation — flag as "Unused McNair-anchored MD: [name]").
 
 ---
 
 ## STEP 4.5 — McNAIR OR DISTRIBUTION
 
 - K ≤ 3: 1 MD covers all McNair OR rooms.
-- K = 4: 1 MD at cap (4 rooms) OR 2 MDs (2+2, 3+1 with bridge).
-- K = 5-6: ≥ 2 MDs.
-- K = 7: ≥ 2 MDs, cap 4 each. Distribution examples: 4+3 (2 MDs), 3+3+1 (3 MDs with 3rd bridging to OTM OR), 3+2+2.
-- NEVER 1 MD at 5+ rooms in McNair OR.
+- K = 4: 2 MDs (2+2, or 3+1 with bridge). A single MD at 4 rooms is a VIOLATION.
+- K = 5-6: ≥ 2 MDs, max 3 rooms each. Distributions: 3+2, 3+3, 3+2+1.
+- K = 7: ≥ 3 MDs, cap 3 each. Distributions: 3+3+1, 3+2+2. If only 2 McNair-anchored MDs available for McNair OR, max coverage is 3+3=6 rooms; room 7 is UNASSIGNED (md:null, Main pass fill).
+- NEVER 1 MD at 4+ rooms in McNair OR.
 
 Block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Harrington, Chona, Adil Ahmed):
 - 2 simultaneous 07:30 blocks: 1 MD if staggered; otherwise 2 MDs.
@@ -3702,11 +3707,12 @@ Block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Ha
 
 ## STEP 4.6 — OTM OR AND OTM ENDO
 
-- Target 2-3 rooms per MD. Cap 4.
+- Target 2-3 rooms per MD. Cap 3 (total rooms per MD across McNair OR + OTM OR + OTM Endo combined).
 - 1 bridge OTM OR ↔ OTM Endo (bridging MD has FEWEST rooms).
 - Late-MD-MNC and McNair Call default here.
 - Valid bridging pairs: OTM OR ↔ OTM Endo, OTM OR ↔ McNair OR, OTM Endo ↔ McNair OR.
 - 1 bridge per pair max, except triple-block McNair exception.
+- If all McNair-anchored MDs reach the 3-room cap and rooms remain unassigned in OTM OR or OTM Endo, LEAVE THEM UNASSIGNED (md:null). Do not claim flexible MDs for this pass — the Main pass handles that.
 
 ---
 
@@ -3755,7 +3761,7 @@ If no APP AND APP_VERDICT_MCNAIR = DEFICIT:
 ## STEP 7 — POST-ASSIGNMENT ENFORCEMENT
 
 ### EVERY-MCNAIR-MD-PLACED
-Every McNair-anchored MD in staffSummary has at least one room (excluding any in currentAssignments). If missing, place.
+Every McNair-anchored MD in staffSummary gets at least one room (excluding any in currentAssignments) IF uncapped rooms remain. If all remaining rooms can only be filled by pushing an already-capped MD past 3, prefer leaving the MD unplaced and the rooms unassigned. Flag unplaced MDs as "Unused McNair-anchored MD: [name]".
 
 ### GANDERSON
 If YES, only at Jamail. Otherwise reassign.
@@ -3764,9 +3770,10 @@ If YES, only at Jamail. Otherwise reassign.
 No Main-anchored MD appears in any assignment. If any appear, remove.
 
 ### HARD CAP
-- McNair OR MD > 4 rooms: redistribute.
-- OTM OR / OTM Endo MD > 4: redistribute or bridge.
-- Jamail MD > 4: add overflow substitute.
+- Any McNair-anchored MD with > 3 rooms TOTAL (summed across McNair OR + OTM OR + OTM Endo): VIOLATION. Move rooms off that MD. If no one else can take them within their own cap, the room goes UNASSIGNED (md:null, notes:"Unassigned by McNair pass - overflow past MD cap, Main pass to fill").
+- Ganderson > 4 Jamail rooms: VIOLATION. Add a Jamail substitute from the closed list.
+- Jamail substitute MD > 3 rooms: VIOLATION. Add another substitute, or leave unassigned with flag.
+- Flexible MD claimed by this pass > 3 rooms: VIOLATION. Redistribute or leave unassigned.
 
 ### TIER 1 LOCK
 If J > 0:
@@ -3780,7 +3787,7 @@ md.credential = "MD". app.credential = "CRNA" or "CAA". No names in both roles.
 If GANDERSON_PRESENT = NO, Jamail MD is from {Chen, Ninan, Medrano-England, Nazareth, Ani}.
 
 ### SINGLE-ROOM MD
-Single-room McNair MDs allowed only for bridging (1+1=2) or triple-block McNair bridges. Otherwise redistribute.
+Single-room McNair MDs are allowed: (a) for bridging (1+1=2), (b) triple-block McNair bridges, or (c) when all other McNair-anchored MDs are at the 3-room cap and adding more rooms to this MD would exceed cap for them. Do NOT stretch another MD past 3 to avoid a single-room assignment.
 
 ---
 
@@ -3816,6 +3823,10 @@ Write the WORK block AFTER all assignments are final. Count actual rooms per MD.
 
 "CLAIMED_FLEXIBLES: [names of flexible MDs actually assigned in this pass, or NONE]"
 
+"UNASSIGNED_ROOMS: [list of room labels left with md:null for Main pass, or NONE]"
+
+"UNUSED_McNAIR_MDS: [names of McNair-anchored MDs with zero rooms assigned, or NONE]"
+
 ### Narrative audit
 Every MD named in a narrative — room list and count must match actual assignments exactly.
 
@@ -3832,6 +3843,8 @@ Permitted templates only:
 - "Triple-block McNair with only 2 block-capable MDs available"
 - "Jamail overflow with no approved substitute available"
 - "Unplaced McNair MD: [name]"
+- "McNair pass left rooms for Main pass: [rooms]" — rooms where all McNair-anchored MDs were at the 3-room cap, awaiting flexible MD from Main pass
+- "Unused McNair-anchored MD: [name]" — an MD who ended with zero rooms because all case-bearing rooms were covered by capped peers
 
 Do NOT invent exception flags.
 
@@ -3841,11 +3854,13 @@ Do NOT invent exception flags.
 
 Any failure → fix, do not output.
 
-- Every McNair-anchored MD placed
+- No McNair-anchored MD exceeds 3 rooms TOTAL (summed across McNair OR + OTM OR + OTM Endo)
+- Ganderson (if present) ≤ 4 rooms at Jamail only
+- Any other Jamail MD ≤ 3 rooms
 - No Main-anchored MD in any assignment
-- No room caps exceeded
-- Ganderson (if present) only at Jamail
-- TIER 1 lock enforced (Kima at Jamail; Rose/Jackson/Schoene at Jamail unless pulled)
+- Every McNair-anchored MD has ≥ 1 room OR is flagged as "Unused McNair-anchored MD"
+- Rooms left with md:null are flagged as "McNair pass left rooms for Main pass"
+- TIER 1 lock enforced (Kima at Jamail; Rose/Jackson/Schoene at Jamail unless pulled with flag)
 - Jamail MD from closed list if Ganderson absent
 - Credentials correct, no dual-role names
 - WORK narrative counts match actual assignments
