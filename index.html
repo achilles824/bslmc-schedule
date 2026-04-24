@@ -3617,14 +3617,20 @@ CLOSED JAMAIL SUBSTITUTE LIST (only these 5 MDs permitted when Ganderson absent)
 
 If none of the 5 are in staffSummary and Ganderson is absent, emit "Jamail overflow with no approved substitute available" flag and leave Jamail unstaffed.
 
-### 1D — Jamail APPs (Tier 1 lock)
+### 1D — Jamail APPs (Tier 1 lock — STRICT ORDER)
 
-If J > 0, every name in TIER_1_WORKING is LOCKED to Jamail OR. This lock triggers on J > 0 alone. Does NOT depend on Jamail MD identity.
+If J > 0, fill Jamail rooms in this EXACT order. Tier 1 APPs occupy Jamail rooms BEFORE any Tier 2 APP is considered for Jamail. This is a hard ordering, not a preference.
 
-Order within Jamail:
-- Kima first (if working). Kima NEVER placed outside Jamail when J > 0.
-- Rose, Jackson, Schoene next.
-- Fill remaining Jamail rooms from Tier 2: Jesus Bagos, Nina Castro-Koshy, Candice Hude, Angela Lauritano, Sandy Papa, Sagar Patel, Hong Phan, Tracey Sheffield, Diana Suen, Lee Mabry, Mark Doria, or any Baylor APP with "-MN" shift.
+Placement sequence (stop when all J rooms are filled):
+1. Kima — placed first if working. Kima NEVER placed outside Jamail when J > 0.
+2. Rose — placed next if working.
+3. Jackson — placed next if working.
+4. Schoene — placed next if working.
+5. ONLY AFTER all working Tier 1 APPs are placed at Jamail, fill any remaining Jamail rooms from Tier 2: Jesus Bagos, Nina Castro-Koshy, Candice Hude, Angela Lauritano, Sandy Papa, Sagar Patel, Hong Phan, Tracey Sheffield, Diana Suen, Lee Mabry, Mark Doria, or any Baylor APP with "-MN" shift.
+
+CRITICAL: If you are tempted to put a Tier 2 APP (e.g. Lauritano, Castro-Koshy, Bagos) at Jamail while a Tier 1 APP (Rose, Jackson, Schoene) is working and NOT placed at Jamail, that is a VIOLATION. The Tier 1 APP displaces the Tier 2 APP. The Tier 2 APP then goes to the OTM/McNair OR APP pool instead.
+
+If J < count of working Tier 1 APPs (e.g. J=3 but 4 Tier 1 APPs working), surplus Tier 1 APPs stay in the McNair APP pool — do NOT force them into OTM Endo at this stage. Step 5 once-per-week rule may pull them later.
 
 ### 1E — Lock Jamail
 
@@ -3716,6 +3722,36 @@ Block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Ha
 
 ---
 
+## STEP 4.7 — MANDATORY CAP SELF-CHECK (do NOT skip, do NOT defer to Step 7)
+
+Before moving to APP assignment, STOP and count rooms per MD. This is a hard gate.
+
+For every MD you have placed so far (Jamail + McNair OR + OTM OR + OTM Endo combined):
+1. List each MD's room count across ALL FOUR AREAS. Example:
+   - Hafkin: OTM OR 1, OTM OR 2, OTM OR 3 = 3 rooms ✓
+   - K. Tran: OTM OR 4, OTM OR 5, OTM OR 6, OTM Endo 1, OTM Endo 8, OTM Endo 10 = 6 rooms ✗ VIOLATION
+
+2. For each MD, check against their cap:
+   - Ganderson at Jamail: limit 4
+   - All other McNair-anchored MDs (Out-MNC, Late MD-MNC, McNair Call, OR - McNair): limit 3 TOTAL
+   - Jamail substitute MD: limit 3
+   - Flexible MD (if claimed at all): limit 3
+
+3. If ANY MD is over cap:
+   - KEEP only the first N rooms (N = their cap), in the order OTM Endo → OTM OR → McNair OR (i.e. drop OTM Endo first, then OTM OR, then McNair OR if still over).
+   - For every dropped room, set md:null and notes:"Unassigned by McNair pass - overflow past MD cap, Main pass to fill". Keep the APP if one was assigned.
+   - Add each dropped room label to the UNASSIGNED_ROOMS list in the WORK block.
+
+4. Do NOT re-assign the dropped rooms to a different McNair-anchored MD. The Main pass will use flexibles to backfill.
+
+5. After this correction, re-count. No MD may end Step 4.7 over their cap. If any still is, drop rooms again.
+
+WORKED EXAMPLE OF WHAT NOT TO DO:
+  K. Tran at OTM OR 4/5/6 AND OTM Endo 1/8/10 = 6 rooms. This is a VIOLATION. Tran's cap is 3 total, not "3 per area."
+  CORRECT FIX: Keep OTM OR 4/5/6 (or OTM Endo 1/8/10, either is fine — stay consistent). Drop the other three. Those three rooms end up as md:null for the Main pass.
+
+---
+
 ## STEP 5 — ASSIGN APPs (McNair-only pool)
 
 ### APP pool
@@ -3779,6 +3815,7 @@ No Main-anchored MD appears in any assignment. If any appear, remove.
 If J > 0:
 - Kima in Jamail OR only.
 - Rose, Jackson, Schoene in Jamail unless documented OTM Endo pull with flag.
+- AUDIT CHECK: If ANY Tier 1 APP (Rose, Jackson, Schoene) is on today's roster AND not at Jamail AND not documented as an endo-pull, AND a Tier 2 APP (Bagos, Castro-Koshy, Hude, Lauritano, Papa, Patel, Phan, Sheffield, Suen, Mabry, Doria) IS at Jamail, this is a VIOLATION. Swap: move the Tier 2 APP out to OTM/McNair OR, move the Tier 1 APP into Jamail.
 
 ### CREDENTIALS
 md.credential = "MD". app.credential = "CRNA" or "CAA". No names in both roles.
