@@ -3713,21 +3713,51 @@ Block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Ha
 
 ## STEP 4.6 — OTM OR AND OTM ENDO
 
+### AREA-FIRST ALLOCATION RULE (HARD RULE, enforced before bridging)
+
+For each MD, fill their current area up to 3 rooms BEFORE you consider bridging them to a different area. An MD only gets a second-area room if:
+  (a) Their current area has NO unassigned rooms remaining, AND
+  (b) They are still under the 3-room cap.
+
+Concretely:
+- An MD with 2 OTM OR rooms and unassigned OTM OR rooms still remaining → gets a 3rd OTM OR room. Do NOT place that MD in OTM Endo. Bridging while OTM OR still has open rooms is a VIOLATION.
+- An MD with 3 OTM OR rooms → at cap. Done. They do not go to OTM Endo.
+- An MD with 2 OTM OR rooms AND all OTM OR rooms are already covered → may take 1 OTM Endo room (becomes a bridge, 1 room in each area, cap = 3 total).
+
+WORKED EXAMPLES OF WHAT NOT TO DO:
+  WRONG: Hafkin at OTM OR 1, 2, 3 + OTM Endo 1 = 4 rooms. Hafkin was already at 3 OTM OR so they're at cap — DO NOT add OTM Endo.
+  WRONG: Ritter at McNair OR 3, 4 + OTM OR 7, 10 = 4 rooms. Ritter had McNair OR rooms remaining unassigned when moved to OTM OR. Either keep Ritter at McNair OR and fill to 3 there, or place a different MD at OTM OR.
+  WRONG: Seibert at McNair OR 1, 2 + OTM Endo 4 = 3 rooms. Seibert bridged to OTM Endo while McNair OR 3 still needed an MD and Ritter was already over cap. Keep Seibert at McNair OR; do not bridge.
+
+The only exception to area-first is the **triple-block McNair bridge exception** (3 simultaneous 07:30 blocks): up to 2 block-capable MDs may take 1 McNair OR + 1 OTM OR even if McNair OR has other rooms remaining.
+
+### Standard allocation (AFTER the area-first rule is satisfied)
+
 - Target 2-3 rooms per MD. Cap 3 (total rooms per MD across McNair OR + OTM OR + OTM Endo combined).
-- 1 bridge OTM OR ↔ OTM Endo (bridging MD has FEWEST rooms).
-- Late-MD-MNC and McNair Call default here.
+- Late-MD-MNC and McNair Call default to OTM OR / OTM Endo (as their home area, not as a bridge from elsewhere).
 - Valid bridging pairs: OTM OR ↔ OTM Endo, OTM OR ↔ McNair OR, OTM Endo ↔ McNair OR.
 - 1 bridge per pair max, except triple-block McNair exception.
 - If all McNair-anchored MDs reach the 3-room cap and rooms remain unassigned in OTM OR or OTM Endo, LEAVE THEM UNASSIGNED (md:null). Do not claim flexible MDs for this pass — the Main pass handles that.
 
+### Allocation procedure (follow in order)
+
+1. Assign each McNair-anchored MD to their HOME area (per Step 4 A/B/C defaults): Out-MNC → McNair OR, Late-MD-MNC → OTM OR, McNair Call → OTM OR, 3rd Out-MNC / OR - McNair → wherever demand exists.
+2. For each MD, fill their home area up to 3 rooms (or until home area has no more unassigned rooms).
+3. After every MD is filled to cap OR their home area is fully covered, check for remaining unassigned rooms in other areas. For those:
+   - Find an MD who has open home-area slack AND whose home area is fully covered (rule (a)+(b) above). They may bridge.
+   - If no such MD exists, the room stays unassigned.
+4. Never fill a non-home-area room for an MD who still has unassigned home-area rooms available.
+
 ---
 
-## STEP 4.7 — MANDATORY CAP SELF-CHECK (do NOT skip, do NOT defer to Step 7)
+## STEP 4.7 — MANDATORY SELF-CHECK (do NOT skip, do NOT defer to Step 7)
 
-Before moving to APP assignment, STOP and count rooms per MD. This is a hard gate.
+Before moving to APP assignment, STOP and run BOTH checks below. This is a hard gate.
 
-For every MD you have placed so far (Jamail + McNair OR + OTM OR + OTM Endo combined):
-1. List each MD's room count across ALL FOUR AREAS. Example:
+### CHECK A — Cap check (rooms per MD across all areas)
+
+For every MD you have placed so far:
+1. List each MD's room count across ALL FOUR AREAS (Jamail + McNair OR + OTM OR + OTM Endo). Example:
    - Hafkin: OTM OR 1, OTM OR 2, OTM OR 3 = 3 rooms ✓
    - K. Tran: OTM OR 4, OTM OR 5, OTM OR 6, OTM Endo 1, OTM Endo 8, OTM Endo 10 = 6 rooms ✗ VIOLATION
 
@@ -3738,17 +3768,46 @@ For every MD you have placed so far (Jamail + McNair OR + OTM OR + OTM Endo comb
    - Flexible MD (if claimed at all): limit 3
 
 3. If ANY MD is over cap:
-   - KEEP only the first N rooms (N = their cap), in the order OTM Endo → OTM OR → McNair OR (i.e. drop OTM Endo first, then OTM OR, then McNair OR if still over).
+   - KEEP only the first N rooms (N = their cap), dropping in the order OTM Endo → OTM OR → McNair OR (drop OTM Endo rooms first, then OTM OR, then McNair OR if still over).
    - For every dropped room, set md:null and notes:"Unassigned by McNair pass - overflow past MD cap, Main pass to fill". Keep the APP if one was assigned.
-   - Add each dropped room label to the UNASSIGNED_ROOMS list in the WORK block.
+   - Add each dropped room label to UNASSIGNED_ROOMS in the WORK block.
 
-4. Do NOT re-assign the dropped rooms to a different McNair-anchored MD. The Main pass will use flexibles to backfill.
+### CHECK B — Premature bridging check (area-first rule)
 
-5. After this correction, re-count. No MD may end Step 4.7 over their cap. If any still is, drop rooms again.
+For every MD assigned to rooms in MORE THAN ONE area:
+1. Identify their HOME area (per Step 4 defaults): Out-MNC → McNair OR, Late-MD-MNC → OTM OR, McNair Call → OTM OR, 3rd Out-MNC → wherever assigned first.
+2. Count unassigned case-bearing rooms remaining in the MD's home area.
+3. If the MD is in a non-home area AND their home area still has unassigned case-bearing rooms remaining:
+   - This is a PREMATURE BRIDGE VIOLATION.
+   - Move the MD's non-home-area rooms to md:null, notes:"Unassigned by McNair pass - premature bridge, Main pass to fill".
+   - Reassign the MD to their home-area unassigned rooms up to cap 3.
+   - If home area still has unassigned rooms after MD hits cap, those remain md:null for Main pass.
 
-WORKED EXAMPLE OF WHAT NOT TO DO:
-  K. Tran at OTM OR 4/5/6 AND OTM Endo 1/8/10 = 6 rooms. This is a VIOLATION. Tran's cap is 3 total, not "3 per area."
-  CORRECT FIX: Keep OTM OR 4/5/6 (or OTM Endo 1/8/10, either is fine — stay consistent). Drop the other three. Those three rooms end up as md:null for the Main pass.
+Exception: triple-block McNair bridge (3 simultaneous 07:30 block cases at McNair) — up to 2 McNair OR MDs may bridge to OTM OR even with McNair OR rooms remaining.
+
+### Final re-count
+
+After CHECK A and CHECK B corrections, re-count. No MD may end Step 4.7:
+- Over their cap, OR
+- Bridging into a non-home area while their home area has unassigned rooms (except triple-block exception).
+
+If any violation remains, drop rooms again. Do NOT proceed to APP assignment until both checks pass.
+
+WORKED EXAMPLE 1 (cap violation):
+  K. Tran at OTM OR 4/5/6 AND OTM Endo 1/8/10 = 6 rooms. Cap = 3.
+  Fix: Drop Endo 1/8/10. Tran now at 3 OTM OR rooms. OTM Endo 1, 8, 10 → md:null for Main pass.
+
+WORKED EXAMPLE 2 (premature bridge violation):
+  Hafkin at OTM OR 1, 2, 3 + OTM Endo 1 = 4 rooms. Hafkin home = OTM OR. OTM OR fully covered by Hafkin. But cap = 3, so Endo 1 must drop regardless.
+  Fix: Drop Endo 1 → md:null.
+
+WORKED EXAMPLE 3 (premature bridge violation):
+  Ritter at McNair OR 3, 4 + OTM OR 7, 10 = 4 rooms. Ritter home = McNair OR. McNair OR has rooms 5 and/or 7 still unassigned.
+  Fix: Drop OTM OR 7, 10 → md:null. Reassign Ritter to McNair OR 5 (if unassigned) to fill home area to 3. OTM OR 7, 10 stay md:null.
+
+WORKED EXAMPLE 4 (premature bridge violation):
+  Seibert at McNair OR 1, 2 + OTM Endo 4 = 3 rooms (cap OK, but home=McNair OR, and McNair OR 3 still unassigned).
+  Fix: Drop OTM Endo 4 → md:null. Move Seibert to McNair OR 3 instead. Seibert now at McNair OR 1, 2, 3 = 3 rooms, all home area.
 
 ---
 
@@ -3892,6 +3951,7 @@ Do NOT invent exception flags.
 Any failure → fix, do not output.
 
 - No McNair-anchored MD exceeds 3 rooms TOTAL (summed across McNair OR + OTM OR + OTM Endo)
+- No MD bridges to a non-home area while their home area still has unassigned case-bearing rooms (exception: triple-block McNair)
 - Ganderson (if present) ≤ 4 rooms at Jamail only
 - Any other Jamail MD ≤ 3 rooms
 - No Main-anchored MD in any assignment
