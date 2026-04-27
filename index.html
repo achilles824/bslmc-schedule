@@ -2951,10 +2951,17 @@ async function getStaffForDate(dateStr) {
 }
 // Render the "Endo this week" admin panel
 async function renderEndoTrackerPanel() {
+ async function renderEndoTrackerPanel() {
+  console.log("[Endo tracker] renderEndoTrackerPanel called");
   const panel = document.getElementById("endoTrackerPanel");
-  if (!panel) return;
+  if (!panel) {
+    console.warn("[Endo tracker] panel element not found in DOM");
+    return;
+  }
+  console.log("[Endo tracker] panel element found");
   
   const adminDate = document.getElementById("adminDay")?.value;
+  console.log("[Endo tracker] adminDate =", adminDate);
   if (!adminDate) {
     panel.innerHTML = "";
     return;
