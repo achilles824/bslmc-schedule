@@ -3302,8 +3302,8 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           .filter(f => !flexCommittedToMain[f.name])
           .sort((a, b) => {
             // Gluck-first rule: Lara Gluck is McNair-only, prioritize her for backfill
-            const aIsGluck = a.name === "Lara Gluck";
-            const bIsGluck = b.name === "Lara Gluck";
+            const aIsGluck = a.name === "Danielle Gluck";
+            const bIsGluck = b.name === "Danielle Gluck";
             if (aIsGluck && !bIsGluck) return -1;
             if (bIsGluck && !aIsGluck) return 1;
             // Otherwise sort by who has the fewest rooms in this pass
@@ -3652,12 +3652,62 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         // the prompt expects display format "Main OR 10" in flags and notes.
         const toDisplayRoom = k => k.replace(/\|/, " ").replace(/\s+/g, " ").trim();
 
-        // MAIN-ANCHORED MD CHECK — Absolute Rule 3 forbids Main-anchored MDs on
+       // MAIN-ANCHORED MD CHECK — Absolute Rule 3 forbids Main-anchored MDs on
         // McNair side. The model occasionally violates this when demand is high.
         // Scan the proposal, remove any Main-anchored MD, leave rooms md:null.
         const MAIN_ANCHORED_SHIFT = s => /^OR\s*\d+\s*-\s*MD/i.test(s);
+        const MCNAIR_ANCHORED_SHIFT = s =>
+          /McNair|MNC|Out-MNC|Late MD-MNC|McNair Call|OR - McNair/i.test(s);
         const staffByName = {};
         for (const s of staff) staffByName[s.name] = s;
+
+        // FLEXIBLE MD CHECK — McNair pass is supposed to ignore flexibles
+        // (locums: Cross Country, Caliber, etc.). The prompt states this but
+        // the model occasionally places flexibles anyway, especially at OTM Endo.
+        // Strip any flexible (non-Baylor MD that is also not McNair-anchored)
+        // from the McNair pass output so the Main pass can backfill.
+        // Exception: known Jamail substitutes are allowed even though they may
+        // appear flexible — but they're only valid AT JAMAIL.
+        const JAMAIL_SUB_NAMES = new Set([
+          "Qiping Chen", "Tara Ninan", "Karla Medrano-England",
+          "Veeral Nazareth", "Chidi Ani"
+        ]);
+        const flexiblesRemoved = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          const mdInfo = staffByName[v.md.name];
+          if (!mdInfo) continue;
+          if (mdInfo.credential !== "MD") continue;
+          // Allow Ganderson explicitly (handled by separate Ganderson check below)
+          if (v.md.name === "Lauren Ganderson") continue;
+          // Allow Jamail substitutes only at Jamail rooms
+          if (JAMAIL_SUB_NAMES.has(v.md.name) && room.startsWith("Jamail OR")) continue;
+          // A flexible = not Baylor, OR Baylor but neither Main-anchored nor McNair-anchored
+          const isMainAnchored = mdInfo.agency === "Baylor" && MAIN_ANCHORED_SHIFT(mdInfo.shift);
+          const isMcnairAnchored = mdInfo.agency === "Baylor" && MCNAIR_ANCHORED_SHIFT(mdInfo.shift);
+          const isFlexible = !isMainAnchored && !isMcnairAnchored;
+          if (isFlexible) {
+            const existingApp = v.app;
+            assignmentsObj[room] = {
+              md: null,
+              app: existingApp || null,
+              notes: "Flexible MD removed from McNair pass - Main pass to backfill"
+            };
+            flexiblesRemoved.push({ md: v.md.name, room });
+          }
+        }
+
+        if (flexiblesRemoved.length > 0) {
+          const byMd = {};
+          flexiblesRemoved.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(toDisplayRoom(x.room));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " from " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side enforcement: flexible MDs removed from McNair pass (" + summary + ")");
+          console.log("[Client-side flexible removal]", flexiblesRemoved);
+        }
 
         const mainAnchoredRemoved = [];
         for (const [room, v] of Object.entries(assignmentsObj)) {
@@ -5185,7 +5235,7 @@ Flexible MDs who are:
 Note: a flexible who took 2 Main OR rooms has 1 slot left (cap = 3). A flexible who took 3 Main OR rooms is capped, cannot backfill.
 ### Gluck priority rule (read before backfill procedure)
 
-Lara Gluck is a McNair-only locum MD. If "Lara Gluck" appears in staffSummary AND is NOT in currentAssignments, she is dedicated to McNair backfill BEFORE any other flexible:
+Danielle Gluck is a McNair-only locum MD. If "Danielle Gluck" appears in staffSummary AND is NOT in currentAssignments, she is dedicated to McNair backfill BEFORE any other flexible:
 - She gets ZERO Main-side rooms (Main OR, Main Endo, Radiology). Never assign her to a Main room on this pass.
 - She is the FIRST flexible reached for any McNair-side overflow.
 - She gets up to 3 McNair-side rooms following the area-first priority below.
