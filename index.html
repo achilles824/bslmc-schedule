@@ -3091,10 +3091,22 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         );
 
         // Identify all under-cap flexibles (any flexible with < 3 rooms in this pass).
-        // Sort by current room count ascending so idle (0) flexibles get used first,
-        // then 1-room, then 2-room. This keeps coverage spread evenly.
+        // EXCLUDE flexibles who already have any Main-side room — they cannot
+        // cross campuses (no MD on both campuses). They are committed to Main.
+        // McNair-side overflow can only be backfilled by flexibles who currently
+        // have ZERO Main-side rooms (they may have 0 or 1-2 McNair-side rooms
+        // already, in which case they're already partway-committed to McNair).
+        const mcNairAreaList = ["Jamail OR", "McNair OR", "OTM OR", "OTM Endo"];
+        const flexCommittedToMain = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          const isMcnair = mcNairAreaList.some(a => room.startsWith(a));
+          if (!isMcnair) flexCommittedToMain[v.md.name] = true;
+        }
+
         const underCapFlexibles = flexibleMDs
           .filter(f => (passRoomCount[f.name] || 0) < 3)
+          .filter(f => !flexCommittedToMain[f.name])
           .sort((a, b) => (passRoomCount[a.name] || 0) - (passRoomCount[b.name] || 0));
 
         // Helpers to handle the room-key format mismatch between cur (Firebase
@@ -3263,68 +3275,135 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         flagsArr.push(...scrubbedFlags);
 
         // ─────────────────────────────────────────────────────────────
-        // CLIENT-SIDE MAIN-PASS CAP ENFORCER
-        // Apply the 3-room cap to every MD assigned in this Main pass.
-        // Bridging is permitted (a flexible may span Main + McNair-side
-        // rooms during backfill) but the total room count must stay ≤ 3.
-        // Drop excess rooms to md:null. Drop order: McNair-side first
-        // (since those flowed in via backfill) then Main-side.
+        // CLIENT-SIDE MAIN-PASS CAMPUS-AND-CAP ENFORCER
         //
-        // Note: this enforcer applies to ALL MDs placed by THIS Main pass,
-        // not just flexibles — but in practice Main-anchored MDs are
-        // usually capped at ≤2 by the scheduling logic itself, and the
-        // typical violator is a flexible bridging across many rooms.
+        // Hard rules enforced here:
+        //   1. NO MD has rooms on BOTH campuses. Each MD is single-campus.
+        //   2. Main-side cap per MD = 2, EXCEPT:
+        //        - Main Endo MD: exactly 3 (one MD covers all 3 Main Endo rooms)
+        //        - Radiology MD (NIR/MRI/IR/CT/RM-IR): no cap
+        //   3. McNair-side cap per MD = 3.
+        //
+        // Drop order:
+        //   - If MD has both campuses: drop ALL McNair-side rooms first (preserve Main).
+        //   - If MD has only one campus but is over that side's cap: drop the
+        //     lowest-priority rooms in that campus.
         // ─────────────────────────────────────────────────────────────
-        const MAIN_AREAS_DROP_PRIORITY = [
-          // Drop McNair-side overflow rooms first (the model can leave
-          // them md:null and let a future fix-up cover them).
-          "OTM Endo", "OTM OR", "McNair OR", "Jamail OR",
-          // Then Main-side rooms (last resort).
-          "Main Endo", "MRI", "NIR", "IR", "CT", "RM-IR", "Main OR"
-        ];
-        const areaIndex = (roomKey) => {
-          for (let i = 0; i < MAIN_AREAS_DROP_PRIORITY.length; i++) {
-            if (roomKey.startsWith(MAIN_AREAS_DROP_PRIORITY[i])) return i;
+        const isMcnairSideRoom = roomKey =>
+          ["McNair OR", "OTM OR", "OTM Endo", "Jamail OR"].some(a => roomKey.startsWith(a));
+        const isMainEndoRoom = roomKey => roomKey.startsWith("Main Endo");
+        const isRadiologyRoom = roomKey =>
+          ["NIR", "MRI", "IR", "CT", "RM-IR"].some(a => roomKey.startsWith(a));
+        const isMainOrRoom = roomKey => roomKey.startsWith("Main OR");
+
+        // Within a campus side, drop rooms in this order (drop first → drop last)
+        const MCNAIR_DROP_PRIORITY = ["OTM Endo", "OTM OR", "McNair OR", "Jamail OR"];
+        const MAIN_DROP_PRIORITY = ["Main OR", "Main Endo", "NIR", "MRI", "IR", "CT", "RM-IR"];
+        const dropRank = (roomKey, priorityList) => {
+          for (let i = 0; i < priorityList.length; i++) {
+            if (roomKey.startsWith(priorityList[i])) return i;
           }
-          return MAIN_AREAS_DROP_PRIORITY.length; // unknown areas last
+          return priorityList.length;
         };
 
-        // Count rooms per MD in this Main pass
+        // Group each MD's rooms by side
         const mainPassMdRooms = {};
         for (const [room, v] of Object.entries(assignmentsObj)) {
           if (v.md && v.md.name) {
-            (mainPassMdRooms[v.md.name] = mainPassMdRooms[v.md.name] || []).push(room);
+            const entry = mainPassMdRooms[v.md.name] = mainPassMdRooms[v.md.name] || { mainSide: [], mcnairSide: [] };
+            if (isMcnairSideRoom(room)) entry.mcnairSide.push(room);
+            else entry.mainSide.push(room);
           }
         }
 
-        const mainPassDropped = [];
-        const mainPassDroppedByMd = {};
-        for (const [mdName, rooms] of Object.entries(mainPassMdRooms)) {
-          if (rooms.length <= 3) continue;
-          // Sort rooms by drop priority (drop-first first). When ties on area,
-          // sort by room number ascending so we drop lower-numbered rooms first
-          // — but room number isn't critical here, area priority is.
-          const sorted = rooms.slice().sort((a, b) => areaIndex(a) - areaIndex(b));
-          // Keep last 3 (highest priority to retain), drop the rest from front.
-          const toDrop = sorted.slice(0, sorted.length - 3);
-          for (const room of toDrop) {
+        const droppedRooms = [];
+        const droppedByMd = {};
+        const droppedReasons = {}; // mdName -> reason string
+
+        for (const [mdName, sides] of Object.entries(mainPassMdRooms)) {
+          const dropList = [];
+
+          // Rule 1: cross-campus violation. Drop all McNair-side rooms.
+          if (sides.mainSide.length > 0 && sides.mcnairSide.length > 0) {
+            dropList.push(...sides.mcnairSide);
+            sides.mcnairSide = [];
+            droppedReasons[mdName] = "cross-campus (Main + McNair) — McNair side dropped";
+          }
+
+          // Rule 2: Main-side cap per MD
+          if (sides.mainSide.length > 0) {
+            // Determine this MD's main-side role:
+            // - If any room is Main Endo, the MD's role is Main Endo (cap = 3 Main Endo rooms,
+            //   any non-Endo Main rooms must be dropped).
+            // - If all rooms are Radiology, no cap.
+            // - Otherwise treat as Main OR (cap = 2).
+            const hasMainEndo = sides.mainSide.some(isMainEndoRoom);
+            const hasMainOR = sides.mainSide.some(isMainOrRoom);
+            const allRadiology = sides.mainSide.every(isRadiologyRoom);
+
+            if (hasMainEndo) {
+              // Main Endo MD: keep only Main Endo rooms (≤3). Drop other Main rooms.
+              const endoRooms = sides.mainSide.filter(isMainEndoRoom);
+              const nonEndoRooms = sides.mainSide.filter(r => !isMainEndoRoom(r));
+              if (nonEndoRooms.length > 0) {
+                dropList.push(...nonEndoRooms);
+                droppedReasons[mdName] = (droppedReasons[mdName] ? droppedReasons[mdName] + "; " : "") +
+                  "Main Endo MD reaching outside Main Endo";
+              }
+              // If endoRooms > 3, drop excess (shouldn't happen — there are only 3 Main Endo rooms).
+              if (endoRooms.length > 3) {
+                const sorted = endoRooms.slice().sort();
+                dropList.push(...sorted.slice(0, sorted.length - 3));
+                droppedReasons[mdName] = (droppedReasons[mdName] ? droppedReasons[mdName] + "; " : "") +
+                  "Main Endo > 3 rooms";
+              }
+              sides.mainSide = endoRooms.slice(0, 3);
+            } else if (allRadiology) {
+              // Radiology MD: no cap, keep all
+            } else {
+              // Main OR MD (or mixed, treating as Main OR cap = 2)
+              if (sides.mainSide.length > 2) {
+                const sorted = sides.mainSide.slice().sort((a, b) =>
+                  dropRank(a, MAIN_DROP_PRIORITY) - dropRank(b, MAIN_DROP_PRIORITY));
+                const toDrop = sorted.slice(0, sorted.length - 2);
+                dropList.push(...toDrop);
+                droppedReasons[mdName] = (droppedReasons[mdName] ? droppedReasons[mdName] + "; " : "") +
+                  "Main-side > 2 rooms";
+                sides.mainSide = sorted.slice(sorted.length - 2);
+              }
+            }
+          }
+
+          // Rule 3: McNair-side cap per MD = 3
+          if (sides.mcnairSide.length > 3) {
+            const sorted = sides.mcnairSide.slice().sort((a, b) =>
+              dropRank(a, MCNAIR_DROP_PRIORITY) - dropRank(b, MCNAIR_DROP_PRIORITY));
+            const toDrop = sorted.slice(0, sorted.length - 3);
+            dropList.push(...toDrop);
+            droppedReasons[mdName] = (droppedReasons[mdName] ? droppedReasons[mdName] + "; " : "") +
+              "McNair-side > 3 rooms";
+            sides.mcnairSide = sorted.slice(sorted.length - 3);
+          }
+
+          // Apply drops
+          for (const room of dropList) {
             const existingApp = assignmentsObj[room] && assignmentsObj[room].app;
             assignmentsObj[room] = {
               md: null,
               app: existingApp || null,
-              notes: "Unassigned by Main pass (client-side cap fix) - exceeded 3-room cap"
+              notes: "Unassigned by Main pass (client-side enforcement) - " + (droppedReasons[mdName] || "rule violation")
             };
-            mainPassDropped.push(room);
-            (mainPassDroppedByMd[mdName] = mainPassDroppedByMd[mdName] || []).push(room);
+            droppedRooms.push(room);
+            (droppedByMd[mdName] = droppedByMd[mdName] || []).push(room);
           }
         }
 
-        if (mainPassDropped.length > 0) {
-          const summary = Object.entries(mainPassDroppedByMd)
-            .map(([md, rms]) => md + " → " + rms.map(toDisplayRoom).join(", "))
+        if (droppedRooms.length > 0) {
+          const summary = Object.entries(droppedByMd)
+            .map(([md, rms]) => md + " (" + (droppedReasons[md] || "rule") + ") → " + rms.map(toDisplayRoom).join(", "))
             .join(" | ");
-          flagsArr.push("Client-side cap enforcement (Main pass exceeded 3-room cap): dropped " + summary);
-          console.log("[Client-side Main pass cap enforcement]", mainPassDroppedByMd);
+          flagsArr.push("Client-side enforcement (Main pass campus/cap rules): dropped " + summary);
+          console.log("[Client-side Main pass campus/cap enforcement]", droppedByMd, droppedReasons);
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -4672,16 +4751,32 @@ Areas where McNair backfill MAY occur:
 - OTM Endo
 - Jamail OR (rare; only if McNair pass was short on Ganderson substitutes)
 
+ABSOLUTE RULE — NO MD ON BOTH CAMPUSES:
+Each MD assigned in this Main pass is committed to EXACTLY ONE campus for the day:
+- A Main-only MD: covers ONLY Main OR / Main Endo / Radiology rooms. Never any McNair-side room.
+- A McNair-only MD (a flexible doing backfill): covers ONLY McNair-side rooms (McNair OR, OTM OR, OTM Endo, Jamail OR). Never any Main-side room.
+NEVER place the same MD on a Main-side room AND a McNair-side room. This is a hard prohibition with no exceptions.
+
+When deciding which flexible MDs to dedicate to McNair backfill vs. keeping on Main, look at how many McNair-side rooms need backfill and how many Main-side rooms still need MDs. Reserve enough Main-only flexibles to cover Main demand at the 2-cap, then dedicate the remainder to McNair backfill.
+
+CAPS PER MD (different per side):
+- Main OR MD: cap 2 rooms.
+- Main Endo MD: exactly 3 rooms (one MD covers all 3 Main Endo rooms).
+- Radiology MD: any number of radiology rooms (NIR, MRI, IR, CT, RM-IR). No cap.
+- McNair-side MD (flexible doing backfill): cap 3 rooms.
+
 Rules for McNair backfill:
 - ONLY fill McNair-side rooms where md is null in currentAssignments (McNair pass's explicit handoff). Do NOT touch McNair-side rooms that already have an MD assigned — those are locked.
 - Use ONLY flexible MDs (Cross Country, Caliber, locums). Never use a Main-anchored MD for McNair backfill.
-- The 3-room TOTAL cap applies to every flexible MD across all rooms they cover in this pass (Main + McNair backfill combined).
+- A flexible doing McNair backfill must be McNair-only for this pass — they get NO Main-side rooms.
+- Cap 3 McNair-side rooms per backfilling flexible.
 - Keep any APP the McNair pass already placed on the overflow room. Just add the MD.
-- If all flexibles are at cap and McNair rooms remain with md:null, leave them md:null and add flag "McNair backfill deficit: [rooms]".
+- If all available flexibles are at cap and McNair rooms remain with md:null, leave them md:null and add flag "McNair backfill deficit: [rooms]".
 
 You will NOT assign:
 - McNair-campus rooms that already have an MD (locked by McNair pass)
 - Jamail rooms covered by Ganderson (locked)
+- The same MD to both a Main-side and a McNair-side room
 
 If a McNair-side room is missing from roomsNeeding but has md:null in currentAssignments, still treat it as needing backfill.
 
