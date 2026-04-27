@@ -2468,10 +2468,30 @@ function isAssigned(name) {
   return false;
 }
 
-function renderAdminDay(dateVal) {
+async function renderAdminDay(dateVal) {
   const dt = parseDate(dateVal);
   const staff = getORStaffForDay(dateVal);
   const siteDay = SITES_DATA[dateVal] || {};
+
+  // ─────────────────────────────────────────────────────────────
+  // Endo-this-week counts. For each name, count distinct dates they
+  // appeared in any endo room this week. Used to show "E" / "EE" badges
+  // on staff chips so you can see at a glance who's already done endo.
+  // ─────────────────────────────────────────────────────────────
+  const endoCountByName = {};
+  try {
+    const weekData = await fetchWeekEndoTracker(dateVal);
+    const datesByName = {};
+    for (const entry of Object.values(weekData || {})) {
+      if (!entry || !entry.name || !entry.date) continue;
+      (datesByName[entry.name] = datesByName[entry.name] || new Set()).add(entry.date);
+    }
+    for (const [name, dates] of Object.entries(datesByName)) {
+      endoCountByName[name] = dates.size;
+    }
+  } catch (e) {
+    console.warn("[Endo tracker] could not fetch week data for chips:", e);
+  }
 
   // Staff pool with filters
   const pool = document.getElementById("staffPool");
@@ -2516,12 +2536,19 @@ function renderAdminDay(dateVal) {
         const overAssigned = (isMD && count > 4) || (isAPP && count > 1);
         const assigned = count > 0;
         const countBadge = count > 0 ? `<span style="font-size:9px;background:${overAssigned?"var(--cancel)":"var(--muted)"};color:white;border-radius:3px;padding:1px 4px;margin-left:2px;">${count}</span>` : "";
+        // Endo-this-week badge: "E" for one day, "EE" for two, etc.
+        const endoCount = endoCountByName[p.name] || 0;
+        const endoLetters = endoCount > 0 ? "E".repeat(Math.min(endoCount, 5)) : "";
+        const endoBadge = endoCount > 0
+          ? `<span title="Did endo ${endoCount} day${endoCount>1?"s":""} this week" style="font-size:9px;background:#7e57c2;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:600;letter-spacing:0.5px;">${endoLetters}</span>`
+          : "";
         return `<div class="staff-chip${assigned?" assigned":""}${overAssigned?" over-assigned":""}" 
           draggable="true"
           data-name="${p.name.replace(/"/g, '&quot;')}" data-cred="${p.credential||""}" data-agency="${p.agency||""}"
           ondragstart="onDragStart(event)">
           ${p.credential ? `<span class="sc-cred ${credClass}">${p.credential}</span>` : ""}
           <span style="flex:1;">${p.name}</span>
+          ${endoBadge}
           ${countBadge}
         </div>`;
       }).join(""));
