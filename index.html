@@ -3061,12 +3061,49 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
       console.warn("Endo tracker injection failed, using stale value:", e.message);
     }
 
-    const closed = cur.__closed || {};
+   const closed = cur.__closed || {};
     const needs = {};
     for (const [k, v] of Object.entries(cur)) {
       if (k === "__closed" || closed[k] || !v || typeof v !== "object") continue;
       if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // MANDATORY ROOM INJECTION
+    //
+    // Some rooms must always be staffed regardless of case load:
+    //   Main OR 10, Main OR 15, Main Endo 1, 2, 3, NIR 1
+    //
+    // The prompt mentions this but the model frequently skips a mandatory
+    // room when it has no case. Force these into `needs` and `cur` so the
+    // model sees them as rooms that need assignment.
+    //
+    // Only relevant for the Main pass — McNair pass has no mandatory rooms
+    // outside the area-driven assignments it already handles.
+    // ─────────────────────────────────────────────────────────────
+    if (label === "Main" || label === "Full Day") {
+      const MANDATORY_ROOMS = [
+        "Main OR|10", "Main OR|15",
+        "Main Endo|1", "Main Endo|2", "Main Endo|3",
+        "NIR|1"
+      ];
+      for (const mandatoryKey of MANDATORY_ROOMS) {
+        if (closed[mandatoryKey]) continue; // user explicitly closed it, skip
+        const existing = cur[mandatoryKey];
+        const hasMd = existing && existing.md && existing.md.name;
+        const hasApp = existing && existing.app && existing.app.name;
+        if (hasMd && hasApp) continue; // already fully staffed, no work needed
+        // Force it into needs (and cur if not present) so the model sees it
+        if (!cur[mandatoryKey]) {
+          cur[mandatoryKey] = { mandatory: true };
+        } else {
+          cur[mandatoryKey].mandatory = true;
+        }
+        needs[mandatoryKey] = cur[mandatoryKey];
+      }
+    }
+    // ─────────────────────────────────────────────────────────────
+
     if (!Object.keys(needs).length) { alert("All active rooms already have both MD and APP assigned!"); return; }
 
     // Build staff summary — include all staff, the prompt handles filtering
