@@ -2998,6 +2998,61 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
       }
 
       // ─────────────────────────────────────────────────────────────
+      // CREDENTIAL-MISMATCH CHECK (both passes)
+      // After canonicalization, verify that every md.name corresponds to
+      // a roster entry with credential === "MD", and every app.name
+      // corresponds to a roster entry with credential !== "MD".
+      // The model occasionally writes APP names into the MD field when
+      // it can't find a real MD for a room — drop those rooms to md:null
+      // so the cap enforcer and idle-flex backfill can recover.
+      //
+      // Also catches the trivial case where md.name === app.name (the
+      // model duplicated a name into both fields).
+      // ─────────────────────────────────────────────────────────────
+      const staffCredByName = {};
+      for (const s of staff) staffCredByName[s.name] = s.credential;
+
+      const credMismatches = [];
+      for (const [room, v] of Object.entries(assignmentsObj)) {
+        // Same-name in both fields → MD field is wrong (an APP cannot also
+        // be the MD for the same room).
+        if (v.md && v.app && v.md.name && v.md.name === v.app.name) {
+          credMismatches.push({ room, kind: "md_app_same", name: v.md.name });
+          v.md = null;
+          continue;
+        }
+        if (v.md && v.md.name) {
+          const cred = staffCredByName[v.md.name];
+          if (cred && cred !== "MD") {
+            credMismatches.push({ room, kind: "non_md_in_md_field", name: v.md.name, cred });
+            v.md = null;
+          }
+        }
+        if (v.app && v.app.name) {
+          const cred = staffCredByName[v.app.name];
+          if (cred === "MD") {
+            credMismatches.push({ room, kind: "md_in_app_field", name: v.app.name, cred });
+            v.app = null;
+          }
+        }
+      }
+
+      if (credMismatches.length > 0) {
+        const summary = credMismatches.map(cm => {
+          const roomDisplay = cm.room.replace(/\|/, " ");
+          if (cm.kind === "md_app_same")
+            return cm.name + " in both MD+APP at " + roomDisplay;
+          if (cm.kind === "non_md_in_md_field")
+            return cm.name + " (" + cm.cred + ") in MD field at " + roomDisplay;
+          if (cm.kind === "md_in_app_field")
+            return cm.name + " (MD) in APP field at " + roomDisplay;
+          return cm.name + " at " + roomDisplay;
+        }).join("; ");
+        flagsArr.push("Client-side enforcement: credential mismatch fixed (" + summary + ")");
+        console.log("[Client-side credential mismatch]", credMismatches);
+      }
+
+      // ─────────────────────────────────────────────────────────────
       // CLIENT-SIDE IDLE-FLEXIBLE BACKFILL VALIDATOR (Main pass only)
       // If any flexible MD ended with 0 rooms AND any McNair-side
       // room still has md:null, auto-assign idle flexibles to cover
@@ -3035,8 +3090,12 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           !MCNAIR_ANCHORED(s.shift)
         );
 
-        // Identify idle flexibles (0 rooms in this pass)
-        const idleFlexibles = flexibleMDs.filter(f => !passRoomCount[f.name]);
+        // Identify all under-cap flexibles (any flexible with < 3 rooms in this pass).
+        // Sort by current room count ascending so idle (0) flexibles get used first,
+        // then 1-room, then 2-room. This keeps coverage spread evenly.
+        const underCapFlexibles = flexibleMDs
+          .filter(f => (passRoomCount[f.name] || 0) < 3)
+          .sort((a, b) => (passRoomCount[a.name] || 0) - (passRoomCount[b.name] || 0));
 
         // Helpers to handle the room-key format mismatch between cur (Firebase
         // pipe format like "OTM OR|4") and assignmentsObj (model output display
@@ -3068,8 +3127,11 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           overflowRooms.push(roomKey);
         }
 
-        // If idle flexibles exist AND overflow rooms exist, auto-assign
-        if (idleFlexibles.length > 0 && overflowRooms.length > 0) {
+        // If under-cap flexibles exist AND overflow rooms exist, auto-assign.
+        // This handles both the original "idle flexible" case (model placed
+        // 0 rooms for a flex) AND the under-utilized case (model placed
+        // 1-2 rooms but didn't fill the flex's remaining capacity for backfill).
+        if (underCapFlexibles.length > 0 && overflowRooms.length > 0) {
           const autoAssignments = []; // {md, room} for flagging
 
           // Group overflow rooms by area, in priority order
@@ -3081,8 +3143,8 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
             }
           }
 
-          // Assign idle flexibles area-first, up to 3 rooms each
-          let flexPool = idleFlexibles.slice();
+          // Assign under-cap flexibles area-first, up to 3 rooms each
+          let flexPool = underCapFlexibles.slice();
           for (const area of AREA_PRIORITY) {
             const rooms = overflowByArea[area];
             while (rooms.length > 0 && flexPool.length > 0) {
@@ -3138,7 +3200,7 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
             const fixSummary = Object.entries(byMd)
               .map(([md, rooms]) => md + " → " + rooms.map(toDisplay).join(", "))
               .join(" | ");
-            newFlags.push("Client-side backfill applied (model left idle flexibles): " + fixSummary);
+            newFlags.push("Client-side backfill applied (under-utilized flexibles assigned to overflow): " + fixSummary);
 
             // If any deficit remains, re-emit the deficit flag with the reduced list
             if (stillDeficit.length > 0) {
