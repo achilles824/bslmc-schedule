@@ -3201,6 +3201,71 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         flagsArr.push(...scrubbedFlags);
 
         // ─────────────────────────────────────────────────────────────
+        // CLIENT-SIDE MAIN-PASS CAP ENFORCER
+        // Apply the 3-room cap to every MD assigned in this Main pass.
+        // Bridging is permitted (a flexible may span Main + McNair-side
+        // rooms during backfill) but the total room count must stay ≤ 3.
+        // Drop excess rooms to md:null. Drop order: McNair-side first
+        // (since those flowed in via backfill) then Main-side.
+        //
+        // Note: this enforcer applies to ALL MDs placed by THIS Main pass,
+        // not just flexibles — but in practice Main-anchored MDs are
+        // usually capped at ≤2 by the scheduling logic itself, and the
+        // typical violator is a flexible bridging across many rooms.
+        // ─────────────────────────────────────────────────────────────
+        const MAIN_AREAS_DROP_PRIORITY = [
+          // Drop McNair-side overflow rooms first (the model can leave
+          // them md:null and let a future fix-up cover them).
+          "OTM Endo", "OTM OR", "McNair OR", "Jamail OR",
+          // Then Main-side rooms (last resort).
+          "Main Endo", "MRI", "NIR", "IR", "CT", "RM-IR", "Main OR"
+        ];
+        const areaIndex = (roomKey) => {
+          for (let i = 0; i < MAIN_AREAS_DROP_PRIORITY.length; i++) {
+            if (roomKey.startsWith(MAIN_AREAS_DROP_PRIORITY[i])) return i;
+          }
+          return MAIN_AREAS_DROP_PRIORITY.length; // unknown areas last
+        };
+
+        // Count rooms per MD in this Main pass
+        const mainPassMdRooms = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (v.md && v.md.name) {
+            (mainPassMdRooms[v.md.name] = mainPassMdRooms[v.md.name] || []).push(room);
+          }
+        }
+
+        const mainPassDropped = [];
+        const mainPassDroppedByMd = {};
+        for (const [mdName, rooms] of Object.entries(mainPassMdRooms)) {
+          if (rooms.length <= 3) continue;
+          // Sort rooms by drop priority (drop-first first). When ties on area,
+          // sort by room number ascending so we drop lower-numbered rooms first
+          // — but room number isn't critical here, area priority is.
+          const sorted = rooms.slice().sort((a, b) => areaIndex(a) - areaIndex(b));
+          // Keep last 3 (highest priority to retain), drop the rest from front.
+          const toDrop = sorted.slice(0, sorted.length - 3);
+          for (const room of toDrop) {
+            const existingApp = assignmentsObj[room] && assignmentsObj[room].app;
+            assignmentsObj[room] = {
+              md: null,
+              app: existingApp || null,
+              notes: "Unassigned by Main pass (client-side cap fix) - exceeded 3-room cap"
+            };
+            mainPassDropped.push(room);
+            (mainPassDroppedByMd[mdName] = mainPassDroppedByMd[mdName] || []).push(room);
+          }
+        }
+
+        if (mainPassDropped.length > 0) {
+          const summary = Object.entries(mainPassDroppedByMd)
+            .map(([md, rms]) => md + " → " + rms.map(toDisplayRoom).join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side cap enforcement (Main pass exceeded 3-room cap): dropped " + summary);
+          console.log("[Client-side Main pass cap enforcement]", mainPassDroppedByMd);
+        }
+
+        // ─────────────────────────────────────────────────────────────
         // FINAL ROOM-KEY DEDUP (Main pass)
         // If both display ("McNair OR 6") and pipe ("McNair OR|6") forms
         // of the same logical room ended up in assignmentsObj, collapse to
