@@ -3167,6 +3167,64 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           }
         }
 
+        // ONE-AREA-PER-MD CHECK — no McNair-anchored MD may be in more than one
+        // area on this pass. If they are, keep the largest set and drop the rest.
+        const roomArea = roomKey => {
+          if (roomKey.startsWith("Jamail OR")) return "Jamail";
+          if (roomKey.startsWith("McNair OR")) return "McNair OR";
+          if (roomKey.startsWith("OTM OR")) return "OTM OR";
+          if (roomKey.startsWith("OTM Endo")) return "OTM Endo";
+          return "other";
+        };
+
+        // Build {mdName -> {area -> [rooms]}}
+        const mdAreas = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          if (v.md.name === "Lauren Ganderson") continue; // Ganderson special (Jamail or off)
+          mdAreas[v.md.name] = mdAreas[v.md.name] || {};
+          const a = roomArea(room);
+          (mdAreas[v.md.name][a] = mdAreas[v.md.name][a] || []).push(room);
+        }
+
+        const multiAreaRemoved = [];
+        for (const [mdName, areas] of Object.entries(mdAreas)) {
+          const areaKeys = Object.keys(areas);
+          if (areaKeys.length <= 1) continue;
+          // MD is in multiple areas. Keep the area with the most rooms (ties broken
+          // by preferring McNair OR, OTM OR, OTM Endo, Jamail in that order).
+          const priority = ["McNair OR", "OTM OR", "OTM Endo", "Jamail"];
+          areaKeys.sort((a, b) => {
+            const na = areas[a].length, nb = areas[b].length;
+            if (na !== nb) return nb - na; // more rooms first
+            return priority.indexOf(a) - priority.indexOf(b);
+          });
+          const keepArea = areaKeys[0];
+          for (const a of areaKeys.slice(1)) {
+            for (const room of areas[a]) {
+              const existingApp = assignmentsObj[room] && assignmentsObj[room].app;
+              assignmentsObj[room] = {
+                md: null,
+                app: existingApp || null,
+                notes: "Unassigned by McNair pass (one-area-per-MD rule) - Main pass to fill"
+              };
+              multiAreaRemoved.push({ md: mdName, room, droppedArea: a, keptArea: keepArea });
+            }
+          }
+        }
+
+        if (multiAreaRemoved.length > 0) {
+          const byMd = {};
+          multiAreaRemoved.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(toDisplayRoom(x.room));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " from " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side enforcement: MDs removed from extra areas (one-area-per-MD rule) — " + summary);
+          console.log("[Client-side one-area enforcement]", multiAreaRemoved);
+        }
+
         // Count rooms per MD in this pass (AFTER Ganderson removal above)
         const mdRooms = {};
         for (const [room, v] of Object.entries(assignmentsObj)) {
@@ -3998,19 +4056,39 @@ If DEFICIT, emit single STRUCTURAL_McNAIR_APP_DEFICIT flag. Do NOT emit per-room
 
 ---
 
-## STEP 4 — ALLOCATE MDs TO McNAIR AREAS
+## STEP 4 — ALLOCATE MDs TO McNAIR AREAS (ONE AREA PER MD, NO BRIDGING)
 
-Every McNair-anchored MD not at Jamail is placed in at least one room. Flexible MDs are generally NOT claimed on this pass — the Main pass will use them to fill any rooms this pass leaves unassigned.
+### The rule: one area per MD
 
-A. Out-MNC MDs (1st, 2nd, 3rd) → McNair OR primarily, or OTM OR if K is low. Cap 3 rooms each (total).
+Every McNair-anchored MD gets assigned to exactly ONE area on this pass (McNair OR, OTM OR, or OTM Endo — not Jamail; that's handled in Step 1). Once placed in an area, they stay there for up to 3 rooms. No bridging to other areas, period. If an area runs out of rooms for an MD before they hit 3, that MD is done — do NOT move them to a different area to pick up more rooms.
 
-B. Late-MD-MNC → OTM OR (default). Cap 3 rooms.
+Which area each MD goes into is YOUR CHOICE based on where demand is and who's available. Reasonable defaults:
+- Out-MNC MDs (1st, 2nd, 3rd) typically cover McNair OR.
+- Late MD-MNC and McNair Call typically cover OTM OR or OTM Endo.
+- Plain "OR - McNair" (no suffix) can go to any McNair-side area.
 
-C. McNair Call → OTM OR + OTM Endo (default bridge). Cap 3 rooms TOTAL (not 3 per area).
+But these are defaults, not hard rules. What IS hard:
+1. Once you choose an area for an MD, they stay in that area for all their rooms.
+2. Cap 3 rooms per MD (in their chosen area).
+3. Flexibles are NOT used on this pass — the Main pass handles any leftover rooms.
 
-D. Flexibles — CLAIM ONLY FOR JAMAIL SUBSTITUTE when Ganderson is absent. Do NOT claim flexibles for OTM OR bridging, OTM Endo coverage, or McNair OR overflow. Those gaps are left as md:null for the Main pass.
+### Allocation procedure
 
-E. Every McNair-anchored MD has at least one room after this step IF rooms still need coverage. If all remaining rooms are already covered by capped MDs at their limit, a McNair-anchored MD with zero rooms is acceptable (unusual but not a violation — flag as "Unused McNair-anchored MD: [name]").
+1. For each McNair-anchored MD not at Jamail, pick ONE area based on where they're needed and reasonable defaults above.
+2. Fill that MD up to 3 rooms in that area (or until the area runs out of unassigned rooms, whichever comes first).
+3. Do NOT move the MD to a different area afterward.
+4. If an area still has unassigned rooms after every eligible MD is at cap or placed, leave the extras as md:null. The Main pass will backfill with flexibles.
+
+### Examples
+
+CORRECT:
+  McNair Call MD placed at OTM OR 1, 2, 3. Done — 3 rooms, 1 area. ✓
+  Late MD-MNC placed at OTM Endo 1, 2, 3. Done. ✓
+  1st Out-MNC placed at McNair OR 1, 2. OTM OR has unfilled rooms. Out-MNC stays at 2 McNair OR rooms — does NOT go help at OTM OR. ✓
+
+INCORRECT:
+  McNair Call placed at OTM OR 1, 2 + OTM Endo 4 → VIOLATION. Even though cap=3 is not exceeded, this MD is now in 2 areas. Drop the OTM Endo 4 room to md:null.
+  Out-MNC at McNair OR 3, 4 + OTM OR 7 → VIOLATION. Same reason.
 
 ---
 
@@ -4030,40 +4108,20 @@ Block cases (surgeons: Meheux, Martin, Metoxen, Moseley, Granberry, Williams, Ha
 
 ## STEP 4.6 — OTM OR AND OTM ENDO
 
-### AREA-FIRST ALLOCATION RULE (HARD RULE, enforced before bridging)
+Under the one-area-per-MD rule (Step 4), OTM OR and OTM Endo are treated as two separate areas. An MD placed at OTM OR stays at OTM OR only (even if OTM Endo has unfilled rooms). An MD placed at OTM Endo stays at OTM Endo only.
 
-For each MD, fill their current area up to 3 rooms BEFORE you consider bridging them to a different area. An MD only gets a second-area room if:
-  (a) Their current area has NO unassigned rooms remaining, AND
-  (b) They are still under the 3-room cap.
+### Filling OTM OR and OTM Endo
 
-Concretely:
-- An MD with 2 OTM OR rooms and unassigned OTM OR rooms still remaining → gets a 3rd OTM OR room. Do NOT place that MD in OTM Endo. Bridging while OTM OR still has open rooms is a VIOLATION.
-- An MD with 3 OTM OR rooms → at cap. Done. They do not go to OTM Endo.
-- An MD with 2 OTM OR rooms AND all OTM OR rooms are already covered → may take 1 OTM Endo room (becomes a bridge, 1 room in each area, cap = 3 total).
+For each MD placed in OTM OR or OTM Endo:
+- Cap 3 rooms in that one area.
+- Do NOT bridge to the other area, even if that MD still has slack under the cap.
 
-WORKED EXAMPLES OF WHAT NOT TO DO:
-  WRONG: Hafkin at OTM OR 1, 2, 3 + OTM Endo 1 = 4 rooms. Hafkin was already at 3 OTM OR so they're at cap — DO NOT add OTM Endo.
-  WRONG: Ritter at McNair OR 3, 4 + OTM OR 7, 10 = 4 rooms. Ritter had McNair OR rooms remaining unassigned when moved to OTM OR. Either keep Ritter at McNair OR and fill to 3 there, or place a different MD at OTM OR.
-  WRONG: Seibert at McNair OR 1, 2 + OTM Endo 4 = 3 rooms. Seibert bridged to OTM Endo while McNair OR 3 still needed an MD and Ritter was already over cap. Keep Seibert at McNair OR; do not bridge.
+### Unassigned rooms in these areas
 
-The only exception to area-first is the **triple-block McNair bridge exception** (3 simultaneous 07:30 blocks): up to 2 block-capable MDs may take 1 McNair OR + 1 OTM OR even if McNair OR has other rooms remaining.
-
-### Standard allocation (AFTER the area-first rule is satisfied)
-
-- Target 2-3 rooms per MD. Cap 3 (total rooms per MD across McNair OR + OTM OR + OTM Endo combined).
-- Late-MD-MNC and McNair Call default to OTM OR / OTM Endo (as their home area, not as a bridge from elsewhere).
-- Valid bridging pairs: OTM OR ↔ OTM Endo, OTM OR ↔ McNair OR, OTM Endo ↔ McNair OR.
-- 1 bridge per pair max, except triple-block McNair exception.
-- If all McNair-anchored MDs reach the 3-room cap and rooms remain unassigned in OTM OR or OTM Endo, LEAVE THEM UNASSIGNED (md:null). Do not claim flexible MDs for this pass — the Main pass handles that.
-
-### Allocation procedure (follow in order)
-
-1. Assign each McNair-anchored MD to their HOME area (per Step 4 A/B/C defaults): Out-MNC → McNair OR, Late-MD-MNC → OTM OR, McNair Call → OTM OR, 3rd Out-MNC / OR - McNair → wherever demand exists.
-2. For each MD, fill their home area up to 3 rooms (or until home area has no more unassigned rooms).
-3. After every MD is filled to cap OR their home area is fully covered, check for remaining unassigned rooms in other areas. For those:
-   - Find an MD who has open home-area slack AND whose home area is fully covered (rule (a)+(b) above). They may bridge.
-   - If no such MD exists, the room stays unassigned.
-4. Never fill a non-home-area room for an MD who still has unassigned home-area rooms available.
+If demand in OTM OR or OTM Endo exceeds capacity (number of MDs assigned to that area × 3), excess rooms go md:null. The Main pass will backfill with flexibles. Do NOT:
+- Move an MD from OTM OR to OTM Endo mid-placement
+- Reach for Main-anchored MDs (forbidden always)
+- Claim flexibles on this pass
 
 ---
 
@@ -4089,24 +4147,24 @@ For every MD you have placed so far:
    - For every dropped room, set md:null and notes:"Unassigned by McNair pass - overflow past MD cap, Main pass to fill". Keep the APP if one was assigned.
    - Add each dropped room label to UNASSIGNED_ROOMS in the WORK block.
 
-### CHECK B — Premature bridging check (area-first rule)
+### CHECK B — Strict home-area check (no bridging except triple-block)
 
-For every MD assigned to rooms in MORE THAN ONE area:
-1. Identify their HOME area (per Step 4 defaults): Out-MNC → McNair OR, Late-MD-MNC → OTM OR, McNair Call → OTM OR, 3rd Out-MNC → wherever assigned first.
-2. Count unassigned case-bearing rooms remaining in the MD's home area.
-3. If the MD is in a non-home area AND their home area still has unassigned case-bearing rooms remaining:
-   - This is a PREMATURE BRIDGE VIOLATION.
-   - Move the MD's non-home-area rooms to md:null, notes:"Unassigned by McNair pass - premature bridge, Main pass to fill".
-   - Reassign the MD to their home-area unassigned rooms up to cap 3.
-   - If home area still has unassigned rooms after MD hits cap, those remain md:null for Main pass.
+For every MD placed, verify they are in exactly ONE area (McNair OR, OTM OR, OTM Endo, or Jamail — not more than one).
 
-Exception: triple-block McNair bridge (3 simultaneous 07:30 block cases at McNair) — up to 2 McNair OR MDs may bridge to OTM OR even with McNair OR rooms remaining.
+1. For each MD, list every room they are assigned to.
+2. Classify each room by area: McNair OR, OTM OR, OTM Endo, or Jamail.
+3. Count how many DISTINCT areas the MD is in.
+4. If an MD is in 2 or more areas, this is a BRIDGING VIOLATION:
+   - Pick ONE area to keep (the one with the most rooms, or the most operationally important — generally keep McNair OR over OTM, OTM OR over OTM Endo).
+   - Drop all rooms in the OTHER area(s) to md:null with notes:"Unassigned by McNair pass - MD moved across areas, Main pass to fill".
+
+Exception: triple-block McNair bridge — up to 2 block-capable Out-MNC MDs may take 1 McNair OR + 1 OTM OR when 3 simultaneous 07:30 McNair OR blocks exist. This is the ONLY bridge exception.
 
 ### Final re-count
 
 After CHECK A and CHECK B corrections, re-count. No MD may end Step 4.7:
-- Over their cap, OR
-- Bridging into a non-home area while their home area has unassigned rooms (except triple-block exception).
+- Over their cap (CHECK A), OR
+- In more than one area (CHECK B, except triple-block exception).
 
 If any violation remains, drop rooms again. Do NOT proceed to APP assignment until both checks pass.
 
@@ -4114,17 +4172,13 @@ WORKED EXAMPLE 1 (cap violation):
   K. Tran at OTM OR 4/5/6 AND OTM Endo 1/8/10 = 6 rooms. Cap = 3.
   Fix: Drop Endo 1/8/10. Tran now at 3 OTM OR rooms. OTM Endo 1, 8, 10 → md:null for Main pass.
 
-WORKED EXAMPLE 2 (premature bridge violation):
-  Hafkin at OTM OR 1, 2, 3 + OTM Endo 1 = 4 rooms. Hafkin home = OTM OR. OTM OR fully covered by Hafkin. But cap = 3, so Endo 1 must drop regardless.
-  Fix: Drop Endo 1 → md:null.
+WORKED EXAMPLE 2 (bridging violation):
+  Seibert at OTM OR 4 + McNair OR 2, 3 = 3 rooms, 2 areas. Violation (2 distinct areas).
+  Fix: McNair OR has 2 rooms, OTM OR has 1. Keep the 2-room set (McNair OR). Drop OTM OR 4 to md:null. Seibert ends at McNair OR 2, 3.
 
-WORKED EXAMPLE 3 (premature bridge violation):
-  Ritter at McNair OR 3, 4 + OTM OR 7, 10 = 4 rooms. Ritter home = McNair OR. McNair OR has rooms 5 and/or 7 still unassigned.
-  Fix: Drop OTM OR 7, 10 → md:null. Reassign Ritter to McNair OR 5 (if unassigned) to fill home area to 3. OTM OR 7, 10 stay md:null.
-
-WORKED EXAMPLE 4 (premature bridge violation):
-  Seibert at McNair OR 1, 2 + OTM Endo 4 = 3 rooms (cap OK, but home=McNair OR, and McNair OR 3 still unassigned).
-  Fix: Drop OTM Endo 4 → md:null. Move Seibert to McNair OR 3 instead. Seibert now at McNair OR 1, 2, 3 = 3 rooms, all home area.
+WORKED EXAMPLE 3 (bridging + cap violation):
+  Patino at OTM OR 11 + OTM Endo 10 + McNair OR 5 = 3 rooms, 3 areas. Violation (3 distinct areas, though cap OK).
+  Fix: Pick one area (model's choice based on where demand is). Say McNair OR — but he only has 1 McNair OR room. Keep that. Drop OTM OR 11 and OTM Endo 10 to md:null.
 
 ---
 
