@@ -1965,15 +1965,6 @@ setInterval(() => {
 }, 60000);
 
 // ── ADMIN ──
-let adminUnlocked = false;
-let currentAdminDate = null;
-let currentAssignments = {};
-let draggingPerson = null;
-let staffFilterMD = true;
-let staffFilterAPP = true;
-let autoSaveInterval = null;
-let autoLockTimeout = null;
-const AUTO_LOCK_MINUTES = 30;
 
 // PIN input handling
 const pinInputs = [0,1,2,3].map(i => document.getElementById("pin" + i));
@@ -2196,8 +2187,16 @@ function loadFinalizedState(dateStr) {
 async function loadAdminDay() {
   const dateVal = document.getElementById("adminDatePicker").value;
   if (!dateVal || !dataLoaded) return;
+
+  // Unsubscribe previous listener BEFORE switching dates
+  if (assignmentsListener) {
+    assignmentsListener();
+    assignmentsListener = null;
+  }
+
   currentAdminDate = dateVal;
   currentAssignments = {};
+  localDirty = false; // fresh load = clean state
 
   // Load saved assignments from Firebase
   window.closedRooms = {};
@@ -2210,12 +2209,18 @@ async function loadAdminDay() {
   } catch(e) {}
 
   renderAdminDay(dateVal);
-  loadFinalizedState(dateVal); // Update finalize button for this date
-  renderEndoTrackerPanel(); // Refresh endo tracker for the new date's week
+  loadFinalizedState(dateVal);
+  renderEndoTrackerPanel();
 
-  // Listen for real-time changes from other admins
-  window.fbListen("assignments/" + dateVal, (data) => {
+  // Listen for real-time changes from OTHER admins.
+  // Skip overwrites when the local user has unsaved edits in progress.
+  assignmentsListener = window.fbListen("assignments/" + dateVal, (data) => {
+    if (localDirty) {
+      console.log("[Listener] Skipping remote update - local edits pending");
+      return;
+    }
     if (data && JSON.stringify(data) !== JSON.stringify(currentAssignments)) {
+      console.log("[Listener] Applying remote update");
       currentAssignments = data;
       renderAdminDay(currentAdminDate);
     }
@@ -2667,6 +2672,7 @@ function onDrop(e, roomKey, slot) {
   e.preventDefault();
   e.currentTarget.classList.remove("drop-hover");
   if (!draggingPerson) return;
+  localDirty = true;
 
   const cred = draggingPerson.credential;
   const isMD = cred === "MD";
@@ -2698,6 +2704,7 @@ function onDrop(e, roomKey, slot) {
 
 function removeFromSlot(roomKey, slot) {
   if (!currentAssignments[roomKey]) return;
+  localDirty = true;
   if (slot.startsWith("float")) {
     const idx = parseInt(slot.replace("float",""));
     if (currentAssignments[roomKey]["float"]) {
