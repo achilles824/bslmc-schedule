@@ -3832,7 +3832,125 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           flagsArr.push("Client-side enforcement: MDs removed from extra areas (one-area-per-MD rule) — " + summary);
           console.log("[Client-side one-area enforcement]", multiAreaRemoved);
         }
+// ─────────────────────────────────────────────────────────────
+        // TIER 1 APP LOCK ENFORCEMENT
+        // The prompt's hard rule says Kima/Rose/Jackson/Schoene must be at
+        // Jamail when J > 0, in that priority order. Model frequently violates.
+        // This validator: for every empty Jamail APP slot, pull the highest-priority
+        // working Tier 1 APP currently placed at a non-Jamail McNair room.
+        // Bump the displaced APP back to the unassigned pool (delete from their old slot).
+        //
+        // Tier 1 priority: Kima > Rose > Jackson > Schoene
+        // (Schoene is endo-pull-eligible per Step 5; we still place her at Jamail
+        //  if a Jamail slot is empty — endo pull is a separate concern handled by
+        //  the once-per-week rule.)
+        // ─────────────────────────────────────────────────────────────
+        const TIER_1_PRIORITY = ["Karina Kima", "Carla Rose", "Audra Jackson", "Evie Schoene"];
 
+        // Identify which Tier 1 APPs are working today (in staff list)
+        const workingTier1 = new Set();
+        for (const t1 of TIER_1_PRIORITY) {
+          if (staff.some(s => s.name === t1)) workingTier1.add(t1);
+        }
+
+        // Find current placements of Tier 1 APPs in assignmentsObj
+        const tier1Placements = {}; // name -> roomKey
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (v.app && v.app.name && workingTier1.has(v.app.name)) {
+            tier1Placements[v.app.name] = room;
+          }
+        }
+
+        // Identify Jamail rooms with cases. Jamail rooms come from cur (original
+        // currentAssignments) since the McNair pass operates on roomsNeeding which
+        // overlaps with cur. Use display format for matching.
+        const jamailRoomsWithCases = [];
+        for (const [roomKey, v] of Object.entries(cur)) {
+          if (roomKey === "__closed" || !v || typeof v !== "object") continue;
+          if (!roomKey.startsWith("Jamail OR")) continue;
+          if ((cur.__closed || {})[roomKey]) continue;
+          // A room "has cases" if it has caseTime, surgeon, or is in roomsNeeding
+          const hasCase = v.caseTime || v.surgeon || v.procedure;
+          if (hasCase) {
+            // Use display format for assignmentsObj lookup
+            const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+            jamailRoomsWithCases.push(disp);
+          }
+        }
+
+        // For each Jamail room with cases, ensure a Tier 1 APP is in the APP slot
+        // (in priority order). If the slot has a non-Tier-1 APP, swap.
+        const tier1Swaps = [];
+        for (const jamailRoom of jamailRoomsWithCases) {
+          // Find this room in assignmentsObj under either format
+          const fbForm = jamailRoom.replace(/\s(\d+)$/, "|$1");
+          const targetKey = (assignmentsObj[jamailRoom] !== undefined) ? jamailRoom :
+                            (assignmentsObj[fbForm] !== undefined) ? fbForm : null;
+          if (!targetKey) continue;
+
+          const currentApp = assignmentsObj[targetKey].app;
+          // If current APP is already Tier 1, skip
+          if (currentApp && currentApp.name && workingTier1.has(currentApp.name)) continue;
+
+          // Find highest-priority working Tier 1 APP not yet placed at Jamail
+          let chosenT1 = null;
+          for (const t1 of TIER_1_PRIORITY) {
+            if (!workingTier1.has(t1)) continue;
+            const placedAt = tier1Placements[t1];
+            if (!placedAt) {
+              // Not placed at all — claim from staff list directly
+              const staffEntry = staff.find(s => s.name === t1);
+              if (staffEntry) {
+                chosenT1 = { name: t1, credential: staffEntry.credential, agency: staffEntry.agency, fromRoom: null };
+                break;
+              }
+            } else {
+              const placedDisp = placedAt.replace(/\|/, " ");
+              // If placed at non-Jamail room, this T1 is the candidate to swap
+              if (!placedDisp.startsWith("Jamail OR")) {
+                const placedSlots = assignmentsObj[placedAt];
+                chosenT1 = {
+                  name: t1,
+                  credential: placedSlots.app.credential,
+                  agency: placedSlots.app.agency,
+                  fromRoom: placedAt
+                };
+                break;
+              }
+            }
+          }
+
+          if (!chosenT1) continue; // no T1 available — leave room as-is
+
+          // Swap: bump current APP out of Jamail (to unassigned pool / delete),
+          // place chosen T1 at Jamail. If T1 was previously placed elsewhere,
+          // delete from that room (its APP slot becomes empty).
+          const displacedApp = currentApp;
+          assignmentsObj[targetKey].app = {
+            name: chosenT1.name,
+            credential: chosenT1.credential,
+            agency: chosenT1.agency
+          };
+          if (chosenT1.fromRoom) {
+            assignmentsObj[chosenT1.fromRoom].app = null;
+          }
+          tier1Placements[chosenT1.name] = targetKey;
+
+          tier1Swaps.push({
+            jamailRoom: targetKey,
+            placed: chosenT1.name,
+            displaced: displacedApp ? displacedApp.name : "(empty)"
+          });
+        }
+
+        if (tier1Swaps.length > 0) {
+          const summary = tier1Swaps
+            .map(s => s.placed + " → " + s.jamailRoom.replace(/\|/, " ") + " (displaced " + s.displaced + ")")
+            .join(" | ");
+          flagsArr.push("Client-side enforcement: Tier 1 APPs forced to Jamail (" + summary + ")");
+          console.log("[Client-side Tier 1 lock]", tier1Swaps);
+        }
+        // ─────────────────────────────────────────────────────────────
         // Count rooms per MD in this pass (AFTER Ganderson removal above)
         const mdRooms = {};
         for (const [room, v] of Object.entries(assignmentsObj)) {
@@ -3891,6 +4009,133 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           flagsArr.push(...keepFlags);
           console.log("[Client-side McNair cap enforcement]", droppedByMd);
         }
+        // ─────────────────────────────────────────────────────────────
+        // McNAIR-ANCHORED MD REDISTRIBUTION
+        // After all other validators run, scan for McNair-side rooms (McNair OR,
+        // OTM OR, OTM Endo) with md:null. For each, find an under-cap McNair-anchored
+        // MD already placed in the same area and add the room to their list.
+        //
+        // Why: model often under-utilizes McNair-anchored MDs (e.g. Patino = McNair Call
+        // placed at 1 room, leaving McNair OR rooms unassigned despite him having
+        // 2 slots remaining under the 3-cap). This is a redistribution within the
+        // same area — does NOT bridge across areas (one-area-per-MD remains intact).
+        //
+        // Only operates on rooms in cur with md:null (rooms the model + earlier
+        // validators left unassigned). Does not touch already-assigned rooms.
+        // ─────────────────────────────────────────────────────────────
+        const McNAIR_AREA_PREFIXES = ["McNair OR", "OTM OR", "OTM Endo"];
+        const areaOfRoom = roomKey => {
+          for (const a of McNAIR_AREA_PREFIXES) {
+            if (roomKey.startsWith(a)) return a;
+          }
+          return null;
+        };
+
+        // Recompute current room counts per MD (post all validators above)
+        const finalMdRooms = {};
+        const finalMdAreas = {}; // mdName -> area
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          (finalMdRooms[v.md.name] = finalMdRooms[v.md.name] || []).push(room);
+          const area = areaOfRoom(room);
+          if (area) finalMdAreas[v.md.name] = area; // last-area-wins; OK since one-area enforced earlier
+        }
+
+        // Identify candidate rooms: McNair-side rooms with md:null in either
+        // assignmentsObj or cur (where Main pass would otherwise have to backfill)
+        const redistributableRooms = [];
+        const seenRooms = new Set();
+        // From assignmentsObj (rooms the validators dropped)
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          const area = areaOfRoom(room);
+          if (!area) continue;
+          if (v.md && v.md.name) continue;
+          redistributableRooms.push(room);
+          seenRooms.add(room);
+        }
+        // From cur (rooms the model never assigned in this pass at all)
+        for (const [room, v] of Object.entries(cur)) {
+          if (room === "__closed" || !v || typeof v !== "object") continue;
+          if ((cur.__closed || {})[room]) continue;
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const area = areaOfRoom(disp);
+          if (!area) continue;
+          if (v.md && v.md.name) continue;
+          // Skip if already in assignmentsObj
+          if (seenRooms.has(disp) || seenRooms.has(room)) continue;
+          // Only redistribute if room has a case
+          const hasCase = v.caseTime || v.surgeon || v.procedure;
+          if (!hasCase) continue;
+          redistributableRooms.push(disp);
+          seenRooms.add(disp);
+        }
+
+        // For each redistributable room, find an under-cap McNair-anchored MD in
+        // the same area and assign them
+        const redistributed = [];
+        for (const room of redistributableRooms) {
+          const area = areaOfRoom(room);
+          if (!area) continue;
+
+          // Find McNair-anchored MD currently in this area with rooms < 3
+          let chosenMd = null;
+          for (const [mdName, rooms] of Object.entries(finalMdRooms)) {
+            if (rooms.length >= 3) continue;
+            if (finalMdAreas[mdName] !== area) continue;
+            // Verify McNair-anchored
+            const mdInfo = staffByName[mdName];
+            if (!mdInfo) continue;
+            if (mdInfo.credential !== "MD") continue;
+            // Skip Ganderson (Jamail-only)
+            if (mdName === "Lauren Ganderson") continue;
+            // Skip Jamail substitutes (already handled by Jamail block)
+            if (JAMAIL_SUB_NAMES.has(mdName)) continue;
+            // Must be McNair-anchored Baylor
+            const isMcnairAnchored = mdInfo.agency === "Baylor" && MCNAIR_ANCHORED_SHIFT(mdInfo.shift);
+            if (!isMcnairAnchored) continue;
+            chosenMd = mdInfo;
+            break;
+          }
+          if (!chosenMd) continue;
+
+          // Assign the room
+          const existing = assignmentsObj[room] || cur[room.replace(/\s(\d+)$/, "|$1")] || {};
+          assignmentsObj[room] = {
+            md: { name: chosenMd.name, credential: chosenMd.credential, agency: chosenMd.agency },
+            app: existing.app || (assignmentsObj[room] && assignmentsObj[room].app) || null,
+            notes: "Client-side redistribution: under-utilized McNair-anchored MD"
+          };
+          (finalMdRooms[chosenMd.name] = finalMdRooms[chosenMd.name] || []).push(room);
+          redistributed.push({ md: chosenMd.name, room });
+        }
+
+        if (redistributed.length > 0) {
+          const byMd = {};
+          redistributed.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(toDisplayRoom(x.room));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " → " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side redistribution: under-utilized McNair-anchored MDs filled (" + summary + ")");
+          // Also drop stale "McNair pass left rooms for Main pass" entries that are now filled
+          const filledRooms = new Set(redistributed.map(r => toDisplayRoom(r.room)));
+          const cleanedFlags = flagsArr.map(f => {
+            const m = f.match(/^McNair pass left rooms for Main pass:\s*(.+)$/);
+            if (!m) return f;
+            const rooms = m[1].split(/,\s*/).map(s => s.trim());
+            const remaining = rooms.filter(r => !filledRooms.has(r));
+            if (remaining.length === 0) return null;
+            if (remaining.length < rooms.length) {
+              return "McNair pass left rooms for Main pass: " + remaining.join(", ");
+            }
+            return f;
+          }).filter(Boolean);
+          flagsArr.length = 0;
+          flagsArr.push(...cleanedFlags);
+          console.log("[Client-side McNair redistribution]", redistributed);
+        }
+        // ─────────────────────────────────────────────────────────────
       }
       // ─────────────────────────────────────────────────────────────
 
