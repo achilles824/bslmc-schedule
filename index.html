@@ -2109,6 +2109,7 @@ function confirmClearDay() {
   if (confirm("⚠️ Clear ALL assignments, surgeons, procedures, and times for " + label + "?\n\nThis cannot be undone.")) {
     currentAssignments = {};
     window.closedRooms = {};
+    localDirty = false; // we just cleared and are about to save fresh
     window.fbSet("assignments/" + currentAdminDate, null);
     renderAdminDay(currentAdminDate);
   }
@@ -2124,7 +2125,7 @@ function startAutoSave() {
         saveData.__closed = window.closedRooms;
       }
       await window.fbSet("assignments/" + currentAdminDate, saveData);
-      // Show subtle autosave indicator
+      localDirty = false; // autosave succeeded, local matches remote
       const btn = document.querySelector(".view-btn[onclick='saveAssignments()']");
       if (btn) {
         const orig = btn.textContent;
@@ -2135,7 +2136,7 @@ function startAutoSave() {
     } catch(e) {
       console.warn("Autosave failed:", e.message);
     }
-  }, 30000); // every 30 seconds
+  }, 30000);
 }
 
 function stopAutoSave() {
@@ -2303,6 +2304,7 @@ function executeManualEntry() {
   const name = document.getElementById("manualEntryName").value.trim();
   const cred = document.getElementById("manualEntryCred").value;
   if (!name || !manualEntryRoomKey) return;
+  localDirty = true;
 
   // Check if person is scheduled to work that day
   const orStaff = getORStaffForDay(currentAdminDate);
@@ -2355,6 +2357,7 @@ function closeTransferModal() {
 function executeTransfer() {
   const targetKey = document.getElementById("transferTarget").value;
   if (!transferSourceKey || !targetKey) return;
+  localDirty = true;
 
   const sourceData = currentAssignments[transferSourceKey] || {};
 
@@ -2380,6 +2383,7 @@ function executeTransfer() {
 }
 
 function updateCaseTime(roomKey, value) {
+  localDirty = true;
   if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
   if (value.trim()) {
     currentAssignments[roomKey]["caseTime"] = value.trim();
@@ -2389,6 +2393,7 @@ function updateCaseTime(roomKey, value) {
 }
 
 function updateProcedure(roomKey, value) {
+  localDirty = true;
   if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
   if (value.trim()) {
     currentAssignments[roomKey]["procedure"] = value.trim();
@@ -2398,6 +2403,7 @@ function updateProcedure(roomKey, value) {
 }
 
 function updateSurgeon(roomKey, value) {
+  localDirty = true;
   if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
   if (value.trim()) {
     currentAssignments[roomKey]["surgeon"] = value.trim();
@@ -2409,6 +2415,7 @@ function updateSurgeon(roomKey, value) {
 function toggleRoom(roomKey) {
   if (!window.closedRooms) window.closedRooms = {};
   window.closedRooms[roomKey] = !window.closedRooms[roomKey];
+  localDirty = true;
   renderAdminDay(currentAdminDate);
 }
 
@@ -2702,20 +2709,22 @@ function onDrop(e, roomKey, slot) {
   renderAdminDay(currentAdminDate);
 }
 
-function removeFromSlot(roomKey, slot) {
-  if (!currentAssignments[roomKey]) return;
-  localDirty = true;
-  if (slot.startsWith("float")) {
-    const idx = parseInt(slot.replace("float",""));
-    if (currentAssignments[roomKey]["float"]) {
-      currentAssignments[roomKey]["float"].splice(idx, 1);
-      if (currentAssignments[roomKey]["float"].length === 0) delete currentAssignments[roomKey]["float"];
+async function saveAssignments() {
+  if (!currentAdminDate) return;
+  try {
+    const saveData = Object.assign({}, currentAssignments);
+    if (window.closedRooms && Object.keys(window.closedRooms).length > 0) {
+      saveData.__closed = window.closedRooms;
     }
-  } else {
-    delete currentAssignments[roomKey][slot];
+    await window.fbSet("assignments/" + currentAdminDate, saveData);
+    localDirty = false; // save succeeded, local matches remote
+    const btn = document.querySelector(".view-btn[onclick='saveAssignments()']");
+    const orig = btn.textContent;
+    btn.textContent = "✓ Saved!";
+    setTimeout(() => btn.textContent = orig, 2000);
+  } catch(e) {
+    alert("Failed to save: " + e.message);
   }
-  if (Object.keys(currentAssignments[roomKey]).length === 0) delete currentAssignments[roomKey];
-  renderAdminDay(currentAdminDate);
 }
 
 async function saveAssignments() {
