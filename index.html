@@ -2947,6 +2947,57 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         : [];
 
       // ─────────────────────────────────────────────────────────────
+      // NAME CANONICALIZATION
+      // The model sometimes emits names that differ from the roster's
+      // canonical form, e.g. dropping a quoted nickname:
+      //   roster:  Yiu-Hei "Adrian" Ching
+      //   model:   Yiu-Hei Ching
+      // This breaks every downstream name-comparison (passRoomCount,
+      // mcnairPassMDs lookup, idle-flexible detection, deduplication).
+      //
+      // canonicalizeName() resolves a model-emitted name against the
+      // staff roster and rewrites it to the canonical form. We apply
+      // this to every md.name and app.name in assignmentsObj BEFORE
+      // any validators run.
+      // ─────────────────────────────────────────────────────────────
+      const stripNickname = s => (s || "")
+        .replace(/\s*["'].*?["']\s*/g, " ") // remove "Adrian", 'Goshu', etc.
+        .replace(/\s+/g, " ")
+        .trim();
+      const normalize = s => stripNickname(s).toLowerCase();
+
+      const canonicalizeName = (rawName) => {
+        if (!rawName || typeof rawName !== "string") return rawName;
+        // Exact match first
+        for (const s of staff) {
+          if (s.name === rawName) return s.name;
+        }
+        // Strip-and-compare match
+        const target = normalize(rawName);
+        if (!target) return rawName;
+        const matches = staff.filter(s => normalize(s.name) === target);
+        if (matches.length === 1) return matches[0].name;
+        // Fallback: last-name + first-name match (when nickname is the issue)
+        const targetTokens = target.split(" ").filter(Boolean);
+        if (targetTokens.length >= 2) {
+          const targetFirst = targetTokens[0];
+          const targetLast = targetTokens[targetTokens.length - 1];
+          const tokenMatches = staff.filter(s => {
+            const t = normalize(s.name).split(" ").filter(Boolean);
+            return t.length >= 2 && t[0] === targetFirst && t[t.length - 1] === targetLast;
+          });
+          if (tokenMatches.length === 1) return tokenMatches[0].name;
+        }
+        // No safe match — leave as-is so it remains visible
+        return rawName;
+      };
+
+      for (const [room, v] of Object.entries(assignmentsObj)) {
+        if (v.md && v.md.name) v.md.name = canonicalizeName(v.md.name);
+        if (v.app && v.app.name) v.app.name = canonicalizeName(v.app.name);
+      }
+
+      // ─────────────────────────────────────────────────────────────
       // CLIENT-SIDE IDLE-FLEXIBLE BACKFILL VALIDATOR (Main pass only)
       // If any flexible MD ended with 0 rooms AND any McNair-side
       // room still has md:null, auto-assign idle flexibles to cover
@@ -2987,6 +3038,13 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         // Identify idle flexibles (0 rooms in this pass)
         const idleFlexibles = flexibleMDs.filter(f => !passRoomCount[f.name]);
 
+        // Helpers to handle the room-key format mismatch between cur (Firebase
+        // pipe format like "OTM OR|4") and assignmentsObj (model output display
+        // format like "OTM OR 4"). Either format may appear in either object,
+        // so we check both forms.
+        const fbKey = k => k.includes("|") ? k : k.replace(/\s(\d+)$/, "|$1");
+        const dispKey = k => k.includes("|") ? k.replace("|", " ") : k;
+
         // Identify overflow rooms (md:null on McNair side).
         // These are in cur where the room is McNair-side and md is null/missing,
         // AND NOT assigned by the current Main pass either.
@@ -2997,8 +3055,16 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           if (!isMcnairSide) continue;
           const hasMdInCur = v.md && v.md.name;
           if (hasMdInCur) continue;
-          const mainPassAssignment = assignmentsObj[roomKey];
-          if (mainPassAssignment && mainPassAssignment.md && mainPassAssignment.md.name) continue;
+          // Check assignmentsObj under BOTH formats — the model may have used
+          // display format while cur uses pipe format.
+          const fbForm = fbKey(roomKey);
+          const dispForm = dispKey(roomKey);
+          const mainAssignFb = assignmentsObj[fbForm];
+          const mainAssignDisp = assignmentsObj[dispForm];
+          const filled =
+            (mainAssignFb && mainAssignFb.md && mainAssignFb.md.name) ||
+            (mainAssignDisp && mainAssignDisp.md && mainAssignDisp.md.name);
+          if (filled) continue;
           overflowRooms.push(roomKey);
         }
 
@@ -3027,16 +3093,25 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
               const take = Math.min(slotsLeft, rooms.length);
               for (let i = 0; i < take; i++) {
                 const room = rooms.shift();
-                const existingApp = (assignmentsObj[room] && assignmentsObj[room].app)
-                  || (cur[room] && cur[room].app)
-                  || null;
-                assignmentsObj[room] = {
+                // Use a canonical key — prefer display format if model output
+                // already has one for this room, otherwise display format anyway.
+                const fb = fbKey(room);
+                const disp = dispKey(room);
+                const writeKey = (assignmentsObj[disp] !== undefined) ? disp : disp;
+                const existingApp =
+                  (assignmentsObj[disp] && assignmentsObj[disp].app) ||
+                  (assignmentsObj[fb] && assignmentsObj[fb].app) ||
+                  (cur[fb] && cur[fb].app) ||
+                  null;
+                // Clean up any duplicate entry under the OTHER format
+                if (writeKey !== fb) delete assignmentsObj[fb];
+                assignmentsObj[writeKey] = {
                   md: { name: flex.name, credential: flex.credential, agency: flex.agency },
                   app: existingApp,
                   notes: "Client-side backfill: auto-assigned idle flexible"
                 };
                 passRoomCount[flex.name] = (passRoomCount[flex.name] || 0) + 1;
-                autoAssignments.push({ md: flex.name, room });
+                autoAssignments.push({ md: flex.name, room: writeKey });
               }
               // flex at 3 rooms now, advance to next flex
               flexPool.shift();
@@ -3075,6 +3150,82 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
 
             // Console log so the user can see what happened
             console.log("[Client-side backfill]", autoAssignments);
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // STALE DEFICIT FLAG SCRUBBING (Main pass only)
+        // The model sometimes emits a "McNair backfill deficit: ..." flag
+        // listing rooms it then fills in the same response. Scrub any
+        // such flag: parse the room list, drop rooms that are now filled
+        // (md non-null in assignmentsObj OR cur), keep only the genuinely
+        // unfilled ones. If none remain, drop the flag entirely.
+        // ─────────────────────────────────────────────────────────────
+        const toDisplayRoom = k => k.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+        const isFilledNow = (roomDisplay) => {
+          // The model uses display format ("OTM OR 4"); cur/assignmentsObj use Firebase
+          // format ("OTM OR|4"). Try both.
+          const candidates = [roomDisplay, roomDisplay.replace(/\s(\d+)$/, "|$1")];
+          for (const k of candidates) {
+            const v = assignmentsObj[k];
+            if (v && v.md && v.md.name) return true;
+            const c = cur[k];
+            if (c && c.md && c.md.name) return true;
+          }
+          return false;
+        };
+        const scrubbedFlags = [];
+        for (const f of flagsArr) {
+          const m = f.match(/^McNair backfill deficit:\s*(.+)$/i);
+          if (!m) {
+            scrubbedFlags.push(f);
+            continue;
+          }
+          // Parse room list from the flag
+          const rooms = m[1].split(/\s*,\s*/).map(s => s.trim()).filter(Boolean);
+          const stillUnfilled = rooms.filter(r => !isFilledNow(r));
+          if (stillUnfilled.length === 0) {
+            // Whole flag is stale, drop it
+            console.log("[Stale deficit flag scrubbed - all rooms now filled]", rooms);
+            continue;
+          }
+          if (stillUnfilled.length < rooms.length) {
+            // Partial scrub
+            console.log("[Stale deficit flag scrubbed]", { original: rooms, kept: stillUnfilled });
+            scrubbedFlags.push("McNair backfill deficit: " + stillUnfilled.join(", "));
+          } else {
+            scrubbedFlags.push(f);
+          }
+        }
+        flagsArr.length = 0;
+        flagsArr.push(...scrubbedFlags);
+
+        // ─────────────────────────────────────────────────────────────
+        // FINAL ROOM-KEY DEDUP (Main pass)
+        // If both display ("McNair OR 6") and pipe ("McNair OR|6") forms
+        // of the same logical room ended up in assignmentsObj, collapse to
+        // the display form and prefer the entry with a non-null md.
+        // ─────────────────────────────────────────────────────────────
+        const seen = {};
+        for (const k of Object.keys(assignmentsObj)) {
+          const disp = dispKey(k);
+          if (!seen[disp]) seen[disp] = [];
+          seen[disp].push(k);
+        }
+        for (const [disp, keys] of Object.entries(seen)) {
+          if (keys.length < 2) continue;
+          // Multiple keys for the same logical room. Pick the one with a non-null md.
+          let winner = null;
+          for (const k of keys) {
+            const v = assignmentsObj[k];
+            if (v && v.md && v.md.name) { winner = k; break; }
+          }
+          if (!winner) winner = keys[0];
+          const winnerVal = assignmentsObj[winner];
+          for (const k of keys) delete assignmentsObj[k];
+          assignmentsObj[disp] = winnerVal;
+          if (winner !== disp) {
+            console.log("[Room-key dedup]", { collapsedFrom: keys, into: disp });
           }
         }
       }
