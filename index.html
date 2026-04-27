@@ -4058,10 +4058,19 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           if (room === "__closed" || !v || typeof v !== "object") continue;
           if ((cur.__closed || {})[room]) continue;
           const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
           const area = areaOfRoom(disp);
           if (!area) continue;
           if (v.md && v.md.name) continue;
-          // Skip if already in assignmentsObj
+          // CRITICAL: skip if room already has an MD in assignmentsObj under EITHER format.
+          // Without this, rooms the model successfully assigned (but that have no MD in cur,
+          // because cur is the state BEFORE this pass) get incorrectly redistributed and
+          // overwrite the model's assignment.
+          const existingFb = assignmentsObj[fbForm];
+          const existingDisp = assignmentsObj[disp];
+          if (existingFb && existingFb.md && existingFb.md.name) continue;
+          if (existingDisp && existingDisp.md && existingDisp.md.name) continue;
+          // Skip if already in seenRooms (handled by first loop)
           if (seenRooms.has(disp) || seenRooms.has(room)) continue;
           // Only redistribute if room has a case
           const hasCase = v.caseTime || v.surgeon || v.procedure;
