@@ -2719,7 +2719,21 @@ function onDrop(e, roomKey, slot) {
   draggingPerson = null;
   renderAdminDay(currentAdminDate);
 }
-
+function removeFromSlot(roomKey, slot) {
+  if (!currentAssignments[roomKey]) return;
+  localDirty = true;
+  if (slot.startsWith("float")) {
+    const idx = parseInt(slot.replace("float",""));
+    if (currentAssignments[roomKey]["float"]) {
+      currentAssignments[roomKey]["float"].splice(idx, 1);
+      if (currentAssignments[roomKey]["float"].length === 0) delete currentAssignments[roomKey]["float"];
+    }
+  } else {
+    delete currentAssignments[roomKey][slot];
+  }
+  if (Object.keys(currentAssignments[roomKey]).length === 0) delete currentAssignments[roomKey];
+  renderAdminDay(currentAdminDate);
+}
 async function saveAssignments() {
   if (!currentAdminDate) return;
   try {
