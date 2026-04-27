@@ -3252,6 +3252,55 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
       // the deficit. Area-first, 3-room cap.
       // ─────────────────────────────────────────────────────────────
       if (label === "Main") {
+        // ─────────────────────────────────────────────────────────────
+        // GLUCK PRE-EMPTION (Main pass, runs first)
+        //
+        // Lara/Danielle Gluck is McNair-only. The model frequently places her on
+        // Main Endo or Main OR despite the prompt rule. By the time the
+        // backfill validator runs, she's flagged as "committed to Main" and
+        // excluded from McNair backfill — wrong.
+        //
+        // Fix: scan assignmentsObj for Gluck on any Main-side room (Main OR,
+        // Main Endo, Radiology). Strip her from those rooms, leaving md:null
+        // so the cap enforcer or another flexible can fill them. Gluck then
+        // becomes available for the backfill loop to claim her for McNair.
+        // ─────────────────────────────────────────────────────────────
+        const GLUCK_NAMES = new Set(["Danielle Gluck", "Lara Gluck"]); // tolerate either form
+        const isMainSideRoom = roomKey => {
+          if (roomKey.startsWith("Main OR")) return true;
+          if (roomKey.startsWith("Main Endo")) return true;
+          if (roomKey.startsWith("NIR")) return true;
+          if (roomKey.startsWith("MRI")) return true;
+          if (roomKey.startsWith("IR ")) return true;
+          if (roomKey === "IR") return true;
+          if (roomKey.startsWith("CT")) return true;
+          if (roomKey.startsWith("RM-IR")) return true;
+          return false;
+        };
+
+        const gluckPreempted = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          if (!GLUCK_NAMES.has(v.md.name)) continue;
+          if (!isMainSideRoom(room)) continue;
+          // Gluck on a Main-side room — strip
+          const existingApp = v.app;
+          assignmentsObj[room] = {
+            md: null,
+            app: existingApp || null,
+            notes: "Gluck removed (McNair-only) - to be reassigned to McNair backfill or filled by other Main MD"
+          };
+          gluckPreempted.push({ md: v.md.name, room });
+        }
+
+        if (gluckPreempted.length > 0) {
+          const summary = gluckPreempted
+            .map(x => x.md + " from " + x.room.replace(/\|/, " "))
+            .join(" | ");
+          flagsArr.push("Client-side enforcement: Gluck pre-empted from Main side (" + summary + ")");
+          console.log("[Client-side Gluck pre-emption]", gluckPreempted);
+        }
+        // ─────────────────────────────────────────────────────────────
         const McNAIR_AREAS = ["Jamail OR", "McNair OR", "OTM OR", "OTM Endo"];
         const AREA_PRIORITY = ["Jamail OR", "McNair OR", "OTM OR", "OTM Endo"];
         const MAIN_ANCHORED = s => /^OR\s*\d+\s*-\s*MD/i.test(s);
