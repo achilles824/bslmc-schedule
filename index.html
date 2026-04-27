@@ -1965,6 +1965,17 @@ setInterval(() => {
 }, 60000);
 
 // ── ADMIN ──
+let adminUnlocked = false;
+let currentAdminDate = null;
+let currentAssignments = {};
+let draggingPerson = null;
+let staffFilterMD = true;
+let staffFilterAPP = true;
+let autoSaveInterval = null;
+let autoLockTimeout = null;
+const AUTO_LOCK_MINUTES = 30;
+let assignmentsListener = null;
+let localDirty = false;
 
 // PIN input handling
 const pinInputs = [0,1,2,3].map(i => document.getElementById("pin" + i));
