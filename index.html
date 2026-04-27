@@ -843,6 +843,10 @@
         </label>
         <span id="uploadStatus" style="font-size:13px;color:var(--muted);"></span>
       </div>
+      <div class="upload-section" id="endoTrackerPanel" style="font-size:13px;">
+        <h4 style="margin:0;">📋 Endo this week</h4>
+        <p style="color:var(--muted);font-size:12px;margin:0;">Loading...</p>
+      </div>
       <div class="room-checklist" id="roomChecklist">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
           <h4 style="margin:0;">Active Rooms Today</h4>
@@ -2094,6 +2098,16 @@ function toggleFinalize() {
   // Save finalized state to Firebase
   if (currentAdminDate) {
     window.fbSet("finalized/" + currentAdminDate, isFinalized);
+    // Endo tracker: write on finalize, clear on unfinalize
+    if (isFinalized) {
+      writeEndoTrackerForDate(currentAdminDate, currentAssignments).then(() => {
+        renderEndoTrackerPanel();
+      });
+    } else {
+      clearEndoTrackerForDate(currentAdminDate).then(() => {
+        renderEndoTrackerPanel();
+      });
+    }
   }
 }
 
@@ -2197,6 +2211,7 @@ async function loadAdminDay() {
 
   renderAdminDay(dateVal);
   loadFinalizedState(dateVal); // Update finalize button for this date
+  renderEndoTrackerPanel(); // Refresh endo tracker for the new date's week
 
   // Listen for real-time changes from other admins
   window.fbListen("assignments/" + dateVal, (data) => {
@@ -2765,7 +2780,175 @@ if (window.firebaseReady) {
 } else {
   document.addEventListener("firebaseReady", initApp);
 }
+// ==== ENDO TRACKER MODULE ====
+//
+// Tracks Main Endo + OTM Endo assignments across the work week (Mon-Fri).
+// Storage: /weeklyEndoTracking/{weekStartYYYY-MM-DD}/{date_name}
+// Idempotent: same key overwrites, never duplicates.
+// Hooked into toggleFinalize: writes on finalize, deletes on unfinalize.
 
+function mondayOfWeek(dateStr) {
+  // dateStr is YYYY-MM-DD. Returns the Monday of that ISO work week as YYYY-MM-DD.
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const dow = dt.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  // Shift back to Monday: if Sun, go back 6 days; otherwise dow-1
+  const shift = (dow === 0) ? 6 : (dow - 1);
+  dt.setDate(dt.getDate() - shift);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return yy + "-" + mm + "-" + dd;
+}
+
+function _safeKeyName(name) {
+  // Firebase keys can't contain . # $ [ ] /
+  return (name || "").replace(/[.#$\[\]\/]/g, "_");
+}
+
+function collectEndoEntries(date, assignments) {
+  // Returns array of {name, date, location, role} for every Main Endo + OTM Endo MD/APP.
+  const entries = [];
+  const seen = new Set(); // dedupe by name+location (one MD covers all 3 Main Endo rooms)
+  if (!assignments) return entries;
+
+  for (const [roomKey, slots] of Object.entries(assignments)) {
+    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
+
+    let location = null;
+    if (roomKey.startsWith("Main Endo")) location = "Main";
+    else if (roomKey.startsWith("OTM Endo")) location = "OTM";
+    if (!location) continue;
+
+    // MD
+    if (slots.md && slots.md.name) {
+      const key = slots.md.name + "|" + location + "|MD";
+      if (!seen.has(key)) {
+        seen.add(key);
+        entries.push({ name: slots.md.name, date, location, role: "MD" });
+      }
+    }
+    // APP
+    if (slots.app && slots.app.name) {
+      const key = slots.app.name + "|" + location + "|APP";
+      if (!seen.has(key)) {
+        seen.add(key);
+        entries.push({ name: slots.app.name, date, location, role: "APP" });
+      }
+    }
+  }
+  return entries;
+}
+
+async function writeEndoTrackerForDate(date, assignments) {
+  if (!date || !assignments) return;
+  const weekStart = mondayOfWeek(date);
+  const entries = collectEndoEntries(date, assignments);
+
+  // Idempotent write: clear existing entries for this date first, then write fresh
+  await clearEndoTrackerForDate(date);
+
+  for (const entry of entries) {
+    const safeName = _safeKeyName(entry.name);
+    const path = "weeklyEndoTracking/" + weekStart + "/" + date + "_" + safeName;
+    try {
+      await window.fbSet(path, entry);
+    } catch(e) {
+      console.warn("Endo tracker write failed for", entry.name, e.message);
+    }
+  }
+  console.log("[Endo tracker] wrote " + entries.length + " entries for " + date + " (week " + weekStart + ")");
+}
+
+async function clearEndoTrackerForDate(date) {
+  if (!date) return;
+  const weekStart = mondayOfWeek(date);
+  try {
+    const weekData = await window.fbGet("weeklyEndoTracking/" + weekStart);
+    if (!weekData) return;
+    // Find all keys for this date and delete
+    const keysToDelete = Object.keys(weekData).filter(k => k.startsWith(date + "_"));
+    for (const k of keysToDelete) {
+      await window.fbSet("weeklyEndoTracking/" + weekStart + "/" + k, null);
+    }
+    console.log("[Endo tracker] cleared " + keysToDelete.length + " entries for " + date);
+  } catch(e) {
+    console.warn("Endo tracker clear failed:", e.message);
+  }
+}
+
+async function fetchWeekEndoTracker(date) {
+  // Returns flat array of entries for the work week containing `date`.
+  if (!date) return [];
+  const weekStart = mondayOfWeek(date);
+  try {
+    const weekData = await window.fbGet("weeklyEndoTracking/" + weekStart);
+    if (!weekData) return [];
+    return Object.values(weekData);
+  } catch(e) {
+    console.warn("Endo tracker fetch failed:", e.message);
+    return [];
+  }
+}
+
+// Render the "Endo this week" admin panel
+async function renderEndoTrackerPanel() {
+  const panel = document.getElementById("endoTrackerPanel");
+  if (!panel || !currentAdminDate) return;
+  const entries = await fetchWeekEndoTracker(currentAdminDate);
+  const weekStart = mondayOfWeek(currentAdminDate);
+
+  // Group by date
+  const byDate = {};
+  for (const e of entries) {
+    if (!byDate[e.date]) byDate[e.date] = [];
+    byDate[e.date].push(e);
+  }
+  const sortedDates = Object.keys(byDate).sort();
+
+  let html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">';
+  html += '<h4 style="margin:0;">📋 Endo this week (week of ' + weekStart + ')</h4>';
+  html += '<button onclick="renderEndoTrackerPanel()" style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer;font-size:11px;padding:3px 8px;">Refresh</button>';
+  html += '</div>';
+
+  if (sortedDates.length === 0) {
+    html += '<p style="color:var(--muted);font-size:12px;margin:0;">No endo assignments tracked this week yet. Finalize a day to populate.</p>';
+  } else {
+    html += '<div style="display:flex;flex-direction:column;gap:10px;">';
+    for (const d of sortedDates) {
+      const dt = parseDate(d);
+      const dayLabel = DAYS_SHORT[dt.getDay()] + " " + (dt.getMonth()+1) + "/" + dt.getDate();
+      html += '<div style="border:1px solid var(--border);border-radius:6px;padding:8px 12px;">';
+      html += '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">' + dayLabel + ' &middot; ' + d + '</div>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
+      for (const e of byDate[d]) {
+        const color = e.location === "Main" ? "var(--accent)" : "var(--special)";
+        const safeName = _safeKeyName(e.name);
+        html += '<span style="display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:12px;">';
+        html += '<span style="font-size:9px;background:' + color + ';color:white;padding:1px 5px;border-radius:3px;font-weight:700;">' + e.location + ' ' + e.role + '</span>';
+        html += e.name;
+        html += '<span onclick="deleteEndoEntry(\'' + d + '\',\'' + safeName + '\')" style="cursor:pointer;color:var(--muted);font-size:14px;line-height:1;padding:0 2px;" title="Remove entry">×</span>';
+        html += '</span>';
+      }
+      html += '</div></div>';
+    }
+    html += '</div>';
+  }
+
+  panel.innerHTML = html;
+}
+
+async function deleteEndoEntry(date, safeName) {
+  const weekStart = mondayOfWeek(date);
+  if (!confirm("Remove this endo tracker entry?\n\nThis edits the manual list. Re-finalizing the day will rewrite it from current assignments.")) return;
+  try {
+    await window.fbSet("weeklyEndoTracking/" + weekStart + "/" + date + "_" + safeName, null);
+    renderEndoTrackerPanel();
+  } catch(e) {
+    alert("Failed to delete: " + e.message);
+  }
+}
+// ==== END ENDO TRACKER ====
 // ==== AI ASSIGN FEATURE ====
 let _aiAssignPlan = null;
 
@@ -2867,6 +3050,16 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
     const cur = (await assignResp.json()) || {};
     if (!apiKey || typeof apiKey !== "string") { alert("API key not found in Firebase at /config/anthropicKey"); return; }
     if (!rules || !rules.version) { alert("Assignment rules not found in Firebase at /config/assignmentRules"); return; }
+
+    // Inject live endo tracker for the current week into rules object
+    // (overrides any stale weeklyEndoTracking field that may exist in /config/assignmentRules)
+    try {
+      const liveEndoTracker = await fetchWeekEndoTracker(date);
+      rules.weeklyEndoTracking = liveEndoTracker;
+      console.log("[Endo tracker] injected " + liveEndoTracker.length + " entries into prompt for week of " + mondayOfWeek(date));
+    } catch(e) {
+      console.warn("Endo tracker injection failed, using stale value:", e.message);
+    }
 
     const closed = cur.__closed || {};
     const needs = {};
@@ -3107,7 +3300,15 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         const underCapFlexibles = flexibleMDs
           .filter(f => (passRoomCount[f.name] || 0) < 3)
           .filter(f => !flexCommittedToMain[f.name])
-          .sort((a, b) => (passRoomCount[a.name] || 0) - (passRoomCount[b.name] || 0));
+          .sort((a, b) => {
+            // Gluck-first rule: Lara Gluck is McNair-only, prioritize her for backfill
+            const aIsGluck = a.name === "Lara Gluck";
+            const bIsGluck = b.name === "Lara Gluck";
+            if (aIsGluck && !bIsGluck) return -1;
+            if (bIsGluck && !aIsGluck) return 1;
+            // Otherwise sort by who has the fewest rooms in this pass
+            return (passRoomCount[a.name] || 0) - (passRoomCount[b.name] || 0);
+          });
 
         // Helpers to handle the room-key format mismatch between cur (Firebase
         // pipe format like "OTM OR|4") and assignmentsObj (model output display
@@ -4944,12 +5145,22 @@ MANDATORY ROOMS (always staffed): Main OR 10, OR 15. Add if missing from roomsNe
 - D12 flexibles: can absorb late-start.
 - D8 flexibles: cannot absorb late-start.
 
-### ODD-COUNT RULE
-If non-late-start Main OR count is odd, exactly ONE Main MD has 1 room. Preference:
-1. Charge MD (preferred)
-2. Any Main-anchored or Main-assigned flexible
+### ODD-COUNT RULE (revised — surplus-gated)
 
-No other single-room Main MDs allowed.
+Charge MD takes 1 Main OR room ONLY when BOTH conditions hold:
+(a) Main OR non-late-start count (M − M_LATE) is ODD, AND
+(b) Main MD supply is SUFFICIENT — i.e., every OTHER Main MD can stay at ≤ 2 non-late-start rooms.
+
+To compute (b):
+- non_late_main = M − M_LATE
+- main_md_count = count of Main-anchored MDs + Main-assigned flexibles, EXCLUDING the Main Endo MD and Radiology MD
+- needed_at_2 = ceil(non_late_main / 2)
+- SURPLUS = (main_md_count >= needed_at_2)
+
+Rules:
+- non_late_main is ODD AND SURPLUS = TRUE → Charge takes 1 room. All other Main MDs take 2 (or 3 if absorbing a late-start). This is the ONLY single-room Main MD permitted.
+- non_late_main is ODD AND SURPLUS = FALSE → Charge takes 2 rooms like everyone else. The odd room goes to an available flexible MD as a 1-room assignment. If no flexible is available, leave it md:null and emit flag "Main OR odd-count and MD-tight: room [X] unassigned".
+- non_late_main is EVEN → no single-room Main MD permitted. Every Main MD takes 2 (or 3 with late-start absorption). A single-room Main MD on an even day is a VIOLATION, redistribute.
 
 ---
 
@@ -4972,7 +5183,15 @@ Flexible MDs who are:
 - Not Main-anchored (Main-anchored MDs stay at Main)
 
 Note: a flexible who took 2 Main OR rooms has 1 slot left (cap = 3). A flexible who took 3 Main OR rooms is capped, cannot backfill.
+### Gluck priority rule (read before backfill procedure)
 
+Lara Gluck is a McNair-only locum MD. If "Lara Gluck" appears in staffSummary AND is NOT in currentAssignments, she is dedicated to McNair backfill BEFORE any other flexible:
+- She gets ZERO Main-side rooms (Main OR, Main Endo, Radiology). Never assign her to a Main room on this pass.
+- She is the FIRST flexible reached for any McNair-side overflow.
+- She gets up to 3 McNair-side rooms following the area-first priority below.
+- Even if Main has unfilled rooms and Gluck would help, she stays McNair-only. Other flexibles cover Main.
+
+Treat Gluck as if she were a McNair-anchored MD for backfill purposes. She is not interchangeable with other flexibles.
 ### Backfill procedure (AREA-FIRST, exhaust all flexibles before declaring deficit)
 
 1. Group overflow rooms by area: {Jamail OR: [...], McNair OR: [...], OTM OR: [...], OTM Endo: [...]}.
@@ -5124,7 +5343,7 @@ Write WORK block AFTER all assignments final. Count actual rooms per MD. Narrati
 
 "APP_VERDICT_MAIN: SURPLUS | EXACT | DEFICIT"
 
-"ODD_COUNT_MAIN: non-late-start count = X. Single-room MD: [name or N/A]"
+"ODD_COUNT_MAIN: non-late-start = X (ODD/EVEN). main_md_count = X. needed_at_2 = X. SURPLUS = TRUE/FALSE. Single-room MD: [Charge name | flexible name | N/A]"
 
 "CLAIMED_FLEXIBLES: [names of flexibles assigned on this pass, or NONE]"
 
