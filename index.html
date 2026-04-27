@@ -2979,9 +2979,7 @@ async function getStaffForDate(dateStr) {
 // Render the "Endo this week" admin panel
 async function renderEndoTrackerPanel() {
   const panel = document.getElementById("endoTrackerPanel");
-  if (!panel) {
-    return;
-  }
+  if (!panel) return;
   
   const adminDate = document.getElementById("adminDatePicker")?.value;
   if (!adminDate) {
@@ -3000,106 +2998,78 @@ async function renderEndoTrackerPanel() {
     return;
   }
   
-  // Group entries by date
-  const byDate = {};
-  for (const [key, entry] of Object.entries(weekData || {})) {
-    if (!entry || !entry.date || !entry.name) continue;
-    (byDate[entry.date] = byDate[entry.date] || []).push(entry);
+  // Group entries by name (one row per person, with all their endo days)
+  // Separate into MD and APP buckets
+  const mdMap = {}; // name -> { dates: Set, role: "MD" }
+  const appMap = {}; // name -> { dates: Set, role: "APP" }
+  for (const entry of Object.values(weekData || {})) {
+    if (!entry || !entry.name || !entry.date) continue;
+    const bucket = (entry.role === "MD") ? mdMap : appMap;
+    if (!bucket[entry.name]) bucket[entry.name] = { dates: new Set(), locations: new Set() };
+    bucket[entry.name].dates.add(entry.date);
+    if (entry.location) bucket[entry.name].locations.add(entry.location);
   }
   
-  // Build the per-date entries section (existing)
-  const dates = Object.keys(byDate).sort();
-  let entriesHtml = "";
-  if (dates.length === 0) {
-    entriesHtml = `<div style="color:#666;font-style:italic;padding:8px;">No endo assignments tracked this week yet. Finalize a day to populate.</div>`;
-  } else {
-    entriesHtml = dates.map(d => {
-      const entries = byDate[d];
-      const chips = entries.map(e => {
-        const color = e.location === "Main" ? "#1565c0" : "#6a1b9a";
-        const bg = e.location === "Main" ? "#e3f2fd" : "#f3e5f5";
-        return `<span style="display:inline-block;padding:3px 8px;margin:2px;background:${bg};color:${color};border-radius:12px;font-size:12px;border:1px solid ${color}33;">
-          ${e.name} <small>(${e.role}-${e.location})</small>
-          <span style="cursor:pointer;margin-left:4px;color:#999;" onclick="deleteEndoEntry('${e.date}','${e.name.replace(/'/g, "\\'")}')">×</span>
-        </span>`;
-      }).join("");
-      return `<div style="margin:8px 0;"><strong style="display:inline-block;width:100px;">${d}:</strong> ${chips}</div>`;
-    }).join("");
-  }
+  // Day-of-week abbreviations for display
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const formatDates = (dateSet) => {
+    const arr = [...dateSet].sort();
+    return arr.map(d => {
+      // d is "YYYY-MM-DD" — parse it as local date
+      const [y, m, day] = d.split("-").map(Number);
+      const dt = new Date(y, m - 1, day);
+      return DOW[dt.getDay()];
+    }).join(", ");
+  };
   
-  // ─────────────────────────────────────────────────────────────
-  // NEW: Who hasn't done endo this week?
-  //
-  // Cross-reference today's working staff against the week's endo entries.
-  // Lists MDs and APPs who are working today but have NOT appeared in any
-  // endo room this week.
-  // ─────────────────────────────────────────────────────────────
-  let noEndoHtml = "";
-  try {
-    // Get today's working staff. Try the cached snapshot first, fall back to
-    // computing from staffSnapshot in admin form.
-    const dayStaff = await getStaffForDate(adminDate);
-    
-    if (dayStaff && dayStaff.length > 0) {
-      // Names that have done endo this week
-      const endoNamesThisWeek = new Set();
-      for (const entry of Object.values(weekData || {})) {
-        if (entry && entry.name) endoNamesThisWeek.add(entry.name);
-      }
-      
-      // Split today's staff into MD / APP buckets, exclude those in endo this week
-      const mdsNoEndo = [];
-      const appsNoEndo = [];
-      for (const s of dayStaff) {
-        if (!s.name) continue;
-        if (endoNamesThisWeek.has(s.name)) continue;
-        // Only include working staff (skip Off, vacation, etc.)
-        const shift = (s.shift || "").toLowerCase();
-        if (/\boff\b|vacation|holiday|sick/i.test(shift)) continue;
-        if (s.credential === "MD") mdsNoEndo.push(s.name);
-        else if (s.credential === "APP" || s.credential === "CRNA" || s.credential === "AA") appsNoEndo.push(s.name);
-      }
-      
-      mdsNoEndo.sort();
-      appsNoEndo.sort();
-      
-      const mdLine = mdsNoEndo.length > 0
-        ? mdsNoEndo.join(", ")
-        : "<em style='color:#999;'>(all working MDs have done endo this week)</em>";
-      const appLine = appsNoEndo.length > 0
-        ? appsNoEndo.join(", ")
-        : "<em style='color:#999;'>(all working APPs have done endo this week)</em>";
-      
-      noEndoHtml = `
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #ddd;">
-          <div style="font-weight:600;margin-bottom:8px;color:#333;">No endo this week (working ${adminDate}):</div>
-          <div style="margin:6px 0;font-size:13px;"><strong style="color:#1565c0;">MDs (${mdsNoEndo.length}):</strong> ${mdLine}</div>
-          <div style="margin:6px 0;font-size:13px;"><strong style="color:#6a1b9a;">APPs (${appsNoEndo.length}):</strong> ${appLine}</div>
-        </div>
-      `;
-    } else {
-      noEndoHtml = `
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #ddd;color:#999;font-style:italic;font-size:13px;">
-          No staff loaded for ${adminDate}. Upload schedule or load day to see endo gaps.
-        </div>
-      `;
+  // Build a column for each role
+  const buildColumn = (map, label, color, bgColor) => {
+    const names = Object.keys(map).sort();
+    if (names.length === 0) {
+      return `<div style="flex:1;min-width:200px;">
+        <div style="font-weight:600;color:${color};margin-bottom:8px;font-size:13px;">${label} (0)</div>
+        <div style="color:#999;font-style:italic;font-size:12px;">None this week</div>
+      </div>`;
     }
-  } catch (err) {
-    noEndoHtml = `
-      <div style="margin-top:16px;padding-top:12px;border-top:1px solid #ddd;color:#c00;font-size:13px;">
-        Could not compute endo gaps: ${err.message}
-      </div>
-    `;
-  }
+    const rows = names.map(n => {
+      const data = map[n];
+      const days = formatDates(data.dates);
+      const locs = [...data.locations].join("/");
+      return `<div style="margin:4px 0;font-size:12px;display:flex;justify-content:space-between;gap:8px;padding:3px 6px;background:${bgColor};border-radius:4px;">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${n}</span>
+        <span style="color:${color};font-weight:600;white-space:nowrap;">${days}${locs ? ` <small style="opacity:0.7;font-weight:400;">(${locs})</small>` : ""}</span>
+      </div>`;
+    }).join("");
+    return `<div style="flex:1;min-width:200px;">
+      <div style="font-weight:600;color:${color};margin-bottom:8px;font-size:13px;">${label} (${names.length})</div>
+      ${rows}
+    </div>`;
+  };
+  
+  const mdColumn = buildColumn(mdMap, "MDs", "#1565c0", "#e3f2fd");
+  const appColumn = buildColumn(appMap, "APPs", "#6a1b9a", "#f3e5f5");
+  
+  const totalCount = Object.keys(mdMap).length + Object.keys(appMap).length;
+  
+  // Preserve open/closed state across re-renders
+  if (typeof window._endoPanelOpen === "undefined") window._endoPanelOpen = false;
+  const isOpen = window._endoPanelOpen;
   
   panel.innerHTML = `
-    <div style="border:1px solid #d0d0d0;background:#fafafa;border-radius:6px;padding:14px;margin:12px 0;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <strong style="font-size:14px;">📋 Endo this week (week of ${weekKey})</strong>
-        <button onclick="renderEndoTrackerPanel()" style="font-size:12px;padding:4px 10px;cursor:pointer;">Refresh</button>
+    <div style="border:1px solid #d0d0d0;background:#fafafa;border-radius:6px;margin:12px 0;">
+      <div style="padding:10px 14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none;" 
+           onclick="window._endoPanelOpen = !window._endoPanelOpen; renderEndoTrackerPanel();">
+        <strong style="font-size:14px;">📋 Endo this week (week of ${weekKey}) — ${totalCount} ${totalCount === 1 ? "person" : "people"}</strong>
+        <span style="font-size:12px;color:#666;">${isOpen ? "▼ collapse" : "▶ expand"}</span>
       </div>
-      ${entriesHtml}
-      ${noEndoHtml}
+      ${isOpen ? `
+        <div style="padding:0 14px 14px 14px;border-top:1px solid #e0e0e0;">
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;">
+            ${mdColumn}
+            ${appColumn}
+          </div>
+        </div>
+      ` : ""}
     </div>
   `;
 }
