@@ -1433,6 +1433,25 @@ function showStaffingView() {
     totalSites += count;
     sitesHtml += `<div class="site-card"><div class="site-count">${count}</div><div class="site-name">${site}</div></div>`;
   });
+  // MD Surplus calculation
+const mainOR = siteDay["Main OR"] || 0;
+const otmOR = siteDay["OTM OR"] || 0;
+const otmEndo = siteDay["OTM Endo"] || 0;
+const mcnairOR = siteDay["McNair OR"] || 0;
+const ir = siteDay["IR"] || 0;
+const mainEndo = siteDay["Main Endo"] || 0;
+const jamail = siteDay["Jamail"] || 0;
+
+const mdNeeded = Math.ceil(mainOR / 2)
+  + (ir > 0 ? 1 : 0)
+  + (mainEndo > 0 ? 1 : 0)
+  + Math.ceil(otmOR / 3)
+  + Math.ceil(otmEndo / 3)
+  + Math.ceil(mcnairOR / 3)
+  + (jamail > 0 ? 1 : 0);
+
+const mdGap = orMD - mdNeeded;
+const mdGapClass = mdGap > 0 ? "gap-pos" : mdGap < 0 ? "gap-neg" : "gap-zero";
   // Add any extra sites not in standard order
   Object.entries(siteDay).forEach(([site, count]) => {
     if (!siteOrder.includes(site)) {
@@ -1455,20 +1474,24 @@ function showStaffingView() {
           <div style="color:var(--muted);font-size:13px;margin-top:4px;">${DAYS[dt.getDay()]}</div>
         </div>
         <div class="staffing-stats">
-          <div class="staffing-stat">
-            <div class="s-val ${appGapColor}">${appGap > 0 ? "+" : ""}${appGap}</div>
-            <div class="s-label">APP Surplus</div>
-          </div>
-          <div class="staffing-stat" style="padding-left:16px;border-left:1px solid var(--border);">
-            <div class="s-val sites-color">${totalSites}</div><div class="s-label">Total Sites</div>
-          </div>
-          <div class="staffing-stat">
-            <div class="s-val md-color">${orMD}</div><div class="s-label">OR MDs</div>
-          </div>
-          <div class="staffing-stat">
-            <div class="s-val app-color">${orAPP}</div><div class="s-label">OR APPs</div>
-          </div>
-        </div>
+  <div class="staffing-stat">
+    <div class="s-val ${mdGapClass}">${mdGap > 0 ? "+" : ""}${mdGap}</div>
+    <div class="s-label">MD Surplus</div>
+  </div>
+  <div class="staffing-stat">
+    <div class="s-val ${appGapColor}">${appGap > 0 ? "+" : ""}${appGap}</div>
+    <div class="s-label">APP Surplus</div>
+  </div>
+  <div class="staffing-stat" style="padding-left:16px;border-left:1px solid var(--border);">
+    <div class="s-val sites-color">${totalSites}</div><div class="s-label">Total Sites</div>
+  </div>
+  <div class="staffing-stat">
+    <div class="s-val md-color">${orMD}</div><div class="s-label">OR MDs</div>
+  </div>
+  <div class="staffing-stat">
+    <div class="s-val app-color">${orAPP}</div><div class="s-label">OR APPs</div>
+  </div>
+</div>
       </div>
       <div class="sites-grid">${sitesHtml}</div>
     </div>`;
