@@ -1,111 +1,93 @@
+// parse-schedule v11 - Cloudflare Pages Function for new PDF format with "Location" column
+
 export async function onRequestPost(context) {
   const apiKey = context.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY not set" }), { status: 500 });
+    return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY not set" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
   let pages, batchIndex;
   try {
     const body = await context.request.json();
     pages = body.pages;
-    batchIndex = body.batchIndex || 0;
+    batchIndex = body.batchIndex ?? 0;
     if (!pages || !pages.length) throw new Error("No pages provided");
-  } catch(e) {
-    return new Response(JSON.stringify({ error: "Bad request: " + e.message }), { status: 400 });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: "Bad request: " + e.message }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
-  const content = pages.map(b64 => ({
-    type: "image",
-    source: { type: "base64", media_type: "image/jpeg", data: b64 }
-  }));
+  const totalSize = pages.reduce((s, p) => s + p.length, 0);
+  console.log(`Batch ${batchIndex}: ${pages.length} pages, size: ${Math.round(totalSize / 1024)}KB`);
 
-  content.push({
-    type: "text",
-    text: `This is an Epic OR surgery schedule. It has "Room" and "Pt Dept" columns.
+  const promptText = `Extract every staffed OR room from this hospital surgery schedule. Each row has columns: Location, Room, Time, Length, Procedures, Anes Type, Providers. The Location column text wraps across multiple lines but you can read it.
 
-IMPORTANT: There are TWO separate physical hospitals with rooms that share the same numbers.
-The Pt Dept column tells you which hospital each case belongs to. Read it carefully for EVERY row.
+Use the Location column to determine the room prefix. Apply this mapping:
 
-HOSPITAL MAPPING — determined ONLY by Pt Dept:
+- Location contains "SLEH" with "OR" (e.g. "SLEH OR") → Main OR
+  Examples: "OR 02" → "Main OR 2", "OR 17" → "Main OR 17", "OR 25" → "Main OR 25"
+  Special rooms at SLEH: "RM-IR MRI" → "MRI", "RM-IR General 1" → "IR 1", "RM-IR Neuro 1" → "NIR 1"
 
-1. Pt Dept contains "BSLMC OPSC" → JAMAIL OR (different hospital from Main OR)
-   - Room "OR 1" with BSLMC OPSC → return "Jamail OR 1"
-   - Room "OR 2" with BSLMC OPSC → return "Jamail OR 2"
-   - Room "OR 3" with BSLMC OPSC → return "Jamail OR 3"
-   - NEVER return a BSLMC OPSC room as "Main OR". Always prefix with "Jamail".
+- Location contains "SLEH" with "ENDO" (e.g. "SLEH ENDO") → Main Endo
+  Example: "ENDO 02" → "Main Endo 2"
 
-2. Pt Dept contains "SLEH PERIOPERATIVE" → MAIN OR (St. Luke's Episcopal Hospital)
-   - Room "OR 1" with SLEH → return "OR 01" (as-is, it becomes Main OR 1)
-   - Room "OR 3" with SLEH → return "OR 03" (as-is, it becomes Main OR 3)
-   - Room "OR 16" with SLEH → return "OR 16"
-   - NEVER prefix SLEH rooms with "Jamail".
-   - Plain "OR N" (no prefix) should ONLY be returned for SLEH PERIOPERATIVE rooms.
-   - If the dept is NOT SLEH, do NOT return a plain "OR N" — use the correct prefix.
+- Location contains "BSLMC OPSC" → Jamail OR
+  Examples: "OR 1" → "Jamail OR 1", "OR 2" → "Jamail OR 2", "OR 5" → "Jamail OR 5"
+  Skip rows where Room is "YAG" (laser room, not staffed).
 
-3. Pt Dept contains "BSLMC MCNAIR OR PERIOPERATIVE" → McNair OR
-   - Return room as-is: "Mc OR 1", "Mc OR 3"
-   - CRITICAL: McNair rooms in Epic show as "Mc OR 1", "Mc OR 2" etc.
-   - NEVER return a McNair room as plain "OR 1" or "OR 2" — always keep the "Mc OR" prefix
-   - If you see a room labeled just "OR 1" with BSLMC MCNAIR dept, return it as "Mc OR 1"
+- Location contains "BSLMC MCNAIR" → McNair OR
+  Examples: "Mc OR 1" → "McNair OR 1", "Mc OR 7" → "McNair OR 7"
 
-4. Pt Dept contains "BSLMC OTM PERIOPERATIVE" → OTM OR
-   - Return room as-is: "OTM OR 5", "OTM OR 11"
+- Location contains "BSLMC OTM" with "OR" (e.g. "BSLMC OTM OR") → OTM OR
+  Examples: "OTM OR 2" → "OTM OR 2", "OTM OR 12" → "OTM OR 12"
 
-5. Pt Dept contains "BSLMC OTM ENDOSCOPY" + mixed-case room "Endo 01" → return "Endo 01"
+- Location contains "BSLMC OTM" with "ENDO" (e.g. "BSLMC OTM ENDO") → OTM Endo
+  Examples: "Endo 02" → "OTM Endo 2", "Endo 10" → "OTM Endo 10"
+  Skip rows where Room is "Motility 1" or "OTM Rad Mod Sedation".
 
-6. Pt Dept contains "SLEH ENDOSCOPY" + ALL-CAPS room "ENDO 01" → return "ENDO 01"
+The same room number can exist at two hospitals on the same day (for example, OR 2 at SLEH is "Main OR 2" while OR 2 at BSLMC OPSC is "Jamail OR 2"). Both should be returned. The Location column is what distinguishes them.
 
-7. NIR / Neuro IR rooms → return "NIR 1" or "NIR 2"
-   - Room may appear as "RM-IR Neuro 1", "NIR 1", "Neuro IR 1", or similar
-   - Always return as "NIR 1" or "NIR 2"
+Skip rows where Providers is "Virtual, Surgeon" UNLESS:
+- Room is "RM-IR MRI" (always include MRI), OR
+- Anes Type is "General" (a real case staffed by anesthesia, return surgeon as "Unknown")
 
-8. IR / General IR rooms → return "IR 1" or "IR 2"
-   - Room may appear as "RM-IR General 1", "IR 1", or similar
-   - Always return as "IR 1" or "IR 2"
+Skip rows with Room "Rad Mod Sedation" or "OTM Rad Mod Sedation".
 
-9. MRI room → return "MRI"
-   - Room may appear as "RM-IR MRI" or "MRI"
+Output ONLY a JSON object — no preamble, no commentary, no markdown. Start with { and end with }. Format:
+{
+  "rooms": {
+    "Main OR 17": { "surgeon": "Coye", "procedure": "GRAFT SKIN", "time": "08:00" },
+    "Jamail OR 2": { "surgeon": "Chancellor", "procedure": "VITRECTOMY", "time": "07:15" }
+  }
+}
 
-SPECIAL UNCONDITIONAL RULES - NEVER skip these rooms regardless of provider or anes type:
-- Room contains "MRI" or "RM-IR MRI" → ALWAYS include, return as "MRI" with surgeon "Unknown"
-- Room contains "RM-IR General" or starts with "IR " or equals "IR 1" or "IR 2" → ALWAYS include, return as "IR 1" or "IR 2"
-- Room contains "RM-IR Neuro" or "NIR" → ALWAYS include, return as "NIR 1" or "NIR 2"
-- Room contains "CT" (as a standalone room name, not part of another word) → ALWAYS include, return as "CT"
-- Do NOT skip ANY radiology room (IR, NIR, CT, MRI) even if Providers says "Virtual, Surgeon" or anes type is "Moderate Sedation"
-- For all radiology rooms with "Virtual, Surgeon" as provider, use surgeon "Unknown"
+For surgeon: use only the LAST NAME. For procedure: short 2-4 word description (keep these brief to save space). For time: convert "0730" to "07:30". If a room appears in multiple rows, return the EARLIEST time.
 
-SKIP RULES — skip a row entirely if ALL of these are true:
-- Providers column says "Virtual, Surgeon"
-- AND the Anes. Type column does NOT say "General" (Moderate Sedation, NA, etc. → skip)
-- AND the Room is not an MRI room
+Be thorough. Return EVERY room from EVERY row, including all SLEH OR rooms (Main OR cases) and all OTM Endo rooms.`;
 
-In other words:
-- "Virtual, Surgeon" + "Moderate Sedation" → SKIP
-- "Virtual, Surgeon" + "NA" → SKIP  
-- "Virtual, Surgeon" + "General" → INCLUDE
-- "Virtual, Surgeon" + "General" on any room → INCLUDE
-
-Also always skip regardless of anes type:
-- Rows where Room column says "Motility" or "Rad Mod Sedation" or "OTM Rad Mod Sedation"
-- ICU rows
-
-EXAMPLES of rows that MUST be included (Virtual/Surgeon + General anesthesia):
-  Room: RM-IR MRI, Anes Type: General, Providers: Virtual, Surgeon → return as "MRI", surgeon "Unknown"
-  Room: RM-IR Neuro 1, Anes Type: General, Providers: Virtual, Surgeon → return as "NIR 1", surgeon "Unknown"
-  Room: RM-IR General 1, Anes Type: General, Providers: Virtual, Surgeon → return as "IR 1", surgeon "Unknown"
-  Room: RM-IR Neuro 2, Anes Type: General, Providers: Virtual, Surgeon → return as "NIR 2", surgeon "Unknown"
-  Room: RM-IR General 2, Anes Type: General, Providers: Virtual, Surgeon → return as "IR 2", surgeon "Unknown"
-
-For each unique room (first occurrence only), return:
-- surgeon: last name from Providers column (or "Unknown" if Virtual/Surgeon)
-- procedure: first procedure, max 40 chars
-- time: start time formatted HH:MM (e.g. "07:30"). Time column shows "073 0" = 07:30, "130 0" = 13:00.
-
-CRITICAL: Return ONLY the raw JSON object. Do not explain, do not reason, do not write any text before or after the JSON. Start your response with { and end with }. No markdown, no preamble:
-{"rooms":{"OR 04":{"surgeon":"Lerner","procedure":"NEPHRECTOMY","time":"07:30"},"Jamail OR 2":{"surgeon":"Weng","procedure":"REPAIR RETINAL DETACHMENT","time":"09:30"}}}`
-  });
+  // Build content array: prompt text first, then images
+  const content = [{ type: "text", text: promptText }];
+  for (const b64 of pages) {
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: b64 }
+    });
+  }
 
   try {
+    const reqBody = JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 8000,
+      messages: [{ role: "user", content }]
+    });
+
+    console.log(`Batch ${batchIndex}: sending request, body size ${Math.round(reqBody.length / 1024)}KB`);
+
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -113,33 +95,86 @@ CRITICAL: Return ONLY the raw JSON object. Do not explain, do not reason, do not
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01"
       },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000, messages: [{ role: "user", content }] })
+      body: reqBody
     });
 
     const result = await response.json();
+    console.log(`Batch ${batchIndex}: Anthropic response status ${response.status}, stop_reason=${result.stop_reason}, output_tokens=${result.usage?.output_tokens}`);
 
     if (result.error) {
-      return new Response(JSON.stringify({ error: result.error.message }), { status: 500 });
+      console.error(`Batch ${batchIndex}: Anthropic error:`, result.error.message);
+      return new Response(JSON.stringify({ error: result.error.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (result.stop_reason === "max_tokens") {
+      console.error(`Batch ${batchIndex}: TRUNCATED — hit max_tokens. Will attempt salvage.`);
     }
 
     const responseText = result.content[0].text.trim();
+
+    // Extract JSON: strip code fences, find outermost braces
     let raw = responseText.replace(/```json|```/g, "").trim();
-    if (!raw.startsWith("{")) {
-      const jsonStart = raw.indexOf("{");
-      const jsonEnd = raw.lastIndexOf("}");
-      if (jsonStart !== -1 && jsonEnd !== -1) {
-        raw = raw.slice(jsonStart, jsonEnd + 1);
+    const firstBrace = raw.indexOf("{");
+    const lastBrace = raw.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      raw = raw.slice(firstBrace, lastBrace + 1);
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (parseErr) {
+      console.error(`Batch ${batchIndex}: JSON parse failed:`, parseErr.message);
+      console.error(`Batch ${batchIndex}: raw start:`, responseText.substring(0, 300));
+      console.error(`Batch ${batchIndex}: raw end:`, responseText.substring(Math.max(0, responseText.length - 300)));
+
+      // SALVAGE: regex-extract any complete room entries from a truncated JSON
+      const salvaged = {};
+      const roomRegex = /"([^"]+?)"\s*:\s*\{\s*"surgeon"\s*:\s*"([^"]*)"\s*,\s*"procedure"\s*:\s*"([^"]*)"\s*,\s*"time"\s*:\s*"([^"]*)"\s*\}/g;
+      let m;
+      while ((m = roomRegex.exec(raw)) !== null) {
+        salvaged[m[1]] = { surgeon: m[2], procedure: m[3], time: m[4] };
+      }
+      if (Object.keys(salvaged).length > 0) {
+        console.log(`Batch ${batchIndex}: salvaged ${Object.keys(salvaged).length} rooms from truncated response`);
+        parsed = { rooms: salvaged };
+      } else {
+        return new Response(JSON.stringify({ error: "Could not parse AI response", raw: responseText.substring(0, 500) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" }
+        });
       }
     }
 
-    const parsed = JSON.parse(raw);
+    const rooms = parsed.rooms || {};
 
-    return new Response(JSON.stringify(parsed), {
+    // Safety net: drop any plain "OR N" entries with no hospital prefix
+    const cleaned = {};
+    let droppedCount = 0;
+    for (const [name, info] of Object.entries(rooms)) {
+      if (/^OR\s*\d+$/i.test(name.trim())) {
+        console.log(`Batch ${batchIndex}: DROPPED unprefixed "${name}"`);
+        droppedCount++;
+        continue;
+      }
+      cleaned[name] = info;
+    }
+
+    console.log(`Batch ${batchIndex}: returning ${Object.keys(cleaned).length} rooms (dropped ${droppedCount}). Keys: ${Object.keys(cleaned).join(", ")}`);
+
+    return new Response(JSON.stringify({ rooms: cleaned }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
 
-  } catch(e) {
-    return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+  } catch (e) {
+    console.error("Function error:", e.message, e.stack);
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 }
