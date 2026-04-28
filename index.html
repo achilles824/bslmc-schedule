@@ -1701,47 +1701,73 @@ function loadPdfJs() {
   });
 }
 
+// REPLACE the existing normalizeRoomName function in index.html with this version.
+// Find the existing `function normalizeRoomName(raw) { ... }` and replace it entirely.
+//
+// This version is the second line of defense — the parse-schedule.js function
+// now does most of the work and returns properly prefixed names. This client-side
+// function should mostly just return whatever Claude sent unchanged, but it still
+// handles a few legacy/raw formats just in case.
+
 function normalizeRoomName(raw) {
-  raw = raw.trim();
-  // OTM OR - handled below after Endo checks
-  let m;
-  // McNair / Mc OR
-  m = raw.match(/^Mc(?:Nair)?\s*OR\s*(\d{1,2})/i);
-  if (m) return "McNair OR " + parseInt(m[1]);
-  // Jamail
-  m = raw.match(/^Jamail\s*(?:OR\s*)?(\d{1,2})/i);
-  if (m) return "Jamail OR " + parseInt(m[1]);
-  // Main OR: plain "OR N" or "OR04" (with/without space, with/without leading zero)
-  m = raw.match(/^OR\s*(\d{1,2})/i);
-  if (m) return "Main OR " + parseInt(m[1]);
-  // OTM Endo
-  m = raw.match(/^OTM\s+Endo\s*(\d{1,2})/i);
-  if (m) return "OTM Endo " + parseInt(m[1]);
-  // ENDO (uppercase) = Main Endo (SLEH), Endo (mixed) = OTM Endo (BSLMC OTM)
-  m = raw.match(/^ENDO\s*(\d{1,2})$/);
-  if (m) return "Main Endo " + parseInt(m[1]);
-  m = raw.match(/^Endo\s*(\d{1,2})$/i);
-  if (m) return "OTM Endo " + parseInt(m[1]);
-  // OTM OR with space: "OTM OR 11"
-  m = raw.match(/^OTM\s*OR\s*(\d{1,2})$/i);
-  if (m) return "OTM OR " + parseInt(m[1]);
-  // OTM IR
-  m = raw.match(/^OTM\s+IR\s*(\d)/i);
-  if (m) return "OTM IR " + parseInt(m[1]);
-  // RM-IR General N → IR N
-  m = raw.match(/^RM-IR\s+General\s*(\d)/i);
-  if (m) return "IR " + parseInt(m[1]);
-  // RM-IR Neuro N → NIR N
-  m = raw.match(/^RM-IR\s+Neuro\s*(\d)/i);
-  if (m) return "NIR " + parseInt(m[1]);
-  // IR
-  m = raw.match(/^IR\s+(\d)/i);
-  if (m) return "IR " + parseInt(m[1]);
-  // NIR
-  m = raw.match(/^NIR\s*(\d)/i);
-  if (m) return "NIR " + parseInt(m[1]);
-  if (/MRI/i.test(raw)) return "MRI";
-  if (/^CT$/i.test(raw)) return "CT";
+  if (!raw) return null;
+  const s = String(raw).trim();
+
+  // ---- Already correctly-prefixed names: pass through with cleanup ----
+
+  // Main OR — accept "Main OR N" or "Main OR 0N"
+  let m = s.match(/^Main\s*OR\s*0*(\d{1,2})$/i);
+  if (m) return `Main OR ${parseInt(m[1], 10)}`;
+
+  // Jamail OR — accept "Jamail OR N" or "Jamail OR 0N"
+  m = s.match(/^Jamail\s*OR\s*0*(\d{1,2})$/i);
+  if (m) return `Jamail OR ${parseInt(m[1], 10)}`;
+
+  // McNair OR — accept "McNair OR N" or "Mc OR N" or "McOR N" or "McORN"
+  m = s.match(/^Mc(?:Nair)?\s*OR\s*0*(\d{1,2})$/i);
+  if (m) return `McNair OR ${parseInt(m[1], 10)}`;
+
+  // OTM OR — accept "OTM OR N", "OTMOR N", "OTM OR0N"
+  m = s.match(/^OTM\s*OR\s*0*(\d{1,2})$/i);
+  if (m) return `OTM OR ${parseInt(m[1], 10)}`;
+
+  // OTM Endo — accept "OTM Endo N", "OTM ENDO N"
+  m = s.match(/^OTM\s*Endo\s*0*(\d{1,2})$/i);
+  if (m) return `OTM Endo ${parseInt(m[1], 10)}`;
+
+  // Main Endo — accept "Main Endo N"
+  m = s.match(/^Main\s*Endo\s*0*(\d{1,2})$/i);
+  if (m) return `Main Endo ${parseInt(m[1], 10)}`;
+
+  // NIR — accept "NIR N", "NIR0N", "RM-IR Neuro N"
+  m = s.match(/^NIR\s*0*(\d{1,2})$/i);
+  if (m) return `NIR ${parseInt(m[1], 10)}`;
+  m = s.match(/^RM-?IR\s*Neuro\s*0*(\d{1,2})$/i);
+  if (m) return `NIR ${parseInt(m[1], 10)}`;
+
+  // IR — accept "IR N", "RM-IR General N"
+  m = s.match(/^IR\s*0*(\d{1,2})$/i);
+  if (m) return `IR ${parseInt(m[1], 10)}`;
+  m = s.match(/^RM-?IR\s*General\s*0*(\d{1,2})$/i);
+  if (m) return `IR ${parseInt(m[1], 10)}`;
+
+  // MRI — accept "MRI" or "RM-IR MRI"
+  if (/MRI/i.test(s) && !/General|Neuro/i.test(s)) return "MRI";
+
+  // CT — accept "CT" or "RM-IR CT"
+  if (/^(?:RM-?IR\s*)?CT\b/i.test(s)) return "CT";
+
+  // ---- DO NOT accept plain "OR N" without a prefix ----
+  // The new parse-schedule.js explicitly forbids returning unprefixed "OR N"
+  // because the same number can mean different rooms. If we receive one here,
+  // it's ambiguous and should be dropped rather than guessed.
+  if (/^OR\s*\d+$/i.test(s)) {
+    console.warn(`normalizeRoomName: dropping ambiguous unprefixed "${s}"`);
+    return null;
+  }
+
+  // Unknown format — log it so we can add a rule
+  console.warn(`normalizeRoomName: unrecognized "${s}"`);
   return null;
 }
 
