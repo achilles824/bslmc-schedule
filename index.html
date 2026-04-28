@@ -4414,6 +4414,111 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           flagsArr.length = 0;
           flagsArr.push(...cleanedFlags);
           console.log("[Client-side McNair redistribution]", redistributed);
+          // ─────────────────────────────────────────────────────────────
+// EMPTY-ROOM APP BACKFILL (McNair-side, rooms-with-cases)
+// Insertion point: after McNair-anchored MD redistribution block,
+// before _aiAssignPlan = { ... } assignment.
+// ─────────────────────────────────────────────────────────────
+const McNAIR_AREA_PREFIXES_BACKFILL = ["McNair OR", "OTM OR", "OTM Endo", "Jamail OR"];
+const areaOfRoomBackfill = roomKey => {
+  for (const a of McNAIR_AREA_PREFIXES_BACKFILL) {
+    if (roomKey.startsWith(a)) return a;
+  }
+  return null;
+};
+
+const assignedApps = new Set();
+for (const [room, v] of Object.entries(assignmentsObj)) {
+  const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+  if (!areaOfRoomBackfill(disp)) continue;
+  if (v && v.app && v.app.name) assignedApps.add(v.app.name);
+}
+
+const unassignedApps = [];
+for (const [name, info] of Object.entries(staffByName)) {
+  if (info.credential === "MD") continue;
+  if (assignedApps.has(name)) continue;
+  unassignedApps.push(info);
+}
+
+const appBackfillRooms = [];
+const seenAppRooms = new Set();
+
+for (const [room, v] of Object.entries(assignmentsObj)) {
+  const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+  const area = areaOfRoomBackfill(disp);
+  if (!area) continue;
+  if (v && v.app && v.app.name) continue;
+  const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+  const curEntry = cur[fbForm] || cur[disp] || cur[room];
+  if (!curEntry) continue;
+  const hasCase = curEntry.caseTime || curEntry.surgeon || curEntry.procedure;
+  if (!hasCase) continue;
+  appBackfillRooms.push({ key: room, disp, area });
+  seenAppRooms.add(disp);
+}
+
+for (const [room, v] of Object.entries(cur)) {
+  if (room === "__closed" || !v || typeof v !== "object") continue;
+  if ((cur.__closed || {})[room]) continue;
+  const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+  if (seenAppRooms.has(disp)) continue;
+  const area = areaOfRoomBackfill(disp);
+  if (!area) continue;
+  const existing = assignmentsObj[disp] || assignmentsObj[room];
+  if (existing && existing.app && existing.app.name) continue;
+  const hasCase = v.caseTime || v.surgeon || v.procedure;
+  if (!hasCase) continue;
+  appBackfillRooms.push({ key: disp, disp, area });
+  seenAppRooms.add(disp);
+}
+
+const appBackfilled = [];
+for (const { key, disp, area } of appBackfillRooms) {
+  if (unassignedApps.length === 0) break;
+
+  let pickIdx = 0;
+  if (area === "OTM Endo" && typeof window.weeklyEndoTracking !== "undefined") {
+    const noEndoIdx = unassignedApps.findIndex(a => !hasEndoThisWeekBackfill(a.name));
+    if (noEndoIdx !== -1) pickIdx = noEndoIdx;
+  }
+  const pick = unassignedApps.splice(pickIdx, 1)[0];
+
+  const existing = assignmentsObj[key] || {};
+  assignmentsObj[key] = {
+    md: existing.md || null,
+    app: { name: pick.name, credential: pick.credential, agency: pick.agency },
+    notes: (existing.notes ? existing.notes + " | " : "") +
+           "Client-side APP backfill: empty room with case"
+  };
+  appBackfilled.push({ app: pick.name, room: disp });
+}
+
+if (appBackfilled.length > 0) {
+  const byApp = {};
+  appBackfilled.forEach(x => {
+    (byApp[x.app] = byApp[x.app] || []).push(x.room);
+  });
+  const summary = Object.entries(byApp)
+    .map(([app, rms]) => app + " → " + rms.join(", "))
+    .join(" | ");
+  flagsArr.push("Client-side APP backfill: empty rooms with cases filled (" + summary + ")");
+  console.log("[Client-side APP backfill]", appBackfilled);
+}
+
+function hasEndoThisWeekBackfill(name) {
+  const tracking = window.weeklyEndoTracking || {};
+  const today = new Date();
+  const day = today.getDay();
+  const diff = today.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(today.setDate(diff));
+  const mondayKey = monday.toISOString().split('T')[0];
+  const weekData = tracking[mondayKey] || {};
+  return Object.values(weekData).some(
+    entry => entry.name === name && entry.location === "OTM" && entry.role === "APP"
+  );
+}
+// ─────────────────────────────────────────────────────────────
         }
         // ─────────────────────────────────────────────────────────────
       }
