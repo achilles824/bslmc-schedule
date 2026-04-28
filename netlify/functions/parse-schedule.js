@@ -1,4 +1,4 @@
-// parse-schedule v9 - simpler prompt, fixes missing Main OR (SLEH) cases
+// parse-schedule v10 - increased max_tokens to 8000 to fix truncated responses
 const https = require("https");
 
 function httpsPost(hostname, path, headers, bodyStr) {
@@ -80,14 +80,14 @@ Skip rows with Room "Rad Mod Sedation" or "OTM Rad Mod Sedation".
 Output ONLY a JSON object — no preamble, no commentary, no markdown. Start with { and end with }. Format:
 {
   "rooms": {
-    "Main OR 17": { "surgeon": "Coye", "procedure": "GRAFT SKIN SPLIT THICKNESS", "time": "08:00" },
-    "Jamail OR 2": { "surgeon": "Chancellor", "procedure": "VITRECTOMY MECHANICAL", "time": "07:15" }
+    "Main OR 17": { "surgeon": "Coye", "procedure": "GRAFT SKIN", "time": "08:00" },
+    "Jamail OR 2": { "surgeon": "Chancellor", "procedure": "VITRECTOMY", "time": "07:15" }
   }
 }
 
-For surgeon: use only the LAST NAME. For procedure: short 2-5 word description. For time: convert "0730" to "07:30". If a room appears in multiple rows, return the EARLIEST time.
+For surgeon: use only the LAST NAME. For procedure: short 2-4 word description (keep these brief to save space). For time: convert "0730" to "07:30". If a room appears in multiple rows, return the EARLIEST time.
 
-Be thorough. Return EVERY room from EVERY row, including all SLEH OR rooms (Main OR cases).`;
+Be thorough. Return EVERY room from EVERY row, including all SLEH OR rooms (Main OR cases) and all OTM Endo rooms.`;
 
     const content = [{ type: "text", text: prompt }];
     for (const pageBase64 of pages) {
@@ -99,11 +99,11 @@ Be thorough. Return EVERY room from EVERY row, including all SLEH OR rooms (Main
 
     const reqBody = JSON.stringify({
       model: "claude-sonnet-4-5",
-      max_tokens: 4000,
+      max_tokens: 8000,
       messages: [{ role: "user", content }]
     });
 
-    console.log(`Sending request to Anthropic, body size: ${Math.round(reqBody.length/1024)}KB`);
+    console.log(`Batch ${batchIndex}: sending request to Anthropic, body size: ${Math.round(reqBody.length/1024)}KB`);
 
     const apiResponse = await httpsPost(
       "api.anthropic.com",
@@ -116,14 +116,23 @@ Be thorough. Return EVERY room from EVERY row, including all SLEH OR rooms (Main
       reqBody
     );
 
-    console.log(`Anthropic response status: ${apiResponse.status}`);
+    console.log(`Batch ${batchIndex}: Anthropic response status: ${apiResponse.status}`);
 
     if (apiResponse.status !== 200) {
-      console.error("Anthropic error:", apiResponse.body);
+      console.error(`Batch ${batchIndex}: Anthropic error:`, apiResponse.body);
       return { statusCode: apiResponse.status, headers: cors, body: JSON.stringify({ error: apiResponse.body }) };
     }
 
     const apiData = JSON.parse(apiResponse.body);
+    const stopReason = apiData.stop_reason;
+    const outputTokens = apiData.usage?.output_tokens || 0;
+    console.log(`Batch ${batchIndex}: stop_reason=${stopReason}, output_tokens=${outputTokens}`);
+
+    // CRITICAL: warn if response was truncated by max_tokens
+    if (stopReason === "max_tokens") {
+      console.error(`Batch ${batchIndex}: TRUNCATED — response hit max_tokens limit. Some rooms will be missing.`);
+    }
+
     const textContent = apiData.content?.[0]?.text || "";
 
     // Robust JSON extraction
@@ -138,9 +147,23 @@ Be thorough. Return EVERY room from EVERY row, including all SLEH OR rooms (Main
     try {
       parsed = JSON.parse(jsonStr);
     } catch (e) {
-      console.error("JSON parse error:", e.message);
-      console.error("Raw response:", textContent.substring(0, 500));
-      return { statusCode: 500, headers: cors, body: JSON.stringify({ error: "Could not parse AI response", raw: textContent.substring(0, 500) }) };
+      console.error(`Batch ${batchIndex}: JSON parse error:`, e.message);
+      console.error(`Batch ${batchIndex}: Raw response (first 500 chars):`, textContent.substring(0, 500));
+      console.error(`Batch ${batchIndex}: Raw response (last 500 chars):`, textContent.substring(Math.max(0, textContent.length - 500)));
+
+      // SALVAGE: try to parse partial JSON by finding all complete "Room": {...} entries
+      const salvaged = {};
+      const roomRegex = /"([^"]+?)"\s*:\s*\{\s*"surgeon"\s*:\s*"([^"]*)"\s*,\s*"procedure"\s*:\s*"([^"]*)"\s*,\s*"time"\s*:\s*"([^"]*)"\s*\}/g;
+      let match;
+      while ((match = roomRegex.exec(jsonStr)) !== null) {
+        salvaged[match[1]] = { surgeon: match[2], procedure: match[3], time: match[4] };
+      }
+      if (Object.keys(salvaged).length > 0) {
+        console.log(`Batch ${batchIndex}: SALVAGED ${Object.keys(salvaged).length} rooms from truncated response`);
+        parsed = { rooms: salvaged };
+      } else {
+        return { statusCode: 500, headers: cors, body: JSON.stringify({ error: "Could not parse AI response", raw: textContent.substring(0, 500) }) };
+      }
     }
 
     const rooms = parsed.rooms || {};
@@ -150,7 +173,7 @@ Be thorough. Return EVERY room from EVERY row, including all SLEH OR rooms (Main
     let droppedCount = 0;
     for (const [roomName, info] of Object.entries(rooms)) {
       if (/^OR\s*\d+$/i.test(roomName.trim())) {
-        console.log(`DROPPED unprefixed room: "${roomName}"`);
+        console.log(`Batch ${batchIndex}: DROPPED unprefixed room "${roomName}"`);
         droppedCount++;
         continue;
       }
