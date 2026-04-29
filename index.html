@@ -1183,7 +1183,8 @@ async function loadData() {
       </div>`;
   }
 }
-
+let adminUnlocked = false;
+  
 function switchTab(tab) {
   if (tab === 'admin' && !adminUnlocked) {
     setTimeout(() => { const p = document.getElementById("pin0"); if (p) p.focus(); }, 100);
@@ -2553,7 +2554,6 @@ setInterval(() => {
 }, 60000);
 
 // ── ADMIN ──
-let adminUnlocked = false;
 let currentAdminDate = null;
 let currentAssignments = {};
 let draggingPerson = null;
