@@ -2372,7 +2372,21 @@ function executeManualEntry() {
 
   const doAssign = () => {
     if (!currentAssignments[manualEntryRoomKey]) currentAssignments[manualEntryRoomKey] = {};
-    currentAssignments[manualEntryRoomKey][manualEntrySlot] = { name, credential: cred, agency: "Manual" };
+    const person = { name, credential: cred, agency: "Manual" };
+
+    // Float slots ("float0", "float1", etc.) need to write into the float array,
+    // not as a top-level key on the room.
+    if (manualEntrySlot.startsWith("float")) {
+      const idx = parseInt(manualEntrySlot.replace("float", ""));
+      if (!currentAssignments[manualEntryRoomKey]["float"]) {
+        currentAssignments[manualEntryRoomKey]["float"] = [];
+      }
+      currentAssignments[manualEntryRoomKey]["float"][idx] = person;
+    } else {
+      // md or app slot — direct assignment
+      currentAssignments[manualEntryRoomKey][manualEntrySlot] = person;
+    }
+
     closeManualEntry();
     renderAdminDay(currentAdminDate);
   };
