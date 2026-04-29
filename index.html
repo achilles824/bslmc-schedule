@@ -1966,10 +1966,10 @@ async function renderTimeline() {
       const gridRect = grid ? grid.getBoundingClientRect() : cardRect;
       const gridBottom = gridRect.bottom;
 
-      if (headerNaturalTop < 0 && gridBottom > 32) {
+      if (headerNaturalTop < 108 && gridBottom > 140) {
         // Pin to viewport top
         timeHeader.style.position = "fixed";
-        timeHeader.style.top = "0";
+        timeHeader.style.top = "108px";
         timeHeader.style.left = cardRect.left + "px";
         timeHeader.style.width = cardRect.width + "px";
         timeHeader.style.zIndex = "100";
