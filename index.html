@@ -1921,12 +1921,12 @@ async function renderTimeline() {
         `<button class="timeline-filter-btn ${timelineActiveFilter === label ? "active" : ""}" onclick="setTimelineFilter('${label}')">${label}</button>`
       ).join("")}
     </div>
-    <div class="timeline-time-header" id="timelineTimeHeader">${tlBuildTimeHeader()}</div>
-    <div class="timeline-scroll" id="timelineScroll">
+    <div class="timeline-scroll">
       <div class="timeline-grid">
+        <div class="timeline-time-header">${tlBuildTimeHeader()}</div>
         ${rowsHtml}
       </div>
-      ${nowLine ? `<div style="position:absolute;top:0;left:180px;right:0;bottom:0;pointer-events:none;">${nowLine}</div>` : ""}
+      ${nowLine ? `<div style="position:absolute;top:32px;left:180px;right:0;bottom:0;pointer-events:none;">${nowLine}</div>` : ""}
     </div>
   </div>`;
 
@@ -1937,7 +1937,7 @@ async function renderTimeline() {
     const grid = area.querySelector(".timeline-grid");
     if (scroll && grid) {
       const overlay = document.createElement("div");
-      overlay.style.cssText = "position:absolute;left:180px;top:0;height:" + grid.offsetHeight + "px;width:" + TIMELINE_WIDTH_PX + "px;pointer-events:none;";
+      overlay.style.cssText = "position:absolute;left:180px;top:32px;height:" + (grid.offsetHeight - 32) + "px;width:" + TIMELINE_WIDTH_PX + "px;pointer-events:none;";
       overlay.innerHTML = nowLine;
       // Find or create overlay container
       let overlayHost = scroll.querySelector(".timeline-now-overlay");
@@ -1945,15 +1945,6 @@ async function renderTimeline() {
       overlay.className = "timeline-now-overlay";
       scroll.appendChild(overlay);
     }
-  }
-
-  // Sync horizontal scroll: when the grid scrolls right, scroll the header to match
-  const scrollEl = document.getElementById("timelineScroll");
-  const headerEl = document.getElementById("timelineTimeHeader");
-  if (scrollEl && headerEl) {
-    scrollEl.addEventListener("scroll", () => {
-      headerEl.scrollLeft = scrollEl.scrollLeft;
-    });
   }
 }
   
