@@ -1968,6 +1968,7 @@ function applyRoomChecklist() {
             if (data.surgeon) existing["surgeon"] = data.surgeon;
             if (data.procedure) existing["procedure"] = data.procedure;
             if (data.time) existing["caseTime"] = data.time;
+            if (Array.isArray(data.cases) && data.cases.length > 0) existing["cases"] = data.cases;
           }
           break;
         }
