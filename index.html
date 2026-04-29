@@ -1945,6 +1945,38 @@ async function renderTimeline() {
       scroll.appendChild(overlay);
     }
   }
+  // Manual sticky-to-viewport for the timeline time header.
+  // Page header is 108px tall, so we pin the timeline header just below it.
+  const timelineCard = area.querySelector(".timeline-card");
+  const timeHeader = area.querySelector(".timeline-time-header");
+  if (timelineCard && timeHeader) {
+    if (window._tlScrollHandler) {
+      window.removeEventListener("scroll", window._tlScrollHandler);
+      window.removeEventListener("resize", window._tlScrollHandler);
+    }
+    const updateStickyHeader = () => {
+      const cardRect = timelineCard.getBoundingClientRect();
+      const grid = area.querySelector(".timeline-grid");
+      const gridRect = grid ? grid.getBoundingClientRect() : cardRect;
+      if (cardRect.top < 108 && gridRect.bottom > 140) {
+        timeHeader.style.position = "fixed";
+        timeHeader.style.top = "108px";
+        timeHeader.style.left = cardRect.left + "px";
+        timeHeader.style.width = cardRect.width + "px";
+        timeHeader.style.zIndex = "100";
+      } else {
+        timeHeader.style.position = "";
+        timeHeader.style.top = "";
+        timeHeader.style.left = "";
+        timeHeader.style.width = "";
+        timeHeader.style.zIndex = "";
+      }
+    };
+    window._tlScrollHandler = updateStickyHeader;
+    window.addEventListener("scroll", updateStickyHeader, { passive: true });
+    window.addEventListener("resize", updateStickyHeader, { passive: true });
+    updateStickyHeader();
+  }
 }
 
   // Manual sticky-to-viewport for the time header.
