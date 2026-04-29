@@ -1946,6 +1946,48 @@ async function renderTimeline() {
     }
   }
 }
+
+  // Manual sticky-to-viewport for the time header.
+  // CSS sticky won't work here because .timeline-scroll has overflow-x:auto,
+  // which establishes a containing block and traps the sticky inside.
+  const timelineCard = area.querySelector(".timeline-card");
+  const timeHeader = area.querySelector(".timeline-time-header");
+  if (timelineCard && timeHeader) {
+    // Remove any prior listener
+    if (window._tlScrollHandler) {
+      window.removeEventListener("scroll", window._tlScrollHandler);
+    }
+    // Capture the header's natural offset and dimensions
+    const updateStickyHeader = () => {
+      const cardRect = timelineCard.getBoundingClientRect();
+      const headerNaturalTop = cardRect.top;
+      // Find where the timeline grid ends, so we don't pin past it
+      const grid = area.querySelector(".timeline-grid");
+      const gridRect = grid ? grid.getBoundingClientRect() : cardRect;
+      const gridBottom = gridRect.bottom;
+
+      if (headerNaturalTop < 0 && gridBottom > 32) {
+        // Pin to viewport top
+        timeHeader.style.position = "fixed";
+        timeHeader.style.top = "0";
+        timeHeader.style.left = cardRect.left + "px";
+        timeHeader.style.width = cardRect.width + "px";
+        timeHeader.style.zIndex = "100";
+      } else {
+        // Restore default in-flow positioning
+        timeHeader.style.position = "";
+        timeHeader.style.top = "";
+        timeHeader.style.left = "";
+        timeHeader.style.width = "";
+        timeHeader.style.zIndex = "";
+      }
+    };
+    window._tlScrollHandler = updateStickyHeader;
+    window.addEventListener("scroll", updateStickyHeader, { passive: true });
+    window.addEventListener("resize", updateStickyHeader, { passive: true });
+    // Run once on render
+    updateStickyHeader();
+  }
   
 // ── SCHEDULE UPLOAD ──
 
