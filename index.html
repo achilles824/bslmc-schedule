@@ -3987,6 +3987,45 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
       // ─────────────────────────────────────────────────────────────
       if (label === "Main") {
         // ─────────────────────────────────────────────────────────────
+        // CROSS-PASS APP SCRUB (Main pass, runs FIRST)
+        //
+        // The McNair pass writes APPs to assignmentsObj for McNair-side
+        // rooms. The Main pass model can re-use those same APP names for
+        // Main-side rooms because it sees them in staffSummary as available.
+        // This scrub: any Main-side APP whose name is already on a McNair-
+        // side room → null it out. The campus-and-cap enforcer + APP
+        // coverage step downstream will refill from genuinely-unassigned APPs.
+        // ─────────────────────────────────────────────────────────────
+        const McNAIR_SIDE_PREFIXES = ["McNair OR", "OTM OR", "OTM Endo", "Jamail OR"];
+        const isMcnairSide = roomKey => McNAIR_SIDE_PREFIXES.some(a => roomKey.startsWith(a));
+
+        const lockedApps = new Set();
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (!isMcnairSide(disp)) continue;
+          if (v && v.app && v.app.name) lockedApps.add(v.app.name);
+        }
+
+        const crossPassAppCollisions = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (isMcnairSide(disp)) continue; // McNair-side, leave alone
+          if (!v || !v.app || !v.app.name) continue;
+          if (lockedApps.has(v.app.name)) {
+            crossPassAppCollisions.push({ room: disp, app: v.app.name });
+            v.app = null;
+          }
+        }
+
+        if (crossPassAppCollisions.length > 0) {
+          const summary = crossPassAppCollisions
+            .map(c => c.app + " from " + c.room)
+            .join("; ");
+          flagsArr.push("Client-side cross-pass scrub: removed duplicate APPs (" + summary + ")");
+          console.log("[Cross-pass APP scrub]", crossPassAppCollisions);
+        }
+        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────
         // GLUCK PRE-EMPTION (Main pass, runs first)
         //
         // Lara/Danielle Gluck is McNair-only. The model frequently places her on
@@ -4389,6 +4428,79 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           flagsArr.push("Client-side enforcement (Main pass campus/cap rules): dropped " + summary);
           console.log("[Client-side Main pass campus/cap enforcement]", droppedByMd, droppedReasons);
         }
+        // ─────────────────────────────────────────────────────────────
+        // ONE-AREA-PER-McNAIR-SIDE-AREA SCRUB
+        //
+        // After the campus-and-cap enforcer runs, an MD might still be
+        // in multiple McNair-side areas (e.g., OTM OR 2,3 + McNair OR 4).
+        // The McNair pass enforces this within itself, but if Main pass
+        // adds a McNair-side room for an MD already placed by McNair pass
+        // in a different area, that's a violation that survives.
+        //
+        // Scope: McNair-side rooms only (Main side has no equivalent rule).
+        // ─────────────────────────────────────────────────────────────
+        const mcnairAreaOf = roomKey => {
+          if (roomKey.startsWith("McNair OR")) return "McNair OR";
+          if (roomKey.startsWith("OTM OR")) return "OTM OR";
+          if (roomKey.startsWith("OTM Endo")) return "OTM Endo";
+          if (roomKey.startsWith("Jamail OR")) return "Jamail OR";
+          return null;
+        };
+
+        // Build map: mdName -> { area -> [rooms] }
+        const mdMcnairAreas = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const area = mcnairAreaOf(disp);
+          if (!area) continue;
+          // Skip Ganderson (Jamail-only by design)
+          if (v.md.name === "Lauren Ganderson") continue;
+          mdMcnairAreas[v.md.name] = mdMcnairAreas[v.md.name] || {};
+          (mdMcnairAreas[v.md.name][area] = mdMcnairAreas[v.md.name][area] || []).push(room);
+        }
+
+        const oneAreaViolations = [];
+        for (const [mdName, areas] of Object.entries(mdMcnairAreas)) {
+          const areaKeys = Object.keys(areas);
+          if (areaKeys.length <= 1) continue;
+          // Multiple areas for one MD. Keep the area with the most rooms.
+          // Tiebreak by priority: McNair OR > OTM OR > OTM Endo > Jamail OR.
+          const priority = ["McNair OR", "OTM OR", "OTM Endo", "Jamail OR"];
+          areaKeys.sort((a, b) => {
+            const na = areas[a].length, nb = areas[b].length;
+            if (na !== nb) return nb - na;
+            return priority.indexOf(a) - priority.indexOf(b);
+          });
+          const keepArea = areaKeys[0];
+          for (const a of areaKeys.slice(1)) {
+            for (const room of areas[a]) {
+              const existingApp = assignmentsObj[room] && assignmentsObj[room].app;
+              assignmentsObj[room] = {
+                md: null,
+                app: existingApp || null,
+                notes: "Client-side one-area scrub: " + mdName + " kept on " + keepArea + ", removed from " + a
+              };
+              oneAreaViolations.push({ md: mdName, room, droppedArea: a, keptArea: keepArea });
+            }
+          }
+        }
+
+        if (oneAreaViolations.length > 0) {
+          const byMd = {};
+          oneAreaViolations.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push({
+              room: x.room.replace(/\|/, " "),
+              keptArea: x.keptArea
+            });
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, items]) => md + " kept on " + items[0].keptArea + ", removed from " + items.map(i => i.room).join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side one-area scrub: " + summary);
+          console.log("[Client-side one-area scrub]", oneAreaViolations);
+        }
+        // ─────────────────────────────────────────────────────────────
 
         // ─────────────────────────────────────────────────────────────
         // FINAL ROOM-KEY DEDUP (Main pass)
