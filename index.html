@@ -1958,23 +1958,37 @@ async function renderTimeline() {
       const cardRect = timelineCard.getBoundingClientRect();
       const grid = area.querySelector(".timeline-grid");
       const gridRect = grid ? grid.getBoundingClientRect() : cardRect;
+      const scrollContainer = area.querySelector(".timeline-scroll");
       if (cardRect.top < 108 && gridRect.bottom > 140) {
         timeHeader.style.position = "fixed";
         timeHeader.style.top = "108px";
         timeHeader.style.left = cardRect.left + "px";
         timeHeader.style.width = cardRect.width + "px";
         timeHeader.style.zIndex = "100";
+        timeHeader.style.overflow = "hidden";
+        // Shift the time scale leftward by the horizontal scroll amount,
+        // but keep the room-label spacer fixed in place
+        const scrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+        const timeScale = timeHeader.querySelector(".timeline-time-scale");
+        if (timeScale) timeScale.style.transform = `translateX(${-scrollLeft}px)`;
       } else {
         timeHeader.style.position = "";
         timeHeader.style.top = "";
         timeHeader.style.left = "";
         timeHeader.style.width = "";
         timeHeader.style.zIndex = "";
+        timeHeader.style.overflow = "";
+        const timeScale = timeHeader.querySelector(".timeline-time-scale");
+        if (timeScale) timeScale.style.transform = "";
       }
     };
     window._tlScrollHandler = updateStickyHeader;
     window.addEventListener("scroll", updateStickyHeader, { passive: true });
     window.addEventListener("resize", updateStickyHeader, { passive: true });
+    const tlScrollContainer = area.querySelector(".timeline-scroll");
+    if (tlScrollContainer) {
+      tlScrollContainer.addEventListener("scroll", updateStickyHeader, { passive: true });
+    }
     updateStickyHeader();
   }
 }
