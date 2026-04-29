@@ -648,6 +648,151 @@
   .gap-positive { border-color: var(--day); }
   .gap-negative { border-color: var(--cancel); }
   .gap-zero { border-color: var(--border); }
+  /* ─── TIMELINE TAB ─── */
+  .timeline-section {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px 28px; margin-bottom: 24px;
+  }
+  .timeline-section h2 { font-family: "DM Serif Display", serif; font-size: 20px; margin-bottom: 16px; }
+  .timeline-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; animation: fadeUp 0.4s ease;
+  }
+  .timeline-header {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(135deg, var(--surface2), var(--surface));
+  }
+  .timeline-header h3 { font-family: "DM Serif Display", serif; font-size: 18px; }
+  .timeline-header .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .timeline-legend {
+    display: flex; gap: 14px; flex-wrap: wrap; padding: 10px 24px;
+    border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted);
+    background: var(--surface2);
+  }
+  .timeline-legend-item { display: flex; align-items: center; gap: 6px; }
+  .timeline-swatch { width: 14px; height: 10px; border-radius: 3px; display: inline-block; }
+  .tl-anes-general { background: rgba(79,142,247,0.6); border: 1px solid rgba(79,142,247,1); }
+  .tl-anes-mac { background: rgba(62,207,142,0.6); border: 1px solid rgba(62,207,142,1); }
+  .tl-anes-block { background: rgba(245,158,11,0.6); border: 1px solid rgba(245,158,11,1); }
+  .tl-anes-other { background: rgba(122,130,160,0.4); border: 1px solid rgba(122,130,160,0.8); }
+
+  /* The scrolling viewport */
+  .timeline-scroll {
+    overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch;
+    max-height: calc(100vh - 240px); position: relative;
+  }
+  /* The grid that holds time header + room rows */
+  .timeline-grid {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    min-width: 1500px; /* 180px label + 1320px timeline + buffer */
+  }
+  /* Time header row */
+  .timeline-time-header {
+    grid-column: 1 / 3;
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    position: sticky; top: 0; z-index: 30;
+    background: var(--surface2); border-bottom: 1px solid var(--border);
+  }
+  .timeline-time-header-spacer {
+    background: var(--surface2);
+    position: sticky; left: 0; z-index: 31;
+    border-right: 1px solid var(--border);
+    padding: 8px 12px;
+    font-size: 11px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .timeline-time-scale {
+    position: relative; height: 32px;
+    background: linear-gradient(to right, var(--surface2), var(--surface2));
+    border-bottom: 1px solid var(--border);
+  }
+  .timeline-time-tick {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: var(--border);
+  }
+  .timeline-time-tick.major { background: var(--muted); opacity: 0.4; }
+  .timeline-time-label {
+    position: absolute; top: 6px;
+    font-size: 11px; color: var(--muted); font-weight: 600;
+    transform: translateX(-50%); white-space: nowrap;
+  }
+  .timeline-time-label.minor { font-size: 9px; opacity: 0.6; }
+  /* Room row */
+  .timeline-room-label {
+    position: sticky; left: 0; z-index: 20;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    display: flex; flex-direction: column; gap: 4px;
+    min-height: 76px;
+  }
+  .timeline-room-name { font-size: 13px; font-weight: 700; color: var(--text); }
+  .timeline-room-staff {
+    display: flex; flex-direction: column; gap: 2px;
+    font-size: 10px;
+  }
+  .tl-staff-md { color: var(--accent); }
+  .tl-staff-app { color: var(--day); }
+  .tl-staff-empty { color: var(--muted); font-style: italic; opacity: 0.6; }
+  .timeline-room-lane {
+    position: relative; min-height: 76px;
+    border-bottom: 1px solid var(--border);
+    background:
+      repeating-linear-gradient(
+        to right,
+        transparent, transparent 119px,
+        var(--border) 119px, var(--border) 120px
+      );
+  }
+  .timeline-room.closed .timeline-room-label,
+  .timeline-room.closed .timeline-room-lane { opacity: 0.35; }
+  .timeline-room.closed .timeline-room-name { text-decoration: line-through; }
+  /* Case block */
+  .timeline-case {
+    position: absolute; top: 6px; bottom: 6px;
+    border-radius: 4px;
+    padding: 4px 6px;
+    overflow: hidden;
+    font-size: 10px; line-height: 1.25;
+    cursor: default;
+    border-style: solid; border-width: 1px;
+    box-sizing: border-box;
+  }
+  .timeline-case:hover {
+    z-index: 10;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    overflow: visible;
+  }
+  .timeline-case .tl-case-surgeon { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .timeline-case .tl-case-proc { color: rgba(255,255,255,0.85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .timeline-case .tl-case-time { font-size: 9px; opacity: 0.8; }
+  .timeline-case.anes-general { background: rgba(79,142,247,0.85); border-color: rgba(79,142,247,1); color: white; }
+  .timeline-case.anes-mac { background: rgba(62,207,142,0.85); border-color: rgba(62,207,142,1); color: white; }
+  .timeline-case.anes-block { background: rgba(245,158,11,0.85); border-color: rgba(245,158,11,1); color: white; }
+  .timeline-case.anes-other { background: rgba(122,130,160,0.7); border-color: rgba(122,130,160,1); color: white; }
+  .timeline-now-line {
+    position: absolute; top: 0; bottom: 0; width: 2px;
+    background: var(--cancel); z-index: 5;
+    box-shadow: 0 0 6px rgba(240,62,62,0.6);
+  }
+  .timeline-empty {
+    padding: 60px 24px; text-align: center; color: var(--muted);
+  }
+  .timeline-empty .icon { font-size: 40px; margin-bottom: 12px; }
+  /* Mobile */
+  @media (max-width: 768px) {
+    .timeline-section { padding: 12px; }
+    .timeline-scroll { max-height: calc(100vh - 200px); }
+    .timeline-grid { grid-template-columns: 130px 1fr; min-width: 1450px; }
+    .timeline-time-header { grid-template-columns: 130px 1fr; }
+    .timeline-room-label { padding: 6px 8px; min-height: 70px; }
+    .timeline-room-name { font-size: 11px; }
+    .timeline-room-staff { font-size: 9px; }
+    .timeline-room-lane { min-height: 70px; }
+  }
 
   /* Responsive */
   @media (max-width: 600px) {
@@ -689,6 +834,10 @@
   <button class="tab-btn" onclick="switchTab('day-view')">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
     Who's Working
+  </button>
+    <button class="tab-btn" onclick="switchTab('timeline')">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/><circle cx="7" cy="6" r="1.5" fill="currentColor"/><circle cx="14" cy="12" r="1.5" fill="currentColor"/><circle cx="10" cy="18" r="1.5" fill="currentColor"/></svg>
+    Timeline
   </button>
   <button class="tab-btn" onclick="switchTab('staffing')">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
@@ -801,6 +950,21 @@
       </div>
     </div>
     <div id="staffingResultArea"></div>
+  </div>
+
+  <!-- TAB 4: TIMELINE -->
+  <div class="tab-content" id="tab-timeline">
+    <div class="timeline-section">
+      <h2>Day Timeline</h2>
+      <div class="day-picker-row">
+        <div class="day-input-wrap">
+          <label for="timelineDatePicker">Select a date</label>
+          <input type="date" id="timelineDatePicker" />
+        </div>
+        <button class="view-btn" onclick="renderTimeline()">View Timeline</button>
+      </div>
+    </div>
+    <div id="timelineResultArea"></div>
   </div>
 
   <!-- TAB 5: ADMIN -->
@@ -930,6 +1094,7 @@ document.getElementById("dayPicker").value = todayISO;
 document.getElementById("staffingDatePicker").value = todayISO;
 document.getElementById("assignmentDate").value = todayISO;
 document.getElementById("adminDatePicker").value = todayISO;
+document.getElementById("timelineDatePicker").value = todayISO;
 
 // My Assignment autocomplete
 const assignmentSearchInput = document.getElementById("assignmentSearch");
@@ -1381,7 +1546,8 @@ function showDayView() {
 // Allow pressing Enter on date picker
 document.getElementById("dayPicker").addEventListener("keydown", e => { if (e.key === "Enter") showDayView(); });
 document.getElementById("staffingDatePicker").addEventListener("keydown", e => { if (e.key === "Enter") showStaffingView(); });
-
+document.getElementById("timelineDatePicker").addEventListener("keydown", e => { if (e.key === "Enter") renderTimeline(); });
+  
 function showStaffingView() {
   if (!dataLoaded) { alert("Data is still loading, please wait a moment."); return; }
   const dateVal = document.getElementById("staffingDatePicker").value;
@@ -1422,7 +1588,234 @@ function showStaffingView() {
       </div>`;
     return;
   }
+// ── TIMELINE TAB ──
+// Fixed window: 7:00 AM (minute 0) → 6:00 PM (minute 660). 2 px per minute.
+const TIMELINE_START_MIN = 7 * 60;     // 7:00 AM
+const TIMELINE_END_MIN   = 18 * 60;    // 6:00 PM
+const TIMELINE_PX_PER_MIN = 2;
+const TIMELINE_WIDTH_PX   = (TIMELINE_END_MIN - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN; // 1320
 
+function tlParseTime(str) {
+  // Accepts "7:30", "07:30", "13:00", "7:30 AM", etc.
+  // Returns minutes since midnight, or null.
+  if (!str || typeof str !== "string") return null;
+  const s = str.trim();
+  // Strip AM/PM if present
+  let pm = false, am = false;
+  let core = s;
+  const ampmMatch = core.match(/\b(AM|PM|am|pm)\b/);
+  if (ampmMatch) {
+    if (ampmMatch[1].toUpperCase() === "PM") pm = true;
+    else am = true;
+    core = core.replace(/\b(AM|PM|am|pm)\b/, "").trim();
+  }
+  const m = core.match(/^(\d{1,2}):?(\d{2})?$/);
+  if (!m) return null;
+  let hr = parseInt(m[1], 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  if (isNaN(hr) || isNaN(min)) return null;
+  if (pm && hr < 12) hr += 12;
+  if (am && hr === 12) hr = 0;
+  return hr * 60 + min;
+}
+
+function tlClassifyAnes(anesType) {
+  const u = (anesType || "").toUpperCase();
+  if (u.includes("BLOCK")) return "block";
+  if (u.includes("MAC") || u.includes("MOD") || u.includes("SEDATION")) return "mac";
+  if (u.includes("GENERAL") || u.includes("GA")) return "general";
+  return "other";
+}
+
+function tlBuildTimeHeader() {
+  let html = '<div class="timeline-time-header-spacer">Room</div>';
+  html += '<div class="timeline-time-scale">';
+  // Tick at every 30 minutes from 7:00 to 18:00
+  for (let m = TIMELINE_START_MIN; m <= TIMELINE_END_MIN; m += 30) {
+    const left = (m - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN;
+    const isMajor = m % 60 === 0;
+    html += `<div class="timeline-time-tick ${isMajor ? "major" : ""}" style="left:${left}px;"></div>`;
+    const hr = Math.floor(m / 60);
+    const mm = m % 60;
+    const label = mm === 0
+      ? `${hr > 12 ? hr - 12 : hr}:00`
+      : `:${String(mm).padStart(2, "0")}`;
+    html += `<div class="timeline-time-label ${isMajor ? "" : "minor"}" style="left:${left}px;">${label}</div>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function tlBuildNowLine(dateVal) {
+  // Only show if dateVal is today
+  const today = new Date().toISOString().slice(0, 10);
+  if (dateVal !== today) return "";
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  if (nowMin < TIMELINE_START_MIN || nowMin > TIMELINE_END_MIN) return "";
+  const left = (nowMin - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN;
+  return `<div class="timeline-now-line" style="left:${left}px;" title="Now"></div>`;
+}
+
+function tlBuildCaseBlock(c) {
+  const start = tlParseTime(c.startTime || c.time);
+  if (start === null) return "";
+  const dur = parseInt(c.durationMinutes || c.duration || 60, 10) || 60;
+  const end = start + dur;
+  // Clip to visible window
+  const visStart = Math.max(start, TIMELINE_START_MIN);
+  const visEnd = Math.min(end, TIMELINE_END_MIN);
+  if (visEnd <= visStart) return "";
+  const left = (visStart - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN;
+  const width = (visEnd - visStart) * TIMELINE_PX_PER_MIN;
+  if (width < 2) return "";
+  const klass = "anes-" + tlClassifyAnes(c.anesType);
+  const surgeon = c.surgeon ? `Dr. ${c.surgeon}` : "";
+  const proc = c.procedure || "";
+  const timeStr = (() => {
+    const sh = Math.floor(start / 60), sm = start % 60;
+    const eh = Math.floor(end / 60), em = end % 60;
+    const fmt = (h, m) => `${h > 12 ? h - 12 : (h === 0 ? 12 : h)}:${String(m).padStart(2, "0")}`;
+    return `${fmt(sh, sm)}-${fmt(eh, em)}`;
+  })();
+  const titleText = [surgeon, proc, timeStr, c.anesType ? "Anes: " + c.anesType : ""].filter(Boolean).join(" — ");
+  return `<div class="timeline-case ${klass}" style="left:${left}px;width:${width}px;" title="${titleText.replace(/"/g, "&quot;")}">
+    <div class="tl-case-surgeon">${surgeon}</div>
+    <div class="tl-case-proc">${proc}</div>
+    <div class="tl-case-time">${timeStr}</div>
+  </div>`;
+}
+
+function tlBuildRoomRow(roomKey, roomLabel, slots, isClosed) {
+  // Header strip with MD/APP
+  const md = slots && slots.md && slots.md.name ? slots.md.name : null;
+  const app = slots && slots.app && slots.app.name ? slots.app.name : null;
+  const floats = slots && Array.isArray(slots.float) ? slots.float.filter(f => f && f.name) : [];
+
+  let staffHtml = "";
+  if (md) staffHtml += `<span class="tl-staff-md">MD: ${md}</span>`;
+  else staffHtml += `<span class="tl-staff-empty">MD: —</span>`;
+  if (app) staffHtml += `<span class="tl-staff-app">APP: ${app}</span>`;
+  else staffHtml += `<span class="tl-staff-empty">APP: —</span>`;
+  if (floats.length > 0) {
+    staffHtml += `<span class="tl-staff-app" style="opacity:0.7;">Float: ${floats.map(f => f.name).join(", ")}</span>`;
+  }
+
+  // Cases lane
+  let casesHtml = "";
+  const cases = (slots && Array.isArray(slots.cases)) ? slots.cases : [];
+  if (cases.length > 0) {
+    cases.forEach(c => { casesHtml += tlBuildCaseBlock(c); });
+  } else if (!isClosed && slots && slots.surgeon) {
+    // Legacy fallback: show single first-case block
+    casesHtml += tlBuildCaseBlock({
+      startTime: slots.caseTime || "07:30",
+      durationMinutes: 120,
+      surgeon: slots.surgeon,
+      procedure: slots.procedure || "",
+      anesType: ""
+    });
+  }
+
+  return `<div class="timeline-room ${isClosed ? "closed" : ""}" style="display:contents;">
+    <div class="timeline-room-label">
+      <div class="timeline-room-name">${roomLabel}${isClosed ? " (closed)" : ""}</div>
+      <div class="timeline-room-staff">${staffHtml}</div>
+    </div>
+    <div class="timeline-room-lane">${casesHtml}</div>
+  </div>`;
+}
+
+async function renderTimeline() {
+  const dateVal = document.getElementById("timelineDatePicker").value;
+  const area = document.getElementById("timelineResultArea");
+  if (!dateVal) { alert("Please select a date."); return; }
+
+  area.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Loading timeline...</p></div>';
+
+  // Load assignments for that date from Firebase
+  let assignments = {};
+  try {
+    const stored = await window.fbGet("assignments/" + dateVal);
+    if (stored) assignments = stored;
+  } catch(e) {
+    console.warn("Timeline: failed to load assignments", e.message);
+  }
+  const closed = assignments.__closed || {};
+
+  const dt = parseDate(dateVal);
+  const dayLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
+
+  // Build rows for every room in ALL_SITES order, skipping float rooms (no cases on floats)
+  let rowsHtml = "";
+  let totalCases = 0;
+  for (const [group, rooms] of Object.entries(ALL_SITES)) {
+    for (const r of rooms) {
+      if (r === "Float") continue;
+      const roomKey = group + "|" + r;
+      const roomLabel = (r === "" ? group : group + " " + r);
+      const slots = assignments[roomKey] || null;
+      const isClosed = !!closed[roomKey];
+      // Skip rooms with no assignment AND no cases AND no closed flag — keeps the view focused
+      const hasAnything = slots && (slots.md || slots.app || (slots.cases && slots.cases.length) || slots.surgeon || slots.caseTime);
+      if (!hasAnything && !isClosed) continue;
+      if (slots && Array.isArray(slots.cases)) totalCases += slots.cases.length;
+      else if (slots && slots.surgeon) totalCases += 1;
+      rowsHtml += tlBuildRoomRow(roomKey, roomLabel, slots, isClosed);
+    }
+  }
+
+  if (!rowsHtml) {
+    area.innerHTML = `<div class="timeline-card">
+      <div class="timeline-header"><h3>${dayLabel}</h3><div class="sub">No schedule data available for this date.</div></div>
+      <div class="timeline-empty">
+        <div class="icon">📅</div>
+        Upload an Epic schedule on the Admin tab and assign rooms to populate the timeline.
+      </div>
+    </div>`;
+    return;
+  }
+
+  const nowLine = tlBuildNowLine(dateVal);
+
+  area.innerHTML = `<div class="timeline-card">
+    <div class="timeline-header">
+      <h3>${dayLabel}</h3>
+      <div class="sub">${totalCases} case${totalCases !== 1 ? "s" : ""} scheduled · 7:00 AM – 6:00 PM</div>
+    </div>
+    <div class="timeline-legend">
+      <div class="timeline-legend-item"><span class="timeline-swatch tl-anes-general"></span> General</div>
+      <div class="timeline-legend-item"><span class="timeline-swatch tl-anes-mac"></span> MAC / Sedation</div>
+      <div class="timeline-legend-item"><span class="timeline-swatch tl-anes-block"></span> Block</div>
+      <div class="timeline-legend-item"><span class="timeline-swatch tl-anes-other"></span> Other</div>
+    </div>
+    <div class="timeline-scroll">
+      <div class="timeline-grid">
+        <div class="timeline-time-header">${tlBuildTimeHeader()}</div>
+        ${rowsHtml}
+      </div>
+      ${nowLine ? `<div style="position:absolute;top:32px;left:180px;right:0;bottom:0;pointer-events:none;">${nowLine}</div>` : ""}
+    </div>
+  </div>`;
+
+  // The now-line position needs to be inside each room lane to span vertically.
+  // Re-inject it as an absolutely positioned overlay aligned with lanes.
+  if (nowLine) {
+    const scroll = area.querySelector(".timeline-scroll");
+    const grid = area.querySelector(".timeline-grid");
+    if (scroll && grid) {
+      const overlay = document.createElement("div");
+      overlay.style.cssText = "position:absolute;left:180px;top:32px;height:" + (grid.offsetHeight - 32) + "px;width:" + TIMELINE_WIDTH_PX + "px;pointer-events:none;";
+      overlay.innerHTML = nowLine;
+      // Find or create overlay container
+      let overlayHost = scroll.querySelector(".timeline-now-overlay");
+      if (overlayHost) overlayHost.remove();
+      overlay.className = "timeline-now-overlay";
+      scroll.appendChild(overlay);
+    }
+  }
+}
+  
   // Build site cards
   const siteOrder = ["Main OR","IR","OTM OR","McNair OR","OTM IR","Jamail","Main Endo","OTM Endo"];
   let sitesHtml = "";
