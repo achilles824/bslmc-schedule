@@ -670,6 +670,28 @@
     background: var(--surface2);
   }
   .timeline-legend-item { display: flex; align-items: center; gap: 6px; }
+  .timeline-filter-row {
+    display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 24px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .timeline-filter-btn {
+    padding: 6px 12px; border-radius: 16px;
+    background: var(--surface2); color: var(--muted);
+    border: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: all 0.15s ease;
+    font-family: inherit;
+  }
+  .timeline-filter-btn:hover {
+    background: var(--surface); color: var(--text);
+  }
+  .timeline-filter-btn.active {
+    background: var(--accent); color: white; border-color: var(--accent);
+  }
+  @media (max-width: 768px) {
+    .timeline-filter-row { padding: 8px 12px; gap: 6px; }
+    .timeline-filter-btn { padding: 5px 10px; font-size: 11px; }
+  }
   .timeline-swatch { width: 14px; height: 10px; border-radius: 3px; display: inline-block; }
   .tl-anes-general { background: rgba(79,142,247,0.6); border: 1px solid rgba(79,142,247,1); }
   .tl-anes-mac { background: rgba(62,207,142,0.6); border: 1px solid rgba(62,207,142,1); }
@@ -1669,6 +1691,25 @@ const TIMELINE_START_MIN = 7 * 60;     // 7:00 AM
 const TIMELINE_END_MIN   = 18 * 60;    // 6:00 PM
 const TIMELINE_PX_PER_MIN = 2;
 const TIMELINE_WIDTH_PX   = (TIMELINE_END_MIN - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN; // 1320
+// Filter state — persists across renders within the session.
+// null = show all groups; otherwise the group key from ALL_SITES.
+let timelineActiveFilter = null;
+
+// Maps filter button label → ALL_SITES group key(s) to include
+const TIMELINE_FILTER_GROUPS = {
+  "Main OR":    ["Main OR"],
+  "Main Endo":  ["Main Endo"],
+  "Radiology":  ["IR", "NIR", "CT", "MRI"],
+  "OTM OR":     ["OTM OR"],
+  "OTM Endo":   ["OTM Endo"],
+  "Jamail":     ["Jamail OR"],
+  "McNair OR":  ["McNair OR"]
+};
+
+function setTimelineFilter(label) {
+  timelineActiveFilter = label;
+  renderTimeline();
+}
 
 function tlParseTime(str) {
   // Accepts "7:30", "07:30", "13:00", "7:30 AM", etc.
@@ -1825,6 +1866,11 @@ async function renderTimeline() {
   let rowsHtml = "";
   let totalCases = 0;
   for (const [group, rooms] of Object.entries(ALL_SITES)) {
+    // Apply active filter if set
+    if (timelineActiveFilter) {
+      const allowed = TIMELINE_FILTER_GROUPS[timelineActiveFilter] || [];
+      if (!allowed.includes(group)) continue;
+    }
     for (const r of rooms) {
       if (r === "Float") continue;
       const roomKey = group + "|" + r;
@@ -1863,6 +1909,12 @@ async function renderTimeline() {
       <div class="timeline-legend-item"><span class="timeline-swatch tl-anes-mac"></span> MAC / Sedation</div>
       <div class="timeline-legend-item"><span class="timeline-swatch tl-anes-block"></span> Block</div>
       <div class="timeline-legend-item"><span class="timeline-swatch tl-anes-other"></span> Other</div>
+    </div>
+    <div class="timeline-filter-row">
+      <button class="timeline-filter-btn ${!timelineActiveFilter ? "active" : ""}" onclick="setTimelineFilter(null)">All</button>
+      ${Object.keys(TIMELINE_FILTER_GROUPS).map(label =>
+        `<button class="timeline-filter-btn ${timelineActiveFilter === label ? "active" : ""}" onclick="setTimelineFilter('${label}')">${label}</button>`
+      ).join("")}
     </div>
     <div class="timeline-scroll">
       <div class="timeline-grid">
