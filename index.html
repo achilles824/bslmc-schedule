@@ -656,7 +656,7 @@
   .timeline-section h2 { font-family: "DM Serif Display", serif; font-size: 20px; margin-bottom: 16px; }
   .timeline-card {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); overflow: hidden; animation: fadeUp 0.4s ease;
+    border-radius: var(--radius); overflow: visible; animation: fadeUp 0.4s ease;
   }
   .timeline-header {
     padding: 16px 24px; border-bottom: 1px solid var(--border);
@@ -717,6 +717,8 @@
     position: sticky; top: 0; z-index: 30;
     background: var(--surface2); border-bottom: 1px solid var(--border);
   }
+  /* Make sure no ancestor blocks viewport-level sticky behavior */
+  .tab-content, #tab-timeline, #timelineResultArea { overflow: visible; }
   .timeline-time-header-spacer {
     background: var(--surface2);
     position: sticky; left: 0; z-index: 31;
