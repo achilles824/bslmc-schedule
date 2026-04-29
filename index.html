@@ -701,7 +701,7 @@
   /* The scrolling viewport */
   .timeline-scroll {
     overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch;
-    max-height: calc(100vh - 240px); position: relative;
+    position: relative;
   }
   /* The grid that holds time header + room rows */
   .timeline-grid {
@@ -807,7 +807,6 @@
   /* Mobile */
   @media (max-width: 768px) {
     .timeline-section { padding: 12px; }
-    .timeline-scroll { max-height: calc(100vh - 200px); }
     .timeline-grid { grid-template-columns: 130px 1fr; min-width: 1450px; }
     .timeline-time-header { grid-template-columns: 130px 1fr; }
     .timeline-room-label { padding: 6px 8px; min-height: 70px; }
