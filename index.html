@@ -4237,11 +4237,35 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           console.log("[Once-per-week endo replacements]", endoReplacements);
         }
         if (endoUnavoidableRepeats.length > 0) {
-          const summary = endoUnavoidableRepeats
-            .map(r => "Repeat endo: " + r.name + " (role: " + r.role + "; prior: " + r.priorDay + ", " + r.priorLoc + "; today: " + r.room + ")")
-            .join(". ") + ".";
-          flagsArr.push(summary);
-          console.log("[Once-per-week endo unavoidable]", endoUnavoidableRepeats);
+          // Dedupe by (name, role) — one flag per person, not per room
+          const dedupedKeys = new Set();
+          const dedupedRepeats = [];
+          for (const r of endoUnavoidableRepeats) {
+            const key = r.name + "|" + r.role;
+            if (dedupedKeys.has(key)) continue;
+            dedupedKeys.add(key);
+            dedupedRepeats.push(r);
+          }
+
+          // Suppress entries the model already flagged
+          const modelFlaggedNames = new Set();
+          for (const f of flagsArr) {
+            const matches = f.matchAll(/Repeat endo:\s*([^()]+?)\s*\(role:\s*(MD|APP)/g);
+            for (const m of matches) {
+              modelFlaggedNames.add(m[1].trim() + "|" + m[2]);
+            }
+          }
+          const novelRepeats = dedupedRepeats.filter(r =>
+            !modelFlaggedNames.has(r.name + "|" + r.role)
+          );
+
+          if (novelRepeats.length > 0) {
+            const summary = novelRepeats
+              .map(r => "Repeat endo: " + r.name + " (role: " + r.role + "; prior: " + r.priorDay + ", " + r.priorLoc + ")")
+              .join(". ") + ".";
+            flagsArr.push(summary);
+          }
+          console.log("[Once-per-week endo unavoidable]", endoUnavoidableRepeats, "novel:", novelRepeats);
         }
         // ─────────────────────────────────────────────────────────────
         // ─────────────────────────────────────────────────────────────
@@ -4358,6 +4382,94 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         const fbKey = k => k.includes("|") ? k : k.replace(/\s(\d+)$/, "|$1");
         const dispKey = k => k.includes("|") ? k.replace("|", " ") : k;
 
+        // ─────────────────────────────────────────────────────────────
+        // MAIN-SIDE PREFILL (runs BEFORE McNair overflow detection)
+        //
+        // On short-staffed days, the cap enforcer drops Main MDs over cap,
+        // leaving Main OR rooms with md:null. These need to be filled before
+        // any flexible is sent to McNair-side overflow.
+        //
+        // Find Main-side rooms (Main OR primarily; mandatory rooms always
+        // counted) with md:null and a case (or mandatory). Pull from
+        // under-cap flexibles in priority: most-rooms-already first to
+        // avoid creating new single-room MDs. Cap stays at 3.
+        // ─────────────────────────────────────────────────────────────
+        const MAIN_OR_PREFIXES_FOR_PREFILL = ["Main OR"];
+        const isMainOrForPrefill = roomKey =>
+          MAIN_OR_PREFIXES_FOR_PREFILL.some(a => roomKey.startsWith(a));
+
+        const mainGapRooms = [];
+        const seenMainGaps = new Set();
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (!isMainOrForPrefill(disp)) continue;
+          if (v && v.md && v.md.name) continue;
+          // Confirm has case or mandatory
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const curEntry = cur[fbForm] || cur[disp] || cur[room];
+          const hasCase = curEntry && (curEntry.caseTime || curEntry.surgeon || curEntry.procedure || curEntry.mandatory);
+          if (!hasCase) continue;
+          mainGapRooms.push({ key: room, disp });
+          seenMainGaps.add(disp);
+        }
+
+        // Refresh count of each MD's current rooms in this pass
+        const mainPrefillRoomCount = {};
+        for (const [r, v] of Object.entries(assignmentsObj)) {
+          if (v.md && v.md.name) {
+            mainPrefillRoomCount[v.md.name] = (mainPrefillRoomCount[v.md.name] || 0) + 1;
+          }
+        }
+
+        // Eligible flexibles: not committed-to-McNair, under cap of 3,
+        // not already in McNair-side rooms in cur (don't pull McNair-claimed)
+        const mainPrefillFlexibles = flexibleMDs
+          .filter(f => (mainPrefillRoomCount[f.name] || 0) < 3)
+          .filter(f => !flexCommittedToMain[f.name] || (mainPrefillRoomCount[f.name] || 0) > 0)
+          // If a flex is already on Main (count > 0), they're committed-to-Main; let them grow up to cap
+          .sort((a, b) => {
+            // Prefer flexibles already at 1-2 Main rooms (extend them) over fresh ones
+            const ar = mainPrefillRoomCount[a.name] || 0;
+            const br = mainPrefillRoomCount[b.name] || 0;
+            return br - ar; // most rooms first
+          });
+
+        const mainPrefilled = [];
+        for (const { key, disp } of mainGapRooms) {
+          if (mainPrefillFlexibles.length === 0) break;
+          // Pick first flexible still under cap
+          let pickIdx = -1;
+          for (let i = 0; i < mainPrefillFlexibles.length; i++) {
+            const f = mainPrefillFlexibles[i];
+            if ((mainPrefillRoomCount[f.name] || 0) < 3) { pickIdx = i; break; }
+          }
+          if (pickIdx === -1) break;
+          const pick = mainPrefillFlexibles[pickIdx];
+          const existing = assignmentsObj[key] || {};
+          assignmentsObj[key] = {
+            md: { name: pick.name, credential: pick.credential, agency: pick.agency },
+            app: existing.app || null,
+            notes: (existing.notes ? existing.notes + " | " : "") +
+                   "Client-side Main prefill: flexible MD assigned (Main fills before McNair backfill)"
+          };
+          mainPrefillRoomCount[pick.name] = (mainPrefillRoomCount[pick.name] || 0) + 1;
+          // If this flex now has a Main-side room, mark them committed-to-Main
+          flexCommittedToMain[pick.name] = true;
+          mainPrefilled.push({ md: pick.name, room: disp });
+        }
+
+        if (mainPrefilled.length > 0) {
+          const byMd = {};
+          mainPrefilled.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room);
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " → " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side Main prefill: flexibles assigned to Main before McNair backfill (" + summary + ")");
+          console.log("[Client-side Main prefill]", mainPrefilled);
+        }
+        // ─────────────────────────────────────────────────────────────
         // Identify overflow rooms (md:null on McNair side).
         // These are in cur where the room is McNair-side and md is null/missing,
         // AND NOT assigned by the current Main pass either.
