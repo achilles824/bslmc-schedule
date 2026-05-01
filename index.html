@@ -3760,10 +3760,12 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
 
    const closed = cur.__closed || {};
     const needs = {};
-    for (const [k, v] of Object.entries(cur)) {
-      if (k === "__closed" || closed[k] || !v || typeof v !== "object") continue;
-      if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
-    }
+for (const [k, v] of Object.entries(cur)) {
+  if (k === "__closed" || closed[k] || !v || typeof v !== "object") continue;
+  const hasCase = v.caseTime || v.surgeon || v.procedure;
+  if (!hasCase) continue;
+  if (!v.md || !v.md.name || !v.app || !v.app.name) needs[k] = v;
+}
 
     // ─────────────────────────────────────────────────────────────
     // MANDATORY ROOM INJECTION
