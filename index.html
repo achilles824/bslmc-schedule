@@ -4318,7 +4318,7 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         }
         // ─────────────────────────────────────────────────────────────
         const McNAIR_AREAS = ["Jamail OR", "McNair OR", "OTM OR", "OTM Endo"];
-        const AREA_PRIORITY = ["Jamail OR", "McNair OR", "OTM OR", "OTM Endo"];
+        const AREA_PRIORITY = ["OTM Endo", "McNair OR", "OTM OR", "Jamail OR"];
         const MAIN_ANCHORED = s => /^OR\s*\d+\s*-\s*MD/i.test(s);
         const MCNAIR_ANCHORED = s =>
           /McNair|MNC|Out-MNC|Late MD-MNC|McNair Call|OR - McNair/i.test(s);
@@ -4382,94 +4382,7 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         const fbKey = k => k.includes("|") ? k : k.replace(/\s(\d+)$/, "|$1");
         const dispKey = k => k.includes("|") ? k.replace("|", " ") : k;
 
-        // ─────────────────────────────────────────────────────────────
-        // MAIN-SIDE PREFILL (runs BEFORE McNair overflow detection)
-        //
-        // On short-staffed days, the cap enforcer drops Main MDs over cap,
-        // leaving Main OR rooms with md:null. These need to be filled before
-        // any flexible is sent to McNair-side overflow.
-        //
-        // Find Main-side rooms (Main OR primarily; mandatory rooms always
-        // counted) with md:null and a case (or mandatory). Pull from
-        // under-cap flexibles in priority: most-rooms-already first to
-        // avoid creating new single-room MDs. Cap stays at 3.
-        // ─────────────────────────────────────────────────────────────
-        const MAIN_OR_PREFIXES_FOR_PREFILL = ["Main OR"];
-        const isMainOrForPrefill = roomKey =>
-          MAIN_OR_PREFIXES_FOR_PREFILL.some(a => roomKey.startsWith(a));
-
-        const mainGapRooms = [];
-        const seenMainGaps = new Set();
-        for (const [room, v] of Object.entries(assignmentsObj)) {
-          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
-          if (!isMainOrForPrefill(disp)) continue;
-          if (v && v.md && v.md.name) continue;
-          // Confirm has case or mandatory
-          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
-          const curEntry = cur[fbForm] || cur[disp] || cur[room];
-          const hasCase = curEntry && (curEntry.caseTime || curEntry.surgeon || curEntry.procedure || curEntry.mandatory);
-          if (!hasCase) continue;
-          mainGapRooms.push({ key: room, disp });
-          seenMainGaps.add(disp);
-        }
-
-        // Refresh count of each MD's current rooms in this pass
-        const mainPrefillRoomCount = {};
-        for (const [r, v] of Object.entries(assignmentsObj)) {
-          if (v.md && v.md.name) {
-            mainPrefillRoomCount[v.md.name] = (mainPrefillRoomCount[v.md.name] || 0) + 1;
-          }
-        }
-
-        // Eligible flexibles: not committed-to-McNair, under cap of 3,
-        // not already in McNair-side rooms in cur (don't pull McNair-claimed)
-        const mainPrefillFlexibles = flexibleMDs
-          .filter(f => (mainPrefillRoomCount[f.name] || 0) < 3)
-          .filter(f => !flexCommittedToMain[f.name] || (mainPrefillRoomCount[f.name] || 0) > 0)
-          // If a flex is already on Main (count > 0), they're committed-to-Main; let them grow up to cap
-          .sort((a, b) => {
-            // Prefer flexibles already at 1-2 Main rooms (extend them) over fresh ones
-            const ar = mainPrefillRoomCount[a.name] || 0;
-            const br = mainPrefillRoomCount[b.name] || 0;
-            return br - ar; // most rooms first
-          });
-
-        const mainPrefilled = [];
-        for (const { key, disp } of mainGapRooms) {
-          if (mainPrefillFlexibles.length === 0) break;
-          // Pick first flexible still under cap
-          let pickIdx = -1;
-          for (let i = 0; i < mainPrefillFlexibles.length; i++) {
-            const f = mainPrefillFlexibles[i];
-            if ((mainPrefillRoomCount[f.name] || 0) < 3) { pickIdx = i; break; }
-          }
-          if (pickIdx === -1) break;
-          const pick = mainPrefillFlexibles[pickIdx];
-          const existing = assignmentsObj[key] || {};
-          assignmentsObj[key] = {
-            md: { name: pick.name, credential: pick.credential, agency: pick.agency },
-            app: existing.app || null,
-            notes: (existing.notes ? existing.notes + " | " : "") +
-                   "Client-side Main prefill: flexible MD assigned (Main fills before McNair backfill)"
-          };
-          mainPrefillRoomCount[pick.name] = (mainPrefillRoomCount[pick.name] || 0) + 1;
-          // If this flex now has a Main-side room, mark them committed-to-Main
-          flexCommittedToMain[pick.name] = true;
-          mainPrefilled.push({ md: pick.name, room: disp });
-        }
-
-        if (mainPrefilled.length > 0) {
-          const byMd = {};
-          mainPrefilled.forEach(x => {
-            (byMd[x.md] = byMd[x.md] || []).push(x.room);
-          });
-          const summary = Object.entries(byMd)
-            .map(([md, rms]) => md + " → " + rms.join(", "))
-            .join(" | ");
-          flagsArr.push("Client-side Main prefill: flexibles assigned to Main before McNair backfill (" + summary + ")");
-          console.log("[Client-side Main prefill]", mainPrefilled);
-        }
-        // ─────────────────────────────────────────────────────────────
+       
         // Identify overflow rooms (md:null on McNair side).
         // These are in cur where the room is McNair-side and md is null/missing,
         // AND NOT assigned by the current Main pass either.
@@ -4830,6 +4743,119 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
             .join(" | ");
           flagsArr.push("Client-side one-area scrub: " + summary);
           console.log("[Client-side one-area scrub]", oneAreaViolations);
+        }
+        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────
+        // MAIN-SIDE PREFILL (runs AFTER cap enforcer + one-area scrub)
+        //
+        // After cap drops and one-area scrub, some Main OR rooms may
+        // be md:null. Fill them with under-cap flexibles before any
+        // remaining McNair-side overflow gets attention.
+        //
+        // On short-staffed days, deficits should land on McNair side,
+        // not Main side. Mandatory rooms (10, 15) get priority.
+        // ─────────────────────────────────────────────────────────────
+        const MAIN_OR_PREFIXES_FOR_PREFILL = ["Main OR"];
+        const isMainOrForPrefill = roomKey =>
+          MAIN_OR_PREFIXES_FOR_PREFILL.some(a => roomKey.startsWith(a));
+
+        // Recompute current per-MD room counts after cap enforcer ran
+        const postCapMdRoomCount = {};
+        for (const [r, v] of Object.entries(assignmentsObj)) {
+          if (v.md && v.md.name) {
+            postCapMdRoomCount[v.md.name] = (postCapMdRoomCount[v.md.name] || 0) + 1;
+          }
+        }
+
+        // Find Main OR rooms with md:null and a case
+        const mainGapRooms = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (!isMainOrForPrefill(disp)) continue;
+          if (v && v.md && v.md.name) continue;
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const curEntry = cur[fbForm] || cur[disp] || cur[room];
+          const hasCase = curEntry && (curEntry.caseTime || curEntry.surgeon || curEntry.procedure || curEntry.mandatory);
+          if (!hasCase) continue;
+          mainGapRooms.push({ key: room, disp });
+        }
+
+        // Sort gaps so mandatory rooms (10, 15) come first
+        mainGapRooms.sort((a, b) => {
+          const aMandatory = /^Main OR (10|15)$/.test(a.disp);
+          const bMandatory = /^Main OR (10|15)$/.test(b.disp);
+          if (aMandatory && !bMandatory) return -1;
+          if (!aMandatory && bMandatory) return 1;
+          return 0;
+        });
+
+        // Eligible candidates: flexibles (any agency != "Baylor") + Main-anchored
+        // Baylor MDs, sorted by remaining cap (fewest existing rooms first to
+        // avoid creating uneven distribution; tied → flexibles first since
+        // Main-anchored should already be at 2-3 rooms).
+        const MAIN_ANCHORED_RE_PREFILL = /^OR\s*\d+\s*-\s*MD/i;
+        const prefillCandidates = staff
+          .filter(s => s.credential === "MD")
+          .filter(s => (postCapMdRoomCount[s.name] || 0) < 3)
+          .filter(s => {
+            // Exclude McNair-anchored MDs
+            const isMcnair = /McNair|MNC|Out-MNC|Late MD-MNC|McNair Call|OR - McNair/i.test(s.shift || "");
+            if (isMcnair) return false;
+            // Exclude MDs with McNair-side rooms (committed to McNair already)
+            for (const [r, v] of Object.entries(cur)) {
+              if (r === "__closed" || !v || typeof v !== "object") continue;
+              const isMcnairSideR = ["McNair OR", "OTM OR", "OTM Endo", "Jamail OR"]
+                .some(a => r.startsWith(a));
+              if (!isMcnairSideR) continue;
+              if (v.md && v.md.name === s.name) return false;
+            }
+            return true;
+          })
+          .sort((a, b) => {
+            const ar = postCapMdRoomCount[a.name] || 0;
+            const br = postCapMdRoomCount[b.name] || 0;
+            if (ar !== br) return ar - br; // fewest rooms first
+            // Tie: flexibles before Main-anchored
+            const aIsFlex = a.agency !== "Baylor";
+            const bIsFlex = b.agency !== "Baylor";
+            if (aIsFlex && !bIsFlex) return -1;
+            if (!aIsFlex && bIsFlex) return 1;
+            return 0;
+          });
+
+        const mainPrefilled = [];
+        for (const { key, disp } of mainGapRooms) {
+          // Pick first candidate still under cap of 3
+          let pickIdx = -1;
+          for (let i = 0; i < prefillCandidates.length; i++) {
+            const c = prefillCandidates[i];
+            if ((postCapMdRoomCount[c.name] || 0) < 3) { pickIdx = i; break; }
+          }
+          if (pickIdx === -1) break;
+          const pick = prefillCandidates[pickIdx];
+          const existing = assignmentsObj[key] || {};
+          assignmentsObj[key] = {
+            md: { name: pick.name, credential: pick.credential, agency: pick.agency },
+            app: existing.app || null,
+            notes: (existing.notes ? existing.notes + " | " : "") +
+                   "Client-side Main prefill: assigned post-cap (Main fills before McNair backfill)"
+          };
+          postCapMdRoomCount[pick.name] = (postCapMdRoomCount[pick.name] || 0) + 1;
+          // Mark this MD as Main-committed to keep them off McNair backfill
+          flexCommittedToMain[pick.name] = true;
+          mainPrefilled.push({ md: pick.name, room: disp });
+        }
+
+        if (mainPrefilled.length > 0) {
+          const byMd = {};
+          mainPrefilled.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room);
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " → " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side Main prefill: filled empty Main OR rooms after cap drops (" + summary + ")");
+          console.log("[Client-side Main prefill]", mainPrefilled);
         }
         // ─────────────────────────────────────────────────────────────
 
@@ -6760,8 +6786,9 @@ Shift names with numbers = HOURS, not room numbers. "OR 8 - MD" = 8-hour Main sh
    - Main Endo 1, 2, 3
    - NIR 1
 
-4. FORBIDDEN AT MAIN (any Main-campus area):
-   - McNair-anchored MDs (shifts containing "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC", "OR - McNair"). Ganderson never at Main. Out-MNC MDs never at Main.
+4. FORBIDDEN AT MAIN AND ON ANY ROOM (Main-side OR McNair-side):
+   - McNair-anchored MDs (shifts containing "McNair", "MNC", "Out-MNC", "McNair Call", "Late MD-MNC", "OR - McNair"). They DO NOT appear in this pass's output AT ALL — neither on Main-side rooms nor on McNair-side backfill. They are exclusively the McNair pass's responsibility, and any rooms they cover are already in currentAssignments.
+   - Lauren Ganderson by name: she is NEVER in this pass's output, regardless of shift label, regardless of whether Jamail has cases today. If J = 0 (no Jamail cases), she is OFF and not assigned anywhere. If J > 0, she is on Jamail (handled by McNair pass). The Main pass NEVER places her on any room — not OTM OR, not McNair OR, not OTM Endo, not Jamail, not Main-side.
    - McNair-only locum APPs (16 names): Sagar Patel, Jesus Bagos, Mark Doria, Lina Eisa, Audra Jackson, Lee Mabry, Tanya McGowan, Amanda Messarra, Adriana Montoya, Tammy Moore, Natty Pitera Okojie, Carla Rose, Evie Schoene, Tracey Sheffield, Khadijah Udu, Young Wright. These go to McNair campus only.
    - Any Baylor APP with "-MN" in their shift (McNair-only Baylor APPs).
 
@@ -7124,7 +7151,7 @@ Do NOT invent exception flags.
 ## STEP 11 — FINAL AUDIT
 
 - Every Main-anchored MD placed
-- No McNair-anchored MD in any assignment (Main OR McNair-side)
+- No McNair-anchored MD in any assignment (Main-side OR McNair-side). Verify by NAME for Ganderson specifically, regardless of her shift label.
 - No Main-anchored MD on any McNair-side room (only flexibles may backfill)
 - No McNair-only APPs (locums or Baylor -MN) at Main
 - Main Endo MD exactly 3 rooms, Main Endo only
