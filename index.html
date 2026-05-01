@@ -4026,6 +4026,70 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         }
         // ─────────────────────────────────────────────────────────────
         // ─────────────────────────────────────────────────────────────
+        // CROSS-PASS MD SCRUB (Main pass, runs after APP scrub)
+        //
+        // The McNair pass claims certain MDs (writes them to assignmentsObj
+        // for McNair-side rooms). The Main pass model sometimes places those
+        // same MDs on additional rooms — usually adding McNair-side rooms
+        // beyond what the McNair pass placed (cap violations) or even adding
+        // Main-side rooms (cross-campus violations).
+        //
+        // Scrub: identify every MD already on a McNair-side room. For each
+        // such MD, find ALL their rooms in the current assignmentsObj. Keep
+        // only the rooms that the McNair pass originally placed (rooms that
+        // existed in `cur` with their name as md before this pass ran).
+        // Drop everything else this pass added under that MD's name.
+        // ─────────────────────────────────────────────────────────────
+
+        // Build set of (mdName, room) pairs that the McNair pass actually placed.
+        // These come from `cur` — the state BEFORE this Main pass ran.
+        const mcnairPassPlacements = new Set();
+        for (const [room, v] of Object.entries(cur)) {
+          if (room === "__closed" || !v || typeof v !== "object") continue;
+          if (!v.md || !v.md.name) continue;
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (!isMcnairSide(disp)) continue;
+          mcnairPassPlacements.add(v.md.name + "|" + disp);
+        }
+
+        // Set of MDs claimed by McNair pass
+        const mcnairClaimedMds = new Set();
+        for (const placement of mcnairPassPlacements) {
+          mcnairClaimedMds.add(placement.split("|")[0]);
+        }
+
+        // Walk assignmentsObj. For each room with an MD, check:
+        //   - Is this MD claimed by McNair pass?
+        //   - If yes, did McNair pass actually place this MD in THIS room?
+        //   - If yes → keep. If no → null the MD.
+        const crossPassMdRemovals = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!v.md || !v.md.name) continue;
+          if (!mcnairClaimedMds.has(v.md.name)) continue;
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const placementKey = v.md.name + "|" + disp;
+          if (mcnairPassPlacements.has(placementKey)) continue; // legitimate McNair pass placement
+          // This MD is McNair-claimed but this room is NOT one McNair pass placed them in
+          crossPassMdRemovals.push({ md: v.md.name, room: disp });
+          v.md = null;
+          // Keep notes informative
+          v.notes = (v.notes ? v.notes + " | " : "") +
+                    "Cross-pass MD scrub: MD claimed by McNair pass cannot take additional rooms";
+        }
+
+        if (crossPassMdRemovals.length > 0) {
+          const byMd = {};
+          crossPassMdRemovals.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room);
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " from " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side cross-pass MD scrub: removed McNair-claimed MDs from extra rooms (" + summary + ")");
+          console.log("[Cross-pass MD scrub]", crossPassMdRemovals);
+        }
+        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────
         // GLUCK PRE-EMPTION (Main pass, runs first)
         //
         // Lara/Danielle Gluck is McNair-only. The model frequently places her on
