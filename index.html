@@ -7711,7 +7711,7 @@ function _classifyAppCampus(appInfo) {
 
   // Baylor APPs are campus-locked by shift label
   if (agency === "Baylor") {
-    if (shift.includes("-MN") || shift.includes("- MN")) return "mcnairLocked";
+    if (/\bMN\b/i.test(shift)) return "mcnairLocked";
     return "mainLocked";
   }
 
