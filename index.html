@@ -5858,6 +5858,67 @@ function hasEndoThisWeekBackfill(name) {
       });
       flagsArr.length = 0;
       flagsArr.push(...cosmeticCleaned);
+      // -----------------------------------------------------------
+      // FLOAT SWEEP — Pass 2 (Main APP) only
+      // Reads currentAssignments + staff to find truly-unassigned APPs
+      // and allocates them to Main OR|Float and OTM OR|Float.
+      // Source of truth is the data, not the model's narrative.
+      // -----------------------------------------------------------
+      if (label === "Main APP") {
+        // Merge: combine pre-pass currentAssignments (cur) with this
+        // pass's new placements (assignmentsObj) so the sweep sees the
+        // full day's picture across both passes.
+        const fullDayAssignments = Object.assign({}, cur);
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (!fullDayAssignments[room]) fullDayAssignments[room] = {};
+          // Pass 2 only writes app fields — preserve existing md from cur
+          if (v.md) fullDayAssignments[room].md = v.md;
+          if (v.app !== undefined) fullDayAssignments[room].app = v.app;
+          if (v.notes) fullDayAssignments[room].notes = v.notes;
+        }
+
+        const sweepResult = sweepUnassignedAppsToFloat(staff, fullDayAssignments);
+
+        // Write the float pseudo-rooms back into assignmentsObj so they
+        // get saved to Firebase when the user clicks Accept
+        const MAIN_FLOAT_KEY = "Main OR|Float";
+        const McNAIR_FLOAT_KEY = "OTM OR|Float";
+        if (fullDayAssignments[MAIN_FLOAT_KEY]) {
+          assignmentsObj[MAIN_FLOAT_KEY] = fullDayAssignments[MAIN_FLOAT_KEY];
+        }
+        if (fullDayAssignments[McNAIR_FLOAT_KEY]) {
+          assignmentsObj[McNAIR_FLOAT_KEY] = fullDayAssignments[McNAIR_FLOAT_KEY];
+        }
+
+        // Emit a single flag summarizing what was floated
+        if (sweepResult.totalFloated > 0) {
+          let summary = "Float sweep: ";
+          if (sweepResult.mcnairFloat.length > 0) {
+            summary += "McNair Float (" + sweepResult.mcnairFloat.length + ") = " +
+                       sweepResult.mcnairFloat.join(", ");
+          }
+          if (sweepResult.mcnairFloat.length > 0 && sweepResult.mainFloat.length > 0) {
+            summary += " | ";
+          }
+          if (sweepResult.mainFloat.length > 0) {
+            summary += "Main Float (" + sweepResult.mainFloat.length + ") = " +
+                       sweepResult.mainFloat.join(", ");
+          }
+          flagsArr.push(summary);
+          console.log("[Float sweep]", sweepResult);
+        } else {
+          console.log("[Float sweep] No unassigned APPs to float");
+        }
+
+        // Drop any model-generated "Unassigned APPs (Main, surplus)" flag
+        // since the sweep replaces it with authoritative data
+        const filteredFlags = flagsArr.filter(f =>
+          !/^Unassigned APPs \(Main, surplus\)/i.test(f) &&
+          !/^Unassigned APPs \(McNair, surplus\)/i.test(f)
+        );
+        flagsArr.length = 0;
+        flagsArr.push(...filteredFlags);
+      }
       _aiAssignPlan = {
         assignments: assignmentsObj,
         flags: flagsArr,
@@ -7592,6 +7653,43 @@ function showAiAssignPreview(plan) {
 // (Keep the button ID and label the same. The new aiAssignStart() function
 // shows the campus picker prompt before running a pass.)
 // Convert model's room label ("Main OR 10") to Firebase/admin key format ("Main OR|10")
+  // ---------------------------------------------------------------
+// Classify an APP by campus eligibility
+// Returns "mcnairLocked" | "mainLocked" | "flexible"
+// ---------------------------------------------------------------
+function _classifyAppCampus(appInfo) {
+  if (!appInfo || appInfo.credential === "MD") return null;
+
+  const name = appInfo.name || "";
+  const agency = appInfo.agency || "";
+  const shift = appInfo.shift || "";
+
+  // McNair-only locum APPs (16 names) — must work McNair side
+  const McNAIR_ONLY_LOCUMS = new Set([
+    "Sagar Patel", "Jesus Bagos", "Mark Doria", "Lina Eisa",
+    "Audra Jackson", "Lee Mabry", "Tanya McGowan", "Amanda Messarra",
+    "Adriana Montoya", "Tammy Moore", "Natty Pitera Okojie",
+    "Carla Rose", "Evie Schoene", "Tracey Sheffield",
+    "Khadijah Udu", "Young Wright"
+  ]);
+
+  // Main-only locums (2 names) — must work Main side
+  const MAIN_ONLY_LOCUMS = new Set([
+    "Zamantha Seeman", "Zehneel Jiwani"
+  ]);
+
+  if (McNAIR_ONLY_LOCUMS.has(name)) return "mcnairLocked";
+  if (MAIN_ONLY_LOCUMS.has(name)) return "mainLocked";
+
+  // Baylor APPs are campus-locked by shift label
+  if (agency === "Baylor") {
+    if (shift.includes("-MN") || shift.includes("- MN")) return "mcnairLocked";
+    return "mainLocked";
+  }
+
+  // Other locums (Cross Country, Caliber, etc.) are flexible
+  return "flexible";
+}
 function _aiRoomLabelToKey(label) {
   // Try to match each known site group as a prefix
   for (const group of Object.keys(ALL_SITES)) {
@@ -7605,7 +7703,98 @@ function _aiRoomLabelToKey(label) {
   // This keeps the write working even if a new section shows up
   return label;
 }
+// ---------------------------------------------------------------
+// Float sweep — runs at end of pass 2 (Main APP) only
+// Reads currentAssignments + staff. Computes truly-unassigned APPs.
+// Allocates them to Main OR|Float or OTM OR|Float based on campus
+// eligibility, with flexibles balancing the two sides.
+// Clear-and-replace on both float arrays.
+// ---------------------------------------------------------------
+function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
+  const MAIN_FLOAT_KEY = "Main OR|Float";
+  const McNAIR_FLOAT_KEY = "OTM OR|Float";
 
+  // 1. Build the placed-name set from every room's app field
+  //    (skip the float pseudo-rooms themselves to avoid self-loop)
+  const placedNames = new Set();
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed") continue;
+    if (roomKey === MAIN_FLOAT_KEY || roomKey === McNAIR_FLOAT_KEY) continue;
+    if (!slots || typeof slots !== "object") continue;
+    if (slots.app && slots.app.name) placedNames.add(slots.app.name);
+    if (Array.isArray(slots.float)) {
+      for (const f of slots.float) {
+        if (f && f.name) placedNames.add(f.name);
+      }
+    }
+  }
+
+  // 2. Compute eligible APP pool from staff (everyone working today
+  //    who is not an MD)
+  const eligiblePool = staff.filter(s => s.credential !== "MD");
+
+  // 3. Find unassigned: in pool but not placed
+  const unassigned = eligiblePool.filter(s => !placedNames.has(s.name));
+
+  // 4. Categorize each unassigned APP
+  const mcnairBucket = [];
+  const mainBucket = [];
+  const flexibleBucket = [];
+
+  for (const app of unassigned) {
+    const category = _classifyAppCampus(app);
+    if (category === "mcnairLocked") mcnairBucket.push(app);
+    else if (category === "mainLocked") mainBucket.push(app);
+    else if (category === "flexible") flexibleBucket.push(app);
+    // null category (e.g., MD slipped through) is silently skipped
+  }
+
+  // 5. Allocate flexibles to balance: send each flexible to whichever
+  //    side has fewer total APPs (locked + flexibles already added).
+  //    If tied, alternate starting with McNair.
+  let toggle = "mcnair";
+  for (const flex of flexibleBucket) {
+    const mcnairCount = mcnairBucket.length;
+    const mainCount = mainBucket.length;
+    if (mcnairCount < mainCount) {
+      mcnairBucket.push(flex);
+    } else if (mainCount < mcnairCount) {
+      mainBucket.push(flex);
+    } else {
+      // tied — alternate
+      if (toggle === "mcnair") {
+        mcnairBucket.push(flex);
+        toggle = "main";
+      } else {
+        mainBucket.push(flex);
+        toggle = "mcnair";
+      }
+    }
+  }
+
+  // 6. Clear-and-replace the two float arrays
+  if (!assignmentsObj[MAIN_FLOAT_KEY]) assignmentsObj[MAIN_FLOAT_KEY] = {};
+  if (!assignmentsObj[McNAIR_FLOAT_KEY]) assignmentsObj[McNAIR_FLOAT_KEY] = {};
+
+  assignmentsObj[MAIN_FLOAT_KEY].float = mainBucket.map(s => ({
+    name: s.name,
+    credential: s.credential,
+    agency: s.agency
+  }));
+
+  assignmentsObj[McNAIR_FLOAT_KEY].float = mcnairBucket.map(s => ({
+    name: s.name,
+    credential: s.credential,
+    agency: s.agency
+  }));
+
+  // 7. Return summary for flag emission
+  return {
+    mainFloat: mainBucket.map(s => s.name),
+    mcnairFloat: mcnairBucket.map(s => s.name),
+    totalFloated: mainBucket.length + mcnairBucket.length
+  };
+}
 async function applyAiAssignments() {
   if (!_aiAssignPlan) return;
   const date = document.getElementById("adminDatePicker").value;
