@@ -5859,6 +5859,21 @@ function hasEndoThisWeekBackfill(name) {
       flagsArr.length = 0;
       flagsArr.push(...cosmeticCleaned);
       // -----------------------------------------------------------
+      // CROSS-PASS APP SCRUB — runs on every pass
+      // Strips any APP that's already placed in cur (a prior pass's
+      // accepted assignments). The model sometimes ignores
+      // "do not reassign currentAssignments" — this catches it.
+      // -----------------------------------------------------------
+      const crossPassRemovals = _scrubCrossPassApps(assignmentsObj, cur);
+      if (crossPassRemovals.length > 0) {
+        const summary = crossPassRemovals
+          .map(r => r.name + " removed from " + r.room.replace(/\|/, " ") +
+                    " (" + r.reason + ")")
+          .join(" | ");
+        flagsArr.push("Client-side cross-pass scrub: " + summary);
+        console.log("[Cross-pass scrub]", crossPassRemovals);
+      }
+      // -----------------------------------------------------------
       // CAMPUS LOCK ENFORCEMENT — runs on every pass
       // Strips any APP placed on the wrong campus side and flags it.
       // The float sweep (pass 2 only) will backfill the now-empty rooms.
@@ -5937,7 +5952,55 @@ function hasEndoThisWeekBackfill(name) {
         } else {
           console.log("[Float sweep] No unassigned APPs to float");
         }
+// -----------------------------------------------------------
+        // POST-SWEEP DEFICIT FLAG — list any case-bearing rooms still
+        // empty after backfill. These are unfillable given today's pool.
+        // -----------------------------------------------------------
+        const MAIN_FLOAT_KEY_DEFICIT = "Main OR|Float";
+        const McNAIR_FLOAT_KEY_DEFICIT = "OTM OR|Float";
+        const isMainSideForDeficit = (rk) => {
+          if (rk === MAIN_FLOAT_KEY_DEFICIT) return false;
+          return rk.startsWith("Main OR") || rk.startsWith("Main Endo") ||
+                 rk.startsWith("NIR") || rk.startsWith("MRI") ||
+                 rk.startsWith("IR") || rk.startsWith("CT") ||
+                 rk.startsWith("RM-IR");
+        };
+        const isMcnairSideForDeficit = (rk) => {
+          if (rk === McNAIR_FLOAT_KEY_DEFICIT) return false;
+          return rk.startsWith("McNair OR") || rk.startsWith("OTM OR") ||
+                 rk.startsWith("OTM Endo") || rk.startsWith("Jamail OR");
+        };
+        const isCaseBearingForDeficit = (rk, slots) => {
+          const MANDATORY_DEFICIT = new Set([
+            "Main OR|10", "Main OR|15",
+            "Main Endo|1", "Main Endo|2", "Main Endo|3",
+            "NIR|1"
+          ]);
+          if (MANDATORY_DEFICIT.has(rk)) return true;
+          if (!slots) return false;
+          return !!(slots.caseTime || slots.surgeon || slots.procedure);
+        };
 
+        const deficitMain = [];
+        const deficitMcnair = [];
+        for (const [roomKey, slots] of Object.entries(fullDayAssignments)) {
+          if (roomKey === "__closed") continue;
+          if (roomKey === MAIN_FLOAT_KEY_DEFICIT || roomKey === McNAIR_FLOAT_KEY_DEFICIT) continue;
+          if (!slots || typeof slots !== "object") continue;
+          if (!isCaseBearingForDeficit(roomKey, slots)) continue;
+          if (slots.app && slots.app.name) continue;
+          const display = roomKey.replace(/\|/, " ");
+          if (isMainSideForDeficit(roomKey)) deficitMain.push(display);
+          else if (isMcnairSideForDeficit(roomKey)) deficitMcnair.push(display);
+        }
+        if (deficitMain.length > 0) {
+          flagsArr.push("STRUCTURAL_MAIN_APP_DEFICIT: " + deficitMain.length +
+                        " Main-side rooms unstaffed (" + deficitMain.join(", ") + ")");
+        }
+        if (deficitMcnair.length > 0) {
+          flagsArr.push("STRUCTURAL_McNAIR_APP_DEFICIT: " + deficitMcnair.length +
+                        " McNair-side rooms unstaffed (" + deficitMcnair.join(", ") + ")");
+        }
         // Drop any model-generated "Unassigned APPs (Main, surplus)" flag
         // since the sweep replaces it with authoritative data
         const filteredFlags = flagsArr.filter(f =>
@@ -7762,6 +7825,53 @@ function _aiRoomLabelToKey(label) {
 //   - Intra-campus placements (e.g., McNair-locked at McNair-side) are fine.
 // Returns a list of violations for flag emission.
 // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+// Cross-pass APP scrub — strip any APP from assignmentsObj that is
+// already placed in cur (a previous pass's accepted assignments).
+// The model's prompt says "do not reassign anyone in
+// currentAssignments" but this isn't always respected. Client-side
+// scrub guarantees it.
+// Returns a list of removals for flag emission.
+// ---------------------------------------------------------------
+function _scrubCrossPassApps(assignmentsObj, cur) {
+  const MAIN_FLOAT_KEY = "Main OR|Float";
+  const McNAIR_FLOAT_KEY = "OTM OR|Float";
+
+  // Build the set of names already placed in cur (across all rooms,
+  // including float arrays)
+  const lockedNames = new Set();
+  for (const [roomKey, slots] of Object.entries(cur || {})) {
+    if (roomKey === "__closed") continue;
+    if (!slots || typeof slots !== "object") continue;
+    if (slots.app && slots.app.name) lockedNames.add(slots.app.name);
+    if (Array.isArray(slots.float)) {
+      for (const f of slots.float) {
+        if (f && f.name) lockedNames.add(f.name);
+      }
+    }
+  }
+
+  // Walk assignmentsObj. If any room's app.name matches a locked name,
+  // null it.
+  const removals = [];
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed") continue;
+    if (roomKey === MAIN_FLOAT_KEY || roomKey === McNAIR_FLOAT_KEY) continue;
+    if (!slots || typeof slots !== "object") continue;
+    if (!slots.app || !slots.app.name) continue;
+
+    if (lockedNames.has(slots.app.name)) {
+      removals.push({
+        name: slots.app.name,
+        room: roomKey,
+        reason: "already placed in prior pass"
+      });
+      slots.app = null;
+    }
+  }
+
+  return removals;
+}
 function _enforceCampusLockOnApps(assignmentsObj, staff) {
   const MAIN_FLOAT_KEY = "Main OR|Float";
   const McNAIR_FLOAT_KEY = "OTM OR|Float";
