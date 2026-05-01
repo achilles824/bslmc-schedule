@@ -4594,6 +4594,103 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
             console.log("[Room-key dedup]", { collapsedFrom: keys, into: disp });
           }
         }
+        // ─────────────────────────────────────────────────────────────
+        // EMPTY-ROOM APP BACKFILL (Main-side, rooms-with-cases)
+        //
+        // Mirrors the McNair-pass APP backfill. After cross-pass scrub
+        // and all other Main-pass validators, find Main-side rooms with
+        // cases that still have app:null and fill from unassigned APPs.
+        //
+        // Bug this fixes: cross-pass APP scrub nulls a duplicate APP on
+        // a Main-side room. The model has already finished APP assignment
+        // by then; nothing refills. Without this, a Main OR room ends with
+        // MD assigned but no APP, while surplus APPs sit unassigned.
+        // ─────────────────────────────────────────────────────────────
+        const MAIN_AREA_PREFIXES_BACKFILL = [
+          "Main OR", "Main Endo", "NIR", "MRI", "IR", "CT", "RM-IR"
+        ];
+        const isMainSideForBackfill = roomKey => {
+          for (const a of MAIN_AREA_PREFIXES_BACKFILL) {
+            if (roomKey.startsWith(a)) return true;
+          }
+          return false;
+        };
+
+        // Build set of all APPs already assigned ANYWHERE in assignmentsObj
+        // (both Main-side and McNair-side, so we don't pull a McNair-locked APP)
+        const allAssignedApps = new Set();
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (v && v.app && v.app.name) allAssignedApps.add(v.app.name);
+        }
+
+        // Pool of unassigned APPs from staff. Exclude McNair-only locums
+        // (the 16-name list) since those don't belong on Main side.
+        const McNAIR_ONLY_LOCUM_APPS = new Set([
+          "Sagar Patel", "Jesus Bagos", "Mark Doria", "Lina Eisa",
+          "Audra Jackson", "Lee Mabry", "Tanya McGowan", "Amanda Messarra",
+          "Adriana Montoya", "Tammy Moore", "Natty Pitera Okojie",
+          "Carla Rose", "Evie Schoene", "Tracey Sheffield",
+          "Khadijah Udu", "Young Wright"
+        ]);
+        const isBaylorMcnairAPP = (info) =>
+          info && info.credential !== "MD" &&
+          info.agency === "Baylor" &&
+          (info.shift && (info.shift.includes("-MN") || info.shift.includes("- MN")));
+
+        const unassignedMainApps = [];
+        for (const s of staff) {
+          if (s.credential === "MD") continue;
+          if (allAssignedApps.has(s.name)) continue;
+          if (McNAIR_ONLY_LOCUM_APPS.has(s.name)) continue;
+          if (isBaylorMcnairAPP(s)) continue;
+          unassignedMainApps.push(s);
+        }
+
+        // Find Main-side rooms with cases that have app:null
+        const mainAppBackfillRooms = [];
+        const seenMainAppRooms = new Set();
+
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (!isMainSideForBackfill(disp)) continue;
+          if (v && v.app && v.app.name) continue;
+          // Confirm room has a case in cur
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const curEntry = cur[fbForm] || cur[disp] || cur[room];
+          if (!curEntry) continue;
+          const hasCase = curEntry.caseTime || curEntry.surgeon || curEntry.procedure || curEntry.mandatory;
+          if (!hasCase) continue;
+          mainAppBackfillRooms.push({ key: room, disp });
+          seenMainAppRooms.add(disp);
+        }
+
+        // Assign unassigned APPs to empty Main-side rooms
+        const mainAppBackfilled = [];
+        for (const { key, disp } of mainAppBackfillRooms) {
+          if (unassignedMainApps.length === 0) break;
+          const pick = unassignedMainApps.shift();
+          const existing = assignmentsObj[key] || {};
+          assignmentsObj[key] = {
+            md: existing.md || null,
+            app: { name: pick.name, credential: pick.credential, agency: pick.agency },
+            notes: (existing.notes ? existing.notes + " | " : "") +
+                   "Client-side Main APP backfill: empty room with case"
+          };
+          mainAppBackfilled.push({ app: pick.name, room: disp });
+        }
+
+        if (mainAppBackfilled.length > 0) {
+          const byApp = {};
+          mainAppBackfilled.forEach(x => {
+            (byApp[x.app] = byApp[x.app] || []).push(x.room);
+          });
+          const summary = Object.entries(byApp)
+            .map(([app, rms]) => app + " → " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side Main APP backfill: empty rooms with cases filled (" + summary + ")");
+          console.log("[Client-side Main APP backfill]", mainAppBackfilled);
+        }
+        // ─────────────────────────────────────────────────────────────
       }
       // ─────────────────────────────────────────────────────────────
 
@@ -5005,13 +5102,21 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         const redistributableRooms = [];
         const seenRooms = new Set();
         // From assignmentsObj (rooms the validators dropped)
-        for (const [room, v] of Object.entries(assignmentsObj)) {
-          const area = areaOfRoom(room);
-          if (!area) continue;
-          if (v.md && v.md.name) continue;
-          redistributableRooms.push(room);
-          seenRooms.add(room);
-        }
+for (const [room, v] of Object.entries(assignmentsObj)) {
+  const area = areaOfRoom(room);
+  if (!area) continue;
+  if (v.md && v.md.name) continue;
+  // Only redistribute if room has a case (check both assignmentsObj and cur)
+  const fbForm = room.replace(/\s(\d+)$/, "|$1");
+  const dispForm = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+  const curEntry = cur[fbForm] || cur[dispForm] || cur[room];
+  const assignmentEntry = v;
+  const hasCaseInAssignment = assignmentEntry && (assignmentEntry.caseTime || assignmentEntry.surgeon || assignmentEntry.procedure);
+  const hasCaseInCur = curEntry && (curEntry.caseTime || curEntry.surgeon || curEntry.procedure);
+  if (!hasCaseInAssignment && !hasCaseInCur) continue;
+  redistributableRooms.push(room);
+  seenRooms.add(room);
+}
         // From cur (rooms the model never assigned in this pass at all)
         for (const [room, v] of Object.entries(cur)) {
           if (room === "__closed" || !v || typeof v !== "object") continue;
