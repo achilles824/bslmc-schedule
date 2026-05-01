@@ -4383,9 +4383,11 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         const dispKey = k => k.includes("|") ? k.replace("|", " ") : k;
 
        
-        // Identify overflow rooms (md:null on McNair side).
-        // These are in cur where the room is McNair-side and md is null/missing,
-        // AND NOT assigned by the current Main pass either.
+        // Identify overflow rooms (md:null on McNair side WITH a case).
+        // Without the case check, the loop picks up rooms that exist in cur
+        // but have no surgeon/caseTime/procedure (stale empty rooms or rooms
+        // the model invented). Those would then end up in the deficit flag
+        // even though they shouldn't be staffed at all.
         const overflowRooms = [];
         for (const [roomKey, v] of Object.entries(cur)) {
           if (roomKey === "__closed" || !v || typeof v !== "object") continue;
@@ -4393,8 +4395,10 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
           if (!isMcnairSide) continue;
           const hasMdInCur = v.md && v.md.name;
           if (hasMdInCur) continue;
-          // Check assignmentsObj under BOTH formats — the model may have used
-          // display format while cur uses pipe format.
+          // Skip rooms with no case data — they shouldn't be staffed at all
+          const hasCase = v.caseTime || v.surgeon || v.procedure || v.mandatory;
+          if (!hasCase) continue;
+          // Check assignmentsObj under BOTH formats
           const fbForm = fbKey(roomKey);
           const dispForm = dispKey(roomKey);
           const mainAssignFb = assignmentsObj[fbForm];
