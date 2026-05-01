@@ -5678,9 +5678,11 @@ for (const [room, v] of Object.entries(assignmentsObj)) {
           flagsArr.length = 0;
           flagsArr.push(...cleanedFlags);
           console.log("[Client-side McNair redistribution]", redistributed);
-          // ─────────────────────────────────────────────────────────────
+        }
+        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────
 // EMPTY-ROOM APP BACKFILL (McNair-side, rooms-with-cases)
-// Insertion point: after McNair-anchored MD redistribution block,
+// Runs on every McNair pass, independent of MD redistribution.
 // before _aiAssignPlan = { ... } assignment.
 // ─────────────────────────────────────────────────────────────
 const McNAIR_AREA_PREFIXES_BACKFILL = ["McNair OR", "OTM OR", "OTM Endo", "Jamail OR"];
@@ -5783,8 +5785,6 @@ function hasEndoThisWeekBackfill(name) {
   );
 }
 // ─────────────────────────────────────────────────────────────
-        }
-        // ─────────────────────────────────────────────────────────────
       }
       // ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────
