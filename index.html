@@ -4090,6 +4090,161 @@ async function _aiRunPass({ label, promptBuilder, systemPrompt }) {
         }
         // ─────────────────────────────────────────────────────────────
         // ─────────────────────────────────────────────────────────────
+        // ONCE-PER-WEEK ENDO ENFORCEMENT (Main pass)
+        //
+        // Strict rule: each MD and each APP does endo at most ONCE per
+        // work week. Main Endo and OTM Endo count together (combined bucket).
+        //
+        // Replacement priority:
+        //   MD: 1) flexible (non-Baylor) not placed, not prior endo
+        //       2) Main-anchored Baylor MD not placed, not prior endo
+        //       3) keep original, flag unavoidable
+        //   APP: 1) any unplaced APP not in prior endo
+        //        2) keep original, flag unavoidable
+        // ─────────────────────────────────────────────────────────────
+        const endoTrackerEntries = Array.isArray(rules.weeklyEndoTracking)
+          ? rules.weeklyEndoTracking
+          : [];
+
+        const todayDate = date;
+
+        const priorEndoMDs = new Map();
+        const priorEndoAPPs = new Map();
+        for (const entry of endoTrackerEntries) {
+          if (!entry || !entry.name || !entry.date || !entry.role) continue;
+          if (entry.date === todayDate) continue;
+          if (entry.role === "MD" && !priorEndoMDs.has(entry.name)) {
+            priorEndoMDs.set(entry.name, { date: entry.date, location: entry.location });
+          } else if (entry.role === "APP" && !priorEndoAPPs.has(entry.name)) {
+            priorEndoAPPs.set(entry.name, { date: entry.date, location: entry.location });
+          }
+        }
+
+        const dayOfWeek = (dateStr) => {
+          if (!dateStr) return "?";
+          const [y, m, d] = dateStr.split("-").map(Number);
+          const dt = new Date(y, m - 1, d);
+          return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dt.getDay()];
+        };
+
+        // Pools
+        const workingApps = staff.filter(s => s.credential !== "MD");
+        const workingFlexibleMDs = staff.filter(s =>
+          s.credential === "MD" && s.agency !== "Baylor"
+        );
+        const MAIN_ANCHORED_RE = /^OR\s*\d+\s*-\s*MD/i;
+        const workingMainAnchoredMDs = staff.filter(s =>
+          s.credential === "MD" &&
+          s.agency === "Baylor" &&
+          MAIN_ANCHORED_RE.test(s.shift || "")
+        );
+
+        // Helper: build set of currently-placed MDs/APPs across both
+        // assignmentsObj and cur (so we don't pull a McNair-side MD)
+        const collectPlacedNames = (kind) => {
+          const placed = new Set();
+          for (const v of Object.values(assignmentsObj)) {
+            if (v && v[kind] && v[kind].name) placed.add(v[kind].name);
+          }
+          for (const [r, c] of Object.entries(cur)) {
+            if (r === "__closed" || !c || typeof c !== "object") continue;
+            if (c[kind] && c[kind].name) placed.add(c[kind].name);
+          }
+          return placed;
+        };
+
+        const endoReplacements = [];
+        const endoUnavoidableRepeats = [];
+
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (!disp.startsWith("Main Endo") && !disp.startsWith("OTM Endo")) continue;
+          if (!v) continue;
+
+          // ---- MD check ----
+          if (v.md && v.md.name && priorEndoMDs.has(v.md.name)) {
+            const prior = priorEndoMDs.get(v.md.name);
+            const oldName = v.md.name;
+            const placedMds = collectPlacedNames("md");
+
+            // Tier 1: flexible
+            let candidate = workingFlexibleMDs.find(f =>
+              !placedMds.has(f.name) && !priorEndoMDs.has(f.name)
+            );
+            // Tier 2: Main-anchored Baylor
+            if (!candidate) {
+              candidate = workingMainAnchoredMDs.find(m =>
+                !placedMds.has(m.name) && !priorEndoMDs.has(m.name)
+              );
+            }
+
+            if (candidate) {
+              v.md = {
+                name: candidate.name,
+                credential: candidate.credential,
+                agency: candidate.agency
+              };
+              v.notes = (v.notes ? v.notes + " | " : "") +
+                        "Once-per-week endo: replaced " + oldName + " (prior: " + dayOfWeek(prior.date) + " " + prior.location + ")";
+              endoReplacements.push({
+                room: disp, role: "MD", from: oldName, to: candidate.name,
+                priorDay: dayOfWeek(prior.date), priorLoc: prior.location
+              });
+            } else {
+              endoUnavoidableRepeats.push({
+                room: disp, role: "MD", name: oldName,
+                priorDay: dayOfWeek(prior.date), priorLoc: prior.location
+              });
+            }
+          }
+
+          // ---- APP check ----
+          if (v.app && v.app.name && priorEndoAPPs.has(v.app.name)) {
+            const prior = priorEndoAPPs.get(v.app.name);
+            const oldName = v.app.name;
+            const placedApps = collectPlacedNames("app");
+
+            const candidate = workingApps.find(a =>
+              !placedApps.has(a.name) && !priorEndoAPPs.has(a.name)
+            );
+
+            if (candidate) {
+              v.app = {
+                name: candidate.name,
+                credential: candidate.credential,
+                agency: candidate.agency
+              };
+              v.notes = (v.notes ? v.notes + " | " : "") +
+                        "Once-per-week endo: replaced APP " + oldName + " (prior: " + dayOfWeek(prior.date) + " " + prior.location + ")";
+              endoReplacements.push({
+                room: disp, role: "APP", from: oldName, to: candidate.name,
+                priorDay: dayOfWeek(prior.date), priorLoc: prior.location
+              });
+            } else {
+              endoUnavoidableRepeats.push({
+                room: disp, role: "APP", name: oldName,
+                priorDay: dayOfWeek(prior.date), priorLoc: prior.location
+              });
+            }
+          }
+        }
+
+        if (endoReplacements.length > 0) {
+          const summary = endoReplacements
+            .map(r => r.from + " → " + r.to + " at " + r.room + " (" + r.role + " repeat: " + r.priorDay + " " + r.priorLoc + ")")
+            .join(" | ");
+          flagsArr.push("Client-side once-per-week endo: replacements made (" + summary + ")");
+          console.log("[Once-per-week endo replacements]", endoReplacements);
+        }
+        if (endoUnavoidableRepeats.length > 0) {
+          const summary = endoUnavoidableRepeats
+            .map(r => "Repeat endo: " + r.name + " (role: " + r.role + "; prior: " + r.priorDay + ", " + r.priorLoc + "; today: " + r.room + ")")
+            .join(". ") + ".";
+          flagsArr.push(summary);
+          console.log("[Once-per-week endo unavoidable]", endoUnavoidableRepeats);
+        }
+        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────
         // GLUCK PRE-EMPTION (Main pass, runs first)
         //
         // Lara/Danielle Gluck is McNair-only. The model frequently places her on
