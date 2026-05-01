@@ -5859,6 +5859,20 @@ function hasEndoThisWeekBackfill(name) {
       flagsArr.length = 0;
       flagsArr.push(...cosmeticCleaned);
       // -----------------------------------------------------------
+      // DEDUPE APPs — runs on every pass
+      // If the model placed the same APP in 2+ rooms, keep the
+      // first occurrence and null the rest. Emit a flag.
+      // -----------------------------------------------------------
+      const dedupeRemovals = _dedupeApps(assignmentsObj);
+      if (dedupeRemovals.length > 0) {
+        const summary = dedupeRemovals
+          .map(r => r.name + " removed from " + r.fromRoom.replace(/\|/, " ") +
+                    " (kept in " + r.keptIn.replace(/\|/, " ") + ")")
+          .join(" | ");
+        flagsArr.push("Duplicate APP placements removed: " + summary);
+        console.log("[APP dedupe]", dedupeRemovals);
+      }
+      // -----------------------------------------------------------
       // FLOAT SWEEP — Pass 2 (Main APP) only
       // Reads currentAssignments + staff to find truly-unassigned APPs
       // and allocates them to Main OR|Float and OTM OR|Float.
@@ -7710,12 +7724,73 @@ function _aiRoomLabelToKey(label) {
 // eligibility, with flexibles balancing the two sides.
 // Clear-and-replace on both float arrays.
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// Float sweep — runs at end of pass 2 (Main APP) only
+// 1. Fills empty case-bearing rooms with unassigned APPs
+//    (campus-locked APPs go to their locked campus first,
+//     flexibles fill remaining empties on either side).
+// 2. Floats the leftover surplus to Main OR|Float and OTM OR|Float
+//    with balanced distribution.
+// 3. Clear-and-replace on both float arrays.
+// ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+// Dedupe APPs across all rooms in assignmentsObj.
+// If a name appears in app fields of multiple rooms, keep the
+// first occurrence and null the rest. Returns a list of dedupe
+// actions taken so a flag can be emitted.
+// ---------------------------------------------------------------
+function _dedupeApps(assignmentsObj) {
+  const seen = {}; // name -> first room key
+  const removals = []; // {name, fromRoom}
+
+  // Sort room keys for deterministic "first occurrence"
+  const sortedKeys = Object.keys(assignmentsObj).sort();
+
+  for (const roomKey of sortedKeys) {
+    if (roomKey === "__closed") continue;
+    const slots = assignmentsObj[roomKey];
+    if (!slots || typeof slots !== "object") continue;
+    if (!slots.app || !slots.app.name) continue;
+
+    const name = slots.app.name;
+    if (seen[name]) {
+      // Duplicate — null this room's app, log the removal
+      removals.push({ name, fromRoom: roomKey, keptIn: seen[name] });
+      slots.app = null;
+    } else {
+      seen[name] = roomKey;
+    }
+  }
+
+  return removals;
+}
 function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
   const MAIN_FLOAT_KEY = "Main OR|Float";
   const McNAIR_FLOAT_KEY = "OTM OR|Float";
 
+  // Helpers to identify Main-side and McNair-side rooms by key
+  const isMainSideRoom = (roomKey) => {
+    if (roomKey === MAIN_FLOAT_KEY) return false;
+    if (roomKey.startsWith("Main OR")) return true;
+    if (roomKey.startsWith("Main Endo")) return true;
+    if (roomKey.startsWith("NIR")) return true;
+    if (roomKey.startsWith("MRI")) return true;
+    if (roomKey.startsWith("IR")) return true;
+    if (roomKey.startsWith("CT")) return true;
+    if (roomKey.startsWith("RM-IR")) return true;
+    return false;
+  };
+  const isMcnairSideRoom = (roomKey) => {
+    if (roomKey === McNAIR_FLOAT_KEY) return false;
+    if (roomKey.startsWith("McNair OR")) return true;
+    if (roomKey.startsWith("OTM OR")) return true;
+    if (roomKey.startsWith("OTM Endo")) return true;
+    if (roomKey.startsWith("Jamail OR")) return true;
+    return false;
+  };
+
   // 1. Build the placed-name set from every room's app field
-  //    (skip the float pseudo-rooms themselves to avoid self-loop)
+  //    (skip the float pseudo-rooms themselves)
   const placedNames = new Set();
   for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
     if (roomKey === "__closed") continue;
@@ -7736,7 +7811,7 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
   // 3. Find unassigned: in pool but not placed
   const unassigned = eligiblePool.filter(s => !placedNames.has(s.name));
 
-  // 4. Categorize each unassigned APP
+  // 4. Categorize each unassigned APP by campus eligibility
   const mcnairBucket = [];
   const mainBucket = [];
   const flexibleBucket = [];
@@ -7746,53 +7821,109 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
     if (category === "mcnairLocked") mcnairBucket.push(app);
     else if (category === "mainLocked") mainBucket.push(app);
     else if (category === "flexible") flexibleBucket.push(app);
-    // null category (e.g., MD slipped through) is silently skipped
   }
 
-  // 5. Allocate flexibles to balance: send each flexible to whichever
-  //    side has fewer total APPs (locked + flexibles already added).
-  //    If tied, alternate starting with McNair.
+  // 5. Find empty case-bearing rooms on each side
+  const isCaseBearingOrMandatory = (roomKey, slots) => {
+    // Mandatory rooms are always staffed
+    const MANDATORY = new Set([
+      "Main OR|10", "Main OR|15",
+      "Main Endo|1", "Main Endo|2", "Main Endo|3",
+      "NIR|1"
+    ]);
+    if (MANDATORY.has(roomKey)) return true;
+    if (!slots) return false;
+    return !!(slots.caseTime || slots.surgeon || slots.procedure);
+  };
+
+  const emptyMainRooms = [];
+  const emptyMcnairRooms = [];
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed") continue;
+    if (roomKey === MAIN_FLOAT_KEY || roomKey === McNAIR_FLOAT_KEY) continue;
+    if (!slots || typeof slots !== "object") continue;
+    // Only fill rooms that are case-bearing or mandatory
+    if (!isCaseBearingOrMandatory(roomKey, slots)) continue;
+    // Only fill rooms with no APP currently
+    if (slots.app && slots.app.name) continue;
+    if (isMainSideRoom(roomKey)) emptyMainRooms.push(roomKey);
+    else if (isMcnairSideRoom(roomKey)) emptyMcnairRooms.push(roomKey);
+  }
+
+  // 6. Backfill empty rooms — locked buckets first, then flexibles
+  const backfillRoom = (roomKey, app) => {
+    if (!assignmentsObj[roomKey]) assignmentsObj[roomKey] = {};
+    assignmentsObj[roomKey].app = {
+      name: app.name,
+      credential: app.credential,
+      agency: app.agency
+    };
+  };
+
+  // 6a. Fill empty Main rooms from mainBucket
+  while (emptyMainRooms.length > 0 && mainBucket.length > 0) {
+    backfillRoom(emptyMainRooms.shift(), mainBucket.shift());
+  }
+
+  // 6b. Fill empty McNair rooms from mcnairBucket
+  while (emptyMcnairRooms.length > 0 && mcnairBucket.length > 0) {
+    backfillRoom(emptyMcnairRooms.shift(), mcnairBucket.shift());
+  }
+
+  // 6c. Distribute flexibles to remaining empty rooms (both sides)
+  while (flexibleBucket.length > 0 && (emptyMainRooms.length > 0 || emptyMcnairRooms.length > 0)) {
+    if (emptyMainRooms.length >= emptyMcnairRooms.length && emptyMainRooms.length > 0) {
+      backfillRoom(emptyMainRooms.shift(), flexibleBucket.shift());
+    } else if (emptyMcnairRooms.length > 0) {
+      backfillRoom(emptyMcnairRooms.shift(), flexibleBucket.shift());
+    }
+  }
+
+  // 7. Anyone left in any bucket is true surplus → float
+  //    Locked buckets float to their locked campus.
+  //    Flexibles balance with toggle.
+  const floatMcnair = [...mcnairBucket];
+  const floatMain = [...mainBucket];
+
   let toggle = "mcnair";
   for (const flex of flexibleBucket) {
-    const mcnairCount = mcnairBucket.length;
-    const mainCount = mainBucket.length;
-    if (mcnairCount < mainCount) {
-      mcnairBucket.push(flex);
-    } else if (mainCount < mcnairCount) {
-      mainBucket.push(flex);
+    if (floatMcnair.length < floatMain.length) {
+      floatMcnair.push(flex);
+    } else if (floatMain.length < floatMcnair.length) {
+      floatMain.push(flex);
     } else {
       // tied — alternate
       if (toggle === "mcnair") {
-        mcnairBucket.push(flex);
+        floatMcnair.push(flex);
         toggle = "main";
       } else {
-        mainBucket.push(flex);
+        floatMain.push(flex);
         toggle = "mcnair";
       }
     }
   }
 
-  // 6. Clear-and-replace the two float arrays
+  // 8. Clear-and-replace the two float arrays
   if (!assignmentsObj[MAIN_FLOAT_KEY]) assignmentsObj[MAIN_FLOAT_KEY] = {};
   if (!assignmentsObj[McNAIR_FLOAT_KEY]) assignmentsObj[McNAIR_FLOAT_KEY] = {};
 
-  assignmentsObj[MAIN_FLOAT_KEY].float = mainBucket.map(s => ({
+  assignmentsObj[MAIN_FLOAT_KEY].float = floatMain.map(s => ({
     name: s.name,
     credential: s.credential,
     agency: s.agency
   }));
 
-  assignmentsObj[McNAIR_FLOAT_KEY].float = mcnairBucket.map(s => ({
+  assignmentsObj[McNAIR_FLOAT_KEY].float = floatMcnair.map(s => ({
     name: s.name,
     credential: s.credential,
     agency: s.agency
   }));
 
-  // 7. Return summary for flag emission
+  // 9. Return summary for flag emission
   return {
-    mainFloat: mainBucket.map(s => s.name),
-    mcnairFloat: mcnairBucket.map(s => s.name),
-    totalFloated: mainBucket.length + mcnairBucket.length
+    mainFloat: floatMain.map(s => s.name),
+    mcnairFloat: floatMcnair.map(s => s.name),
+    totalFloated: floatMain.length + floatMcnair.length
   };
 }
 async function applyAiAssignments() {
