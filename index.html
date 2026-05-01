@@ -3678,16 +3678,18 @@ async function aiAssignStart() {
   const choice = prompt(
     "Which pass would you like to run?\n\n" +
     "  1 = McNair APP (NEW — Tier 1 lock, Jamail/McNair OR/OTM/Endo APPs)\n" +
-    "  2 = McNair (legacy two-pass — Jamail, McNair OR, OTM OR, OTM Endo)\n" +
-    "  3 = Main (legacy two-pass — Main OR, Main Endo, Radiology)\n" +
-    "  4 = Full Day (legacy v9.3 — all at once)\n\n" +
-    "Type 1, 2, 3, or 4:"
+    "  2 = Main APP (NEW — Main OR/Endo/Radiology APPs)\n" +
+    "  3 = McNair (legacy two-pass)\n" +
+    "  4 = Main (legacy two-pass)\n" +
+    "  5 = Full Day (legacy v9.3)\n\n" +
+    "Strict order for new passes: 1 → 2 → 3 → 4. Type 1, 2, 3, 4, or 5:"
   );
 
   if (choice === "1") return aiAssignMcnairApp();
-  if (choice === "2") return aiAssignMcnair();
-  if (choice === "3") return aiAssignMain();
-  if (choice === "4") return aiAssignFullDay();
+  if (choice === "2") return aiAssignMainApp();
+  if (choice === "3") return aiAssignMcnair();
+  if (choice === "4") return aiAssignMain();
+  if (choice === "5") return aiAssignFullDay();
   // Cancel or invalid input — do nothing
 }
 
@@ -3717,6 +3719,17 @@ async function aiAssignMcnair() {
 // ---------------------------------------------------------------
 // Main pass
 // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+// Pass 2 of four-pass system: Main APP
+// ---------------------------------------------------------------
+async function aiAssignMainApp() {
+  _aiCurrentPass = "mainApp";
+  await _aiRunPass({
+    label: "Main APP",
+    promptBuilder: buildMainAppPrompt,
+    systemPrompt: "You are an anesthesiology scheduling assistant assigning APPs to the Main campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose. Touch only app slots; leave md fields null."
+  });
+}
 async function aiAssignMain() {
   _aiCurrentPass = "main";
   await _aiRunPass({
@@ -5872,6 +5885,7 @@ function aiAssignRetry() {
   document.getElementById("aiAssignModal").style.display = "none";
   _aiAssignPlan = null;
   if (_aiCurrentPass === "mcnairApp") aiAssignMcnairApp();
+  else if (_aiCurrentPass === "mainApp") aiAssignMainApp();
   else if (_aiCurrentPass === "mcnair") aiAssignMcnair();
   else if (_aiCurrentPass === "main") aiAssignMain();
   else if (_aiCurrentPass === "fullday") aiAssignFullDay();
@@ -6757,6 +6771,191 @@ Don't flag expected behaviors (mandatory rooms staffed, MDs at cap, standard rad
 ]
 
 One FLAGS block max, at end. Omit if no flags. Each room object must have md and app fields (use null if unassigned).`;
+}
+  function buildMainAppPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
+  return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's. Assign APPs to the MAIN CAMPUS for ${date}.
+
+OUTPUT: Raw JSON array. Start with [, end with ]. No prose, no markdown. First element is WORK block. Last element (if any) is FLAGS block. All other elements are room assignments.
+
+SCOPE: Main OR, Main Endo, Radiology (NIR, IR, CT, MRI, RM-IR). Ignore McNair-side rooms.
+
+CRITICAL — APP-ONLY PASS:
+- You assign ONLY APPs (CRNA or CAA). You do NOT assign MDs.
+- Every room object in your output has md:null. Do not invent MDs.
+- Pass 3 (Main MD) will fill md slots later. A Main OR room with an APP and md:null is the EXPECTED mid-state — do not flag it.
+
+PASS 1 ALREADY RAN:
+McNair-side APPs are locked in currentAssignments. Do NOT touch them. Do NOT re-assign anyone already placed in pass 1.
+
+## INPUTS
+
+Staff working today:
+${staffSummary}
+
+Current assignments (already saved by pass 1 — DO NOT modify):
+${currentAssignments}
+
+Rooms needing assignment:
+${roomsNeeding}
+
+Rules reference:
+${JSON.stringify(rules, null, 2)}
+
+## ABSOLUTE RULES
+
+1. APP-ONLY OUTPUT
+   Every room object you emit has md:null. You touch only app fields.
+
+2. STRICT CAMPUS LOCK — NEVER VIOLATE
+   Eligible APP pool for this pass:
+   - Baylor APPs WITHOUT "-MN" in shift label (Main-locked Baylor)
+   - Main-only locums: Zamantha Seeman, Zehneel Jiwani
+   - Flexible locum APPs not placed in pass 1 (Cross Country, Caliber, etc. that are NOT on the McNair-only-16 list)
+
+   FORBIDDEN APPs for this pass:
+   - Anyone already placed in currentAssignments (pass 1 locked them on McNair side)
+   - Baylor APPs WITH "-MN" in shift (McNair-only Baylor)
+   - McNair-only locums (16 names): Sagar Patel, Jesus Bagos, Mark Doria, Lina Eisa, Audra Jackson, Lee Mabry, Tanya McGowan, Amanda Messarra, Adriana Montoya, Tammy Moore, Natty Pitera Okojie, Carla Rose, Evie Schoene, Tracey Sheffield, Khadijah Udu, Young Wright
+   - Any MD (credential = "MD"). MDs never go in APP slots.
+
+3. EACH APP IN EXACTLY ONE ROOM (with two exceptions)
+   - NIR APP can cover all NIR rooms (NIR 1, NIR 2, etc.)
+   - IR/CT/MRI APP can cover all non-NIR radiology rooms (IR + CT + MRI + RM-IR shared)
+   - Otherwise no sharing. Each name appears in at most one app slot.
+
+## STEP 1 — MANDATORY ROOMS (always staffed regardless of case load)
+
+These rooms must have an APP, even if no cases listed:
+  - Main OR 10
+  - Main OR 15
+  - Main Endo 1
+  - Main Endo 2
+  - Main Endo 3
+  - NIR 1
+
+If any mandatory room is missing from roomsNeeding, ADD it to your output with an APP assigned.
+
+## STEP 2 — COMPUTE DEMAND AND SUPPLY
+
+Count from roomsNeeding (Main side only):
+  - M = Main OR rooms with cases (include OR 10 and OR 15 even if no cases)
+  - M_LATE = Main OR rooms with caseTime ≥ 12:00
+  - RADIOLOGY_ROOMS = case-bearing radiology + NIR 1 (mandatory)
+  - EXTRA_RADIOLOGY = radiology rooms beyond 2 (NIR rooms count as 1 group sharing 1 APP; IR + CT + MRI + RM-IR count as 1 group sharing 1 APP)
+
+  - MAIN_APP_DEMAND = M + 3 (Main Endo) + min(2, RADIOLOGY_ROOMS) − M_LATE
+    (Late-start rooms only get APPs if surplus; baseline demand excludes them.)
+
+Count eligible pool from staffSummary, EXCLUDING currentAssignments names:
+  - MAIN_APP_SUPPLY = count of Main-eligible APPs not already placed by pass 1
+
+Compute verdict:
+  - MAIN_APP_VERDICT =
+      SURPLUS if MAIN_APP_SUPPLY > MAIN_APP_DEMAND
+      EXACT   if MAIN_APP_SUPPLY = MAIN_APP_DEMAND
+      DEFICIT if MAIN_APP_SUPPLY < MAIN_APP_DEMAND
+
+This drives Step 6 (late-start handling) and the closing flag set.
+
+## STEP 3 — MAIN ENDO APPs (3 unique APPs, once-per-week applied)
+
+Main Endo 1, 2, 3 each get a DIFFERENT APP. No sharing.
+
+For each Main Endo room:
+  - Pick an APP whose name is NOT in any prior-endo entry in rules.weeklyEndoTracking.
+  - Prefer locum APPs over Baylor APPs (locums are more flexible).
+  - If no candidate exists without prior endo, accept the repeat and emit a flag.
+
+If a repeat is unavoidable, prefer the APP with the EARLIEST prior endo day (Mon > Tue > ... > Thu). Emit:
+  "Repeat endo: [name] (role: APP; prior: [day, Main/OTM]; today: Main Endo [N])"
+
+## STEP 4 — RADIOLOGY APPs (2 different APPs)
+
+Two unique APPs minimum for radiology coverage:
+
+  APP #1 (NIR APP): covers NIR 1 (always) plus any other NIR rooms with cases.
+  APP #2 (IR/CT/MRI APP): covers all non-NIR radiology rooms (IR, CT, MRI, RM-IR).
+
+Same person on NIR and IR/CT/MRI is a HARD VIOLATION. If only 1 APP can be spared for radiology:
+  - NIR-1 is mandatory and gets the APP.
+  - IR/CT/MRI rooms get app:null.
+  - Emit: "Radiology IR/CT/MRI uncovered: only 1 radiology APP available"
+
+Only staff radiology rooms where anes type = General. Exception: NIR-1 is always staffed regardless of anes type.
+
+## STEP 5 — MAIN OR APPs (non-late-start rooms first)
+
+For each Main OR room with caseTime < 12:00, plus mandatory OR 10 and OR 15:
+  - Assign an APP from the remaining pool.
+  - No special priority — just fill from available pool.
+
+## STEP 6 — LATE-START MAIN OR ROOMS (verdict-gated)
+
+For each Main OR room in M_LATE (caseTime ≥ 12:00):
+
+  If MAIN_APP_VERDICT = SURPLUS:
+    - Assign an APP. Prefer D12 or D12(M) shift APPs (their shift covers afternoon).
+  If MAIN_APP_VERDICT = EXACT or DEFICIT:
+    - Leave app:null. Emit ONE flag at the end:
+      "Late-start rooms without APP (no Main surplus): [room list]"
+
+## STEP 7 — COVERAGE AUDIT
+
+Walk every Main-side case-bearing room AND every mandatory room (10, 15, Endo 1-3, NIR 1):
+  - If room has no APP AND pool has remaining eligible APPs: assign one. Repeat until pool empty or every room filled.
+  - If pool empty and rooms remain: leave app:null. Emit STRUCTURAL_MAIN_APP_DEFICIT flag.
+
+## STEP 8 — SURPLUS CHECK
+
+After Step 7, count Main-eligible APPs in the pool who did NOT receive a room. If any exist:
+  - Emit flag: "Unassigned APPs (Main, surplus): [names]"
+
+## STEP 9 — WORK narrative
+
+Write the WORK block AFTER all assignments are final. Counts must match actual placements.
+
+Required fields, in order, separated by " | ":
+
+  PASS: Main APP
+  ROOMS: M=X, M_LATE=X (list rooms), RADIOLOGY_ROOMS=X, EXTRA_RADIOLOGY=X
+  MAIN_APP_DEMAND: X
+  MAIN_APP_SUPPLY: X (eligible Main-side APPs not in pass 1)
+  MAIN_APP_VERDICT: SURPLUS | EXACT | DEFICIT
+  MAIN_ENDO_APPS: [Main Endo 1: name (prior-endo: YES/NO), Main Endo 2: name (prior-endo: YES/NO), Main Endo 3: name (prior-endo: YES/NO)]
+  RADIOLOGY_APPS: NIR APP=name | IR/CT/MRI APP=name (or NONE if uncovered)
+  MAIN_OR_APPS: [room: name, ...]
+  LATE_START_HANDLING: [room: name OR room: app:null because verdict=X, ...]
+  UNASSIGNED_APPS: [pool members not placed] or NONE
+
+## STEP 10 — Flags (closed whitelist)
+
+Only these templates. Do NOT invent flag text.
+
+  - "Unassigned APPs (Main, surplus): [names]"
+  - "STRUCTURAL_MAIN_APP_DEFICIT: [N] Main-side rooms unstaffed. Pool size=[X], demand=[Y]."
+  - "Late-start rooms without APP (no Main surplus): [list]"
+  - "Repeat endo: [name] (role: APP; prior: [day, Main/OTM]; today: [room])"
+  - "Radiology IR/CT/MRI uncovered: only 1 radiology APP available"
+  - "No cases, not staffed: [rooms]"
+
+Do NOT flag:
+  - Rooms with md:null (expected mid-state — pass 3 fills them)
+  - Mandatory rooms staffed (that's the rule, not a violation)
+  - Standard once-per-week endo replacements (the swap is the fix; only flag UNAVOIDABLE repeats)
+  - Shared NIR APP across NIR rooms or shared IR/CT/MRI APP across non-NIR radiology rooms (those are the rules)
+
+## OUTPUT FORMAT
+
+[
+  { "room": "WORK", "md": null, "app": null, "notes": "PASS: Main APP | ROOMS: ... | ..." },
+  { "room": "Main OR 10", "md": null, "app": { "name": "...", "credential": "CRNA", "agency": "..." }, "notes": "" },
+  { "room": "Main Endo 1", "md": null, "app": { "name": "...", "credential": "CRNA", "agency": "..." }, "notes": "" },
+  { "room": "NIR 1", "md": null, "app": { "name": "...", "credential": "CRNA", "agency": "..." }, "notes": "" },
+  ...
+  { "room": "FLAGS", "md": null, "app": null, "notes": "flag 1. flag 2." }
+]
+
+Every room object MUST have md:null. Every app field is either null or { name, credential, agency }. One FLAGS block max at end, omit if no flags.`;
 }
   function buildMainPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System. Your task is to assign MDs and APPs to the MAIN CAMPUS only for ${date}.
