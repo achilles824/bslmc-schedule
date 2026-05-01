@@ -5908,31 +5908,9 @@ function hasEndoThisWeekBackfill(name) {
       // Source of truth is the data, not the model's narrative.
       // -----------------------------------------------------------
       if (label === "Main APP") {
-        // Merge: combine pre-pass currentAssignments (cur) with this
-        // pass's new placements (assignmentsObj) so the sweep sees the
-        // full day's picture across both passes.
-        const fullDayAssignments = Object.assign({}, cur);
-        for (const [room, v] of Object.entries(assignmentsObj)) {
-          if (!fullDayAssignments[room]) fullDayAssignments[room] = {};
-          // Pass 2 only writes app fields — preserve existing md from cur
-          if (v.md) fullDayAssignments[room].md = v.md;
-          if (v.app !== undefined) fullDayAssignments[room].app = v.app;
-          if (v.notes) fullDayAssignments[room].notes = v.notes;
-        }
-
-        const sweepResult = sweepUnassignedAppsToFloat(staff, fullDayAssignments);
-
-        // Write the float pseudo-rooms back into assignmentsObj so they
-        // get saved to Firebase when the user clicks Accept
-        const MAIN_FLOAT_KEY = "Main OR|Float";
-        const McNAIR_FLOAT_KEY = "OTM OR|Float";
-        if (fullDayAssignments[MAIN_FLOAT_KEY]) {
-          assignmentsObj[MAIN_FLOAT_KEY] = fullDayAssignments[MAIN_FLOAT_KEY];
-        }
-        if (fullDayAssignments[McNAIR_FLOAT_KEY]) {
-          assignmentsObj[McNAIR_FLOAT_KEY] = fullDayAssignments[McNAIR_FLOAT_KEY];
-        }
-
+        // Sweep operates directly on assignmentsObj; backfills and floats
+        // are written there so they reach Firebase on Accept.
+        const sweepResult = sweepUnassignedAppsToFloat(staff, cur, assignmentsObj);
         // Emit a single flag summarizing what was floated
         if (sweepResult.totalFloated > 0) {
           let summary = "Float sweep: ";
@@ -5981,9 +5959,14 @@ function hasEndoThisWeekBackfill(name) {
           return !!(slots.caseTime || slots.surgeon || slots.procedure);
         };
 
-        const deficitMain = [];
+   const deficitMain = [];
         const deficitMcnair = [];
-        for (const [roomKey, slots] of Object.entries(fullDayAssignments)) {
+        const deficitAllKeys = new Set([
+          ...Object.keys(cur || {}),
+          ...Object.keys(assignmentsObj || {})
+        ]);
+        for (const roomKey of deficitAllKeys) {
+          const slots = Object.assign({}, (cur || {})[roomKey], (assignmentsObj || {})[roomKey]);
           if (roomKey === "__closed") continue;
           if (roomKey === MAIN_FLOAT_KEY_DEFICIT || roomKey === McNAIR_FLOAT_KEY_DEFICIT) continue;
           if (!slots || typeof slots !== "object") continue;
@@ -7962,11 +7945,24 @@ function _dedupeApps(assignmentsObj) {
 
   return removals;
 }
-function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
+// ---------------------------------------------------------------
+// Float sweep — runs at end of pass 2 (Main APP) only.
+// Takes staff (today's roster), cur (pre-pass assignments from
+// Firebase including pass 1's accepted writes), and assignmentsObj
+// (pass 2's model output, post-validators).
+//
+// 1. Computes placedNames from cur + assignmentsObj together.
+// 2. Categorizes unassigned APPs by campus eligibility.
+// 3. Backfills empty case-bearing rooms in assignmentsObj
+//    (locked buckets first, then flexibles).
+// 4. Floats leftovers to Main OR|Float and OTM OR|Float in
+//    assignmentsObj with balanced flex distribution.
+// All writes go to assignmentsObj so they reach Firebase on Accept.
+// ---------------------------------------------------------------
+function sweepUnassignedAppsToFloat(staff, cur, assignmentsObj) {
   const MAIN_FLOAT_KEY = "Main OR|Float";
   const McNAIR_FLOAT_KEY = "OTM OR|Float";
 
-  // Helpers to identify Main-side and McNair-side rooms by key
   const isMainSideRoom = (roomKey) => {
     if (roomKey === MAIN_FLOAT_KEY) return false;
     if (roomKey.startsWith("Main OR")) return true;
@@ -7987,29 +7983,31 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
     return false;
   };
 
-  // 1. Build the placed-name set from every room's app field
-  //    (skip the float pseudo-rooms themselves)
+  // 1. Build placedNames from cur AND assignmentsObj (skipping float pseudo-rooms)
   const placedNames = new Set();
-  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
-    if (roomKey === "__closed") continue;
-    if (roomKey === MAIN_FLOAT_KEY || roomKey === McNAIR_FLOAT_KEY) continue;
-    if (!slots || typeof slots !== "object") continue;
-    if (slots.app && slots.app.name) placedNames.add(slots.app.name);
-    if (Array.isArray(slots.float)) {
-      for (const f of slots.float) {
-        if (f && f.name) placedNames.add(f.name);
+  const collectPlaced = (obj) => {
+    for (const [roomKey, slots] of Object.entries(obj || {})) {
+      if (roomKey === "__closed") continue;
+      if (roomKey === MAIN_FLOAT_KEY || roomKey === McNAIR_FLOAT_KEY) continue;
+      if (!slots || typeof slots !== "object") continue;
+      if (slots.app && slots.app.name) placedNames.add(slots.app.name);
+      if (Array.isArray(slots.float)) {
+        for (const f of slots.float) {
+          if (f && f.name) placedNames.add(f.name);
+        }
       }
     }
-  }
+  };
+  collectPlaced(cur);
+  collectPlaced(assignmentsObj);
 
-  // 2. Compute eligible APP pool from staff (everyone working today
-  //    who is not an MD)
+  // 2. Eligible pool = staff minus MDs
   const eligiblePool = staff.filter(s => s.credential !== "MD");
 
-  // 3. Find unassigned: in pool but not placed
+  // 3. Unassigned = eligible pool minus placed
   const unassigned = eligiblePool.filter(s => !placedNames.has(s.name));
 
-  // 4. Categorize each unassigned APP by campus eligibility
+  // 4. Categorize unassigned by campus eligibility
   const mcnairBucket = [];
   const mainBucket = [];
   const flexibleBucket = [];
@@ -8021,9 +8019,10 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
     else if (category === "flexible") flexibleBucket.push(app);
   }
 
-  // 5. Find empty case-bearing rooms on each side
+  // 5. Find empty case-bearing rooms in cur+assignmentsObj
+  //    A room is "empty" if it has no app in either cur or assignmentsObj.
+  //    (assignmentsObj overrides cur — check assignmentsObj first.)
   const isCaseBearingOrMandatory = (roomKey, slots) => {
-    // Mandatory rooms are always staffed
     const MANDATORY = new Set([
       "Main OR|10", "Main OR|15",
       "Main Endo|1", "Main Endo|2", "Main Endo|3",
@@ -8034,21 +8033,33 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
     return !!(slots.caseTime || slots.surgeon || slots.procedure);
   };
 
+  const allRoomKeys = new Set([
+    ...Object.keys(cur || {}),
+    ...Object.keys(assignmentsObj || {})
+  ]);
+
   const emptyMainRooms = [];
   const emptyMcnairRooms = [];
-  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+  for (const roomKey of allRoomKeys) {
     if (roomKey === "__closed") continue;
     if (roomKey === MAIN_FLOAT_KEY || roomKey === McNAIR_FLOAT_KEY) continue;
-    if (!slots || typeof slots !== "object") continue;
-    // Only fill rooms that are case-bearing or mandatory
-    if (!isCaseBearingOrMandatory(roomKey, slots)) continue;
-    // Only fill rooms with no APP currently
-    if (slots.app && slots.app.name) continue;
+    const curSlots = (cur || {})[roomKey];
+    const aoSlots = (assignmentsObj || {})[roomKey];
+    const mergedSlots = Object.assign({}, curSlots, aoSlots);
+    if (!isCaseBearingOrMandatory(roomKey, mergedSlots)) continue;
+    // Empty = no app in assignmentsObj override AND no app in cur
+    const hasApp = (aoSlots && aoSlots.app && aoSlots.app.name) ||
+                   (!aoSlots && curSlots && curSlots.app && curSlots.app.name);
+    // If aoSlots exists but its app is null, that's an explicit "stripped" — treat as empty
+    const aoExplicitNull = aoSlots && Object.prototype.hasOwnProperty.call(aoSlots, "app") &&
+                           (!aoSlots.app || !aoSlots.app.name);
+    const isEmpty = aoExplicitNull || (!aoSlots && (!curSlots || !curSlots.app || !curSlots.app.name));
+    if (!isEmpty) continue;
     if (isMainSideRoom(roomKey)) emptyMainRooms.push(roomKey);
     else if (isMcnairSideRoom(roomKey)) emptyMcnairRooms.push(roomKey);
   }
 
-  // 6. Backfill empty rooms — locked buckets first, then flexibles
+  // 6. Backfill — write directly into assignmentsObj so writes persist
   const backfillRoom = (roomKey, app) => {
     if (!assignmentsObj[roomKey]) assignmentsObj[roomKey] = {};
     assignmentsObj[roomKey].app = {
@@ -8062,13 +8073,11 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
   while (emptyMainRooms.length > 0 && mainBucket.length > 0) {
     backfillRoom(emptyMainRooms.shift(), mainBucket.shift());
   }
-
   // 6b. Fill empty McNair rooms from mcnairBucket
   while (emptyMcnairRooms.length > 0 && mcnairBucket.length > 0) {
     backfillRoom(emptyMcnairRooms.shift(), mcnairBucket.shift());
   }
-
-  // 6c. Distribute flexibles to remaining empty rooms (both sides)
+  // 6c. Distribute flexibles to remaining empties
   while (flexibleBucket.length > 0 && (emptyMainRooms.length > 0 || emptyMcnairRooms.length > 0)) {
     if (emptyMainRooms.length >= emptyMcnairRooms.length && emptyMainRooms.length > 0) {
       backfillRoom(emptyMainRooms.shift(), flexibleBucket.shift());
@@ -8077,9 +8086,7 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
     }
   }
 
-  // 7. Anyone left in any bucket is true surplus → float
-  //    Locked buckets float to their locked campus.
-  //    Flexibles balance with toggle.
+  // 7. Float leftovers
   const floatMcnair = [...mcnairBucket];
   const floatMain = [...mainBucket];
 
@@ -8090,7 +8097,6 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
     } else if (floatMain.length < floatMcnair.length) {
       floatMain.push(flex);
     } else {
-      // tied — alternate
       if (toggle === "mcnair") {
         floatMcnair.push(flex);
         toggle = "main";
@@ -8101,23 +8107,16 @@ function sweepUnassignedAppsToFloat(staff, assignmentsObj) {
     }
   }
 
-  // 8. Clear-and-replace the two float arrays
+  // 8. Write float arrays to assignmentsObj (clear-and-replace)
   if (!assignmentsObj[MAIN_FLOAT_KEY]) assignmentsObj[MAIN_FLOAT_KEY] = {};
   if (!assignmentsObj[McNAIR_FLOAT_KEY]) assignmentsObj[McNAIR_FLOAT_KEY] = {};
-
   assignmentsObj[MAIN_FLOAT_KEY].float = floatMain.map(s => ({
-    name: s.name,
-    credential: s.credential,
-    agency: s.agency
+    name: s.name, credential: s.credential, agency: s.agency
   }));
-
   assignmentsObj[McNAIR_FLOAT_KEY].float = floatMcnair.map(s => ({
-    name: s.name,
-    credential: s.credential,
-    agency: s.agency
+    name: s.name, credential: s.credential, agency: s.agency
   }));
 
-  // 9. Return summary for flag emission
   return {
     mainFloat: floatMain.map(s => s.name),
     mcnairFloat: floatMcnair.map(s => s.name),
