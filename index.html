@@ -3872,6 +3872,64 @@ for (const [k, v] of Object.entries(cur)) {
       const flagsArr = flagsText
         ? flagsText.split(/(?<=\.)\s+|\s*\|\s*/).map(s => s.trim()).filter(Boolean)
         : [];
+      // ─────────────────────────────────────────────────────────────
+      // STRIP HALLUCINATED ROOMS
+      // The model occasionally outputs rooms that aren't in cur (no
+      // case data, no prior assignment, not mandatory). These are
+      // rooms it invented from the area catalog. Drop them so they
+      // don't show up in the under-staffed flag or assignments.
+      //
+      // Keep a room if any of:
+      //   - It exists in cur (the McNair pass model was given it)
+      //   - It exists in cur under the alternate key format
+      //   - It's a mandatory room (Main pass only)
+      //   - It has both an MD and APP assigned (model placed someone)
+      // ─────────────────────────────────────────────────────────────
+      const MANDATORY_ROOMS_FOR_STRIP = new Set([
+        "Main OR 10", "Main OR 15",
+        "Main Endo 1", "Main Endo 2", "Main Endo 3",
+        "NIR 1"
+      ]);
+
+      const hallucinatedRooms = [];
+      for (const room of Object.keys(assignmentsObj)) {
+        const v = assignmentsObj[room];
+        const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+        const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+
+        // Check if room exists in cur under either key format
+        const inCur = cur[room] || cur[disp] || cur[fbForm];
+        if (inCur) continue;
+
+        // Mandatory rooms always allowed
+        if (MANDATORY_ROOMS_FOR_STRIP.has(disp)) continue;
+
+        // If model actually placed an MD AND APP, keep it (give benefit of doubt)
+        if (v && v.md && v.md.name && v.app && v.app.name) continue;
+
+        // Otherwise it's a hallucinated empty room — strip
+        hallucinatedRooms.push(disp);
+        delete assignmentsObj[room];
+      }
+
+      if (hallucinatedRooms.length > 0) {
+        // Also scrub these rooms from any flags the model emitted
+        const scrubbed = flagsArr.map(f => {
+          let cleaned = f;
+          for (const room of hallucinatedRooms) {
+            // Remove "Room name, " or ", Room name" or just "Room name"
+            cleaned = cleaned
+              .replace(new RegExp("\\s*" + room.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",?", "g"), "");
+          }
+          // Clean up leftover separators
+          return cleaned.replace(/,\s*,/g, ",").replace(/:\s*,/g, ":").replace(/,\s*\)/g, ")").trim();
+        }).filter(Boolean);
+        flagsArr.length = 0;
+        flagsArr.push(...scrubbed);
+
+        console.log("[Hallucinated room strip]", hallucinatedRooms);
+      }
+      // ─────────────────────────────────────────────────────────────
 
       // ─────────────────────────────────────────────────────────────
       // NAME CANONICALIZATION
