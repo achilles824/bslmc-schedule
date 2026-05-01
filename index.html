@@ -5859,6 +5859,20 @@ function hasEndoThisWeekBackfill(name) {
       flagsArr.length = 0;
       flagsArr.push(...cosmeticCleaned);
       // -----------------------------------------------------------
+      // CAMPUS LOCK ENFORCEMENT — runs on every pass
+      // Strips any APP placed on the wrong campus side and flags it.
+      // The float sweep (pass 2 only) will backfill the now-empty rooms.
+      // -----------------------------------------------------------
+      const campusLockViolations = _enforceCampusLockOnApps(assignmentsObj);
+      if (campusLockViolations.length > 0) {
+        const summary = campusLockViolations
+          .map(v => v.name + " removed from " + v.room.replace(/\|/, " ") +
+                    " (" + v.violation + ")")
+          .join(" | ");
+        flagsArr.push("Client-side campus lock: " + summary);
+        console.log("[Campus lock]", campusLockViolations);
+      }
+      // -----------------------------------------------------------
       // DEDUPE APPs — runs on every pass
       // If the model placed the same APP in 2+ rooms, keep the
       // first occurrence and null the rest. Emit a flag.
@@ -7739,6 +7753,74 @@ function _aiRoomLabelToKey(label) {
 // first occurrence and null the rest. Returns a list of dedupe
 // actions taken so a flag can be emitted.
 // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+// Campus-lock validator — runs on every pass after the model returns.
+// For each room in assignmentsObj:
+//   - If room is Main-side AND app.name is McNair-locked → null app, flag.
+//   - If room is McNair-side AND app.name is Main-locked → null app, flag.
+//   - Flexibles can go anywhere (no violation).
+//   - Intra-campus placements (e.g., McNair-locked at McNair-side) are fine.
+// Returns a list of violations for flag emission.
+// ---------------------------------------------------------------
+function _enforceCampusLockOnApps(assignmentsObj) {
+  const MAIN_FLOAT_KEY = "Main OR|Float";
+  const McNAIR_FLOAT_KEY = "OTM OR|Float";
+
+  const isMainSideRoom = (roomKey) => {
+    if (roomKey === MAIN_FLOAT_KEY) return false;
+    if (roomKey.startsWith("Main OR")) return true;
+    if (roomKey.startsWith("Main Endo")) return true;
+    if (roomKey.startsWith("NIR")) return true;
+    if (roomKey.startsWith("MRI")) return true;
+    if (roomKey.startsWith("IR")) return true;
+    if (roomKey.startsWith("CT")) return true;
+    if (roomKey.startsWith("RM-IR")) return true;
+    return false;
+  };
+  const isMcnairSideRoom = (roomKey) => {
+    if (roomKey === McNAIR_FLOAT_KEY) return false;
+    if (roomKey.startsWith("McNair OR")) return true;
+    if (roomKey.startsWith("OTM OR")) return true;
+    if (roomKey.startsWith("OTM Endo")) return true;
+    if (roomKey.startsWith("Jamail OR")) return true;
+    return false;
+  };
+
+  const violations = [];
+
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed") continue;
+    if (roomKey === MAIN_FLOAT_KEY || roomKey === McNAIR_FLOAT_KEY) continue;
+    if (!slots || typeof slots !== "object") continue;
+    if (!slots.app || !slots.app.name) continue;
+
+    const category = _classifyAppCampus(slots.app);
+    if (!category) continue; // unknown — leave alone
+
+    const isMain = isMainSideRoom(roomKey);
+    const isMcnair = isMcnairSideRoom(roomKey);
+
+    if (isMain && category === "mcnairLocked") {
+      violations.push({
+        name: slots.app.name,
+        room: roomKey,
+        violation: "McNair-locked APP at Main-side room"
+      });
+      slots.app = null;
+    } else if (isMcnair && category === "mainLocked") {
+      violations.push({
+        name: slots.app.name,
+        room: roomKey,
+        violation: "Main-locked APP at McNair-side room"
+      });
+      slots.app = null;
+    }
+    // flexible category: no violation regardless of room side
+    // intra-campus placements (mcnairLocked at McNair, mainLocked at Main): fine
+  }
+
+  return violations;
+}
 function _dedupeApps(assignmentsObj) {
   const seen = {}; // name -> first room key
   const removals = []; // {name, fromRoom}
@@ -7943,6 +8025,9 @@ async function applyAiAssignments() {
       const base = "https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" + date + "/" + enc;
       if (a.md && a.md.name) await fetch(base + "/md.json", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(a.md)});
       if (a.app && a.app.name) await fetch(base + "/app.json", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(a.app)});
+      if (a.float && Array.isArray(a.float) && a.float.length > 0) {
+        await fetch(base + "/float.json", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(a.float)});
+      }
       count++;
       if (status) status.textContent = "Writing " + count + " of " + keys.length + "...";
     }
