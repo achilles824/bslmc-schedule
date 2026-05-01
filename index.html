@@ -3950,6 +3950,11 @@ for (const [k, v] of Object.entries(cur)) {
         .replace(/\s+/g, " ")
         .trim();
       const normalize = s => stripNickname(s).toLowerCase();
+      const normalizeKeepNickname = s => (s || "")
+          .replace(/["']/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
 
       const canonicalizeName = (rawName) => {
         if (!rawName || typeof rawName !== "string") return rawName;
@@ -3972,6 +3977,25 @@ for (const [k, v] of Object.entries(cur)) {
             return t.length >= 2 && t[0] === targetFirst && t[t.length - 1] === targetLast;
           });
           if (tokenMatches.length === 1) return tokenMatches[0].name;
+        }
+        // Fallback 2: nickname-kept match. Roster "Wonedwossen \"Goshu\"" vs model
+        // "Wonedwossen Goshu" — when the nickname token IS effectively a real
+        // name part, keeping it (just unquoted) lets the model's plain form match.
+        const targetKept = normalizeKeepNickname(rawName);
+        if (targetKept) {
+          const keptMatches = staff.filter(s => normalizeKeepNickname(s.name) === targetKept);
+          if (keptMatches.length === 1) return keptMatches[0].name;
+        }
+        // Fallback 3: last-token-only match (single-word names, or where only
+        // the surname is a reliable handle). Only used when exactly one roster
+        // entry's last token matches, to avoid ambiguity.
+        const lastToken = (targetKept || target).split(" ").filter(Boolean).pop();
+        if (lastToken && lastToken.length >= 3) {
+          const lastMatches = staff.filter(s => {
+            const t = normalizeKeepNickname(s.name).split(" ").filter(Boolean);
+            return t.length > 0 && t[t.length - 1] === lastToken;
+          });
+          if (lastMatches.length === 1) return lastMatches[0].name;
         }
         // No safe match — leave as-is so it remains visible
         return rawName;
@@ -4035,6 +4059,38 @@ for (const [k, v] of Object.entries(cur)) {
         }).join("; ");
         flagsArr.push("Client-side enforcement: credential mismatch fixed (" + summary + ")");
         console.log("[Client-side credential mismatch]", credMismatches);
+      }
+      // ─────────────────────────────────────────────────────────────
+      // KNOWN-BAD ROOM EXCLUSION
+      // Some rooms slip into cur from the PDF parser even though they're
+      // not real (e.g. "OTM Endo 11" — ALL_SITES caps OTM Endo at 10).
+      // The hallucinated-room strip earlier only drops rooms NOT in cur,
+      // so these survive. This pass drops them outright.
+      // ─────────────────────────────────────────────────────────────
+      const KNOWN_BAD_ROOMS = new Set([
+        "OTM Endo 11"
+      ]);
+      const knownBadStripped = [];
+      for (const room of Object.keys(assignmentsObj)) {
+        const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+        if (KNOWN_BAD_ROOMS.has(disp)) {
+          delete assignmentsObj[room];
+          knownBadStripped.push(disp);
+        }
+      }
+      if (knownBadStripped.length > 0) {
+        // Scrub from flags too
+        const scrubbed = flagsArr.map(f => {
+          let cleaned = f;
+          for (const room of knownBadStripped) {
+            cleaned = cleaned
+              .replace(new RegExp("\\s*" + room.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ",?", "g"), "");
+          }
+          return cleaned.replace(/,\s*,/g, ",").replace(/:\s*,/g, ":").replace(/,\s*\)/g, ")").trim();
+        }).filter(Boolean);
+        flagsArr.length = 0;
+        flagsArr.push(...scrubbed);
+        console.log("[Known-bad rooms stripped]", knownBadStripped);
       }
 
       // ─────────────────────────────────────────────────────────────
@@ -5671,7 +5727,32 @@ function hasEndoThisWeekBackfill(name) {
         // ─────────────────────────────────────────────────────────────
       }
       // ─────────────────────────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────────────
+      // FLAG COSMETIC NORMALIZATION (last step before emit)
+      // The model occasionally emits bullet characters (•) inside flag
+      // text, and the under-staffed flag's "[N] rooms" count sometimes
+      // disagrees with the room list it shipped alongside. Both are
+      // cosmetic but make the flags hard to read.
+      //
+      // 1. Strip bullets from all flags.
+      // 2. For the McNair under-staffed flag, recompute N from the
+      //    actual room list parenthetical.
+      // ─────────────────────────────────────────────────────────────
+      const cosmeticCleaned = flagsArr.map(f => {
+        // Strip bullets and collapse whitespace
+        let cleaned = f.replace(/\s*•\s*/g, " ").replace(/\s+/g, " ").trim();
+        // Recompute N for under-staffed flag
+        const m = cleaned.match(/^McNair pass under-staffed:\s*\d+\s*rooms? left for Main pass backfill\s*\((.+)\)\s*$/i);
+        if (m) {
+          const rooms = m[1].split(/\s*,\s*/).map(s => s.trim()).filter(Boolean);
+          cleaned = "McNair pass under-staffed: " + rooms.length +
+                    " room" + (rooms.length === 1 ? "" : "s") +
+                    " left for Main pass backfill (" + rooms.join(", ") + ")";
+        }
+        return cleaned;
+      });
+      flagsArr.length = 0;
+      flagsArr.push(...cosmeticCleaned);
       _aiAssignPlan = {
         assignments: assignmentsObj,
         flags: flagsArr,
