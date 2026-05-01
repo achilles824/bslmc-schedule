@@ -4933,24 +4933,43 @@ for (const [k, v] of Object.entries(cur)) {
             const ar = postCapMdRoomCount[a.name] || 0;
             const br = postCapMdRoomCount[b.name] || 0;
             if (ar !== br) return ar - br; // fewest rooms first
-            // Tie: flexibles before Main-anchored
+            // Tie: Main-anchored BEFORE flexibles. Flexibles are reserved
+            // for McNair backfill; spend Main-anchored capacity first.
             const aIsFlex = a.agency !== "Baylor";
             const bIsFlex = b.agency !== "Baylor";
-            if (aIsFlex && !bIsFlex) return -1;
-            if (!aIsFlex && bIsFlex) return 1;
+            if (aIsFlex && !bIsFlex) return 1;
+            if (!aIsFlex && bIsFlex) return -1;
             return 0;
           });
 
         const mainPrefilled = [];
-        for (const { key, disp } of mainGapRooms) {
-          // Pick first candidate still under cap of 3
-          let pickIdx = -1;
-          for (let i = 0; i < prefillCandidates.length; i++) {
-            const c = prefillCandidates[i];
-            if ((postCapMdRoomCount[c.name] || 0) < 3) { pickIdx = i; break; }
+        // Two-pass distribution: first try to give every candidate a target
+        // of 2 rooms (their balanced share), only then escalate to 3 if gap
+        // rooms remain. Re-pick the best candidate every iteration based on
+        // current counts so rooms don't pile on whoever was first.
+        const pickBestCandidate = (targetCap) => {
+          let best = null;
+          let bestCount = Infinity;
+          let bestIsFlex = true; // worse than non-flex for tiebreak
+          for (const c of prefillCandidates) {
+            const count = postCapMdRoomCount[c.name] || 0;
+            if (count >= targetCap) continue;
+            const isFlex = c.agency !== "Baylor";
+            // Prefer fewer rooms; on tie prefer Main-anchored over flexibles
+            if (count < bestCount || (count === bestCount && !isFlex && bestIsFlex)) {
+              best = c;
+              bestCount = count;
+              bestIsFlex = isFlex;
+            }
           }
-          if (pickIdx === -1) break;
-          const pick = prefillCandidates[pickIdx];
+          return best;
+        };
+
+        for (const { key, disp } of mainGapRooms) {
+          // Try targetCap=2 first (balanced distribution), then escalate to 3
+          let pick = pickBestCandidate(2);
+          if (!pick) pick = pickBestCandidate(3);
+          if (!pick) break; // everyone at 3-room cap
           const existing = assignmentsObj[key] || {};
           assignmentsObj[key] = {
             md: { name: pick.name, credential: pick.credential, agency: pick.agency },
