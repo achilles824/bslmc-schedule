@@ -3677,21 +3677,34 @@ async function aiAssignStart() {
 
   const choice = prompt(
     "Which pass would you like to run?\n\n" +
-    "  1 = McNair (Jamail, McNair OR, OTM OR, OTM Endo)\n" +
-    "  2 = Main (Main OR, Main Endo, Radiology)\n" +
-    "  3 = Full Day (legacy v9.3 — all at once)\n\n" +
-    "Type 1, 2, or 3:"
+    "  1 = McNair APP (NEW — Tier 1 lock, Jamail/McNair OR/OTM/Endo APPs)\n" +
+    "  2 = McNair (legacy two-pass — Jamail, McNair OR, OTM OR, OTM Endo)\n" +
+    "  3 = Main (legacy two-pass — Main OR, Main Endo, Radiology)\n" +
+    "  4 = Full Day (legacy v9.3 — all at once)\n\n" +
+    "Type 1, 2, 3, or 4:"
   );
 
-  if (choice === "1") return aiAssignMcnair();
-  if (choice === "2") return aiAssignMain();
-  if (choice === "3") return aiAssignFullDay();
+  if (choice === "1") return aiAssignMcnairApp();
+  if (choice === "2") return aiAssignMcnair();
+  if (choice === "3") return aiAssignMain();
+  if (choice === "4") return aiAssignFullDay();
   // Cancel or invalid input — do nothing
 }
 
 // ---------------------------------------------------------------
 // McNair pass
 // ---------------------------------------------------------------
+  // ---------------------------------------------------------------
+// Pass 1 of four-pass system: McNair APP
+// ---------------------------------------------------------------
+async function aiAssignMcnairApp() {
+  _aiCurrentPass = "mcnairApp";
+  await _aiRunPass({
+    label: "McNair APP",
+    promptBuilder: buildMcnairAppPrompt,
+    systemPrompt: "You are an anesthesiology scheduling assistant assigning APPs to the McNair campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose. Touch only app slots; leave md fields null."
+  });
+}
 async function aiAssignMcnair() {
   _aiCurrentPass = "mcnair";
   await _aiRunPass({
@@ -5856,10 +5869,10 @@ function hasEndoThisWeekBackfill(name) {
 // Retry button handler — re-runs the current pass
 // ---------------------------------------------------------------
 function aiAssignRetry() {
-  // Close the modal first so the user sees the "Thinking..." status
   document.getElementById("aiAssignModal").style.display = "none";
   _aiAssignPlan = null;
-  if (_aiCurrentPass === "mcnair") aiAssignMcnair();
+  if (_aiCurrentPass === "mcnairApp") aiAssignMcnairApp();
+  else if (_aiCurrentPass === "mcnair") aiAssignMcnair();
   else if (_aiCurrentPass === "main") aiAssignMain();
   else if (_aiCurrentPass === "fullday") aiAssignFullDay();
   else alert("No pass to retry.");
@@ -6396,7 +6409,179 @@ If no APP AND campus verdict = DEFICIT: "app": null, empty note. STRUCTURAL flag
 
 One FLAGS block max, at end. No mid-array FLAGS. Flag content must be consistent with WORK block.`;
 }
+function buildMcnairAppPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
+  return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's. Assign APPs to the McNAIR CAMPUS for ${date}.
 
+OUTPUT: Raw JSON array. Start with [, end with ]. No prose, no markdown. First element is WORK block. Last element (if any) is FLAGS block. All other elements are room assignments.
+
+SCOPE: McNair OR, OTM OR, OTM Endo, Jamail OR. Ignore Main-side rooms in roomsNeeding.
+
+CRITICAL — APP-ONLY PASS:
+- You assign ONLY APPs (CRNA or CAA). You do NOT assign MDs.
+- Every room object in your output has md:null. Do not invent MDs.
+- Pass 4 (McNair MD) will fill md slots later. A Jamail room with an APP and md:null is the EXPECTED mid-state — do not flag it.
+
+## INPUTS
+
+Staff working today:
+${staffSummary}
+
+Current assignments (already saved by previous passes — DO NOT modify):
+${currentAssignments}
+
+Rooms needing assignment:
+${roomsNeeding}
+
+Rules reference:
+${JSON.stringify(rules, null, 2)}
+
+## ABSOLUTE RULES
+
+1. APP-ONLY OUTPUT
+   Every room object you emit has md:null. You touch only app fields.
+
+2. STRICT CAMPUS LOCK — NEVER VIOLATE
+   Eligible APP pool for this pass:
+   - Baylor APPs with "-MN" anywhere in shift label
+   - McNair-only locum APPs (the 16 names below)
+   - Flexible locum APPs (Cross Country, Caliber, etc. NOT on either restricted list)
+
+   FORBIDDEN APPs for this pass:
+   - Baylor APPs without "-MN" in shift (Main-only Baylor)
+   - Main-only locums: Zamantha Seeman, Zehneel Jiwani
+   - Any MD (credential = "MD"). MDs never go in APP slots.
+
+   McNair-only locum APPs (16 names — these ONLY work McNair, never Main):
+     Sagar Patel, Jesus Bagos, Mark Doria, Lina Eisa, Audra Jackson,
+     Lee Mabry, Tanya McGowan, Amanda Messarra, Adriana Montoya,
+     Tammy Moore, Natty Pitera Okojie, Carla Rose, Evie Schoene,
+     Tracey Sheffield, Khadijah Udu, Young Wright
+
+3. EACH APP IN EXACTLY ONE ROOM
+   No sharing. Each name appears in at most one app slot across the entire pass.
+
+## STEP 1 — JAMAIL TIER 1 LOCK (do this FIRST)
+
+Count J = Jamail OR rooms with cases.
+
+If J = 0: Jamail is closed today. Skip the Tier 1 block. Note in WORK: "JAMAIL: J=0, closed today."
+
+If J > 0: run the Tier 1 roll call. For each name below, search staffSummary literally and emit YES or NO. Do NOT default to NO. Do NOT skip.
+
+  - "Kima working: YES" if "Kima" appears in staffSummary, else NO
+  - "Rose working: YES" if "Rose" appears in staffSummary, else NO
+  - "Jackson working: YES" if "Jackson" appears in staffSummary, else NO
+  - "Schoene working: YES" if "Schoene" appears in staffSummary, else NO
+
+TIER_1_WORKING = the names whose answer is YES.
+
+Place TIER_1_WORKING at Jamail rooms in this STRICT priority order:
+  1. Karina Kima  (NEVER goes anywhere but Jamail when J > 0)
+  2. Carla Rose
+  3. Audra Jackson
+  4. Evie Schoene
+
+Stop at min(J, count of TIER_1_WORKING).
+
+If J > count of TIER_1_WORKING (e.g., J=5 with only 3 Tier 1 working), fill remaining Jamail rooms from Tier 2 (in any order):
+  Jesus Bagos, Nina Castro-Koshy, Candice Hude, Angela Lauritano,
+  Sandy Papa, Sagar Patel, Hong Phan, Tracey Sheffield, Diana Suen,
+  Lee Mabry, Mark Doria, or any Baylor APP with "-MN" in shift.
+
+If J < count of TIER_1_WORKING (e.g., J=3 but 4 Tier 1 working), the surplus Tier 1 APP STAYS in the pool for now. They may be needed for a Tier 1 OTM Endo pull later (Step 5). Do not place them in McNair OR or OTM OR yet.
+
+## STEP 2 — McNair OR APPs
+
+For each McNair OR room with cases (rooms 1-7), assign an APP from the pool excluding:
+  - Names already placed at Jamail in Step 1
+  - Karina Kima (locked to Jamail when J > 0; available if J = 0)
+
+Use any campus-eligible APP. Order doesn't matter for McNair OR — no priority list here.
+
+## STEP 3 — OTM OR APPs
+
+For each OTM OR room with cases, assign an APP from the remaining pool.
+
+## STEP 4 — OTM Endo APPs (apply once-per-week endo rule)
+
+Each APP placed in OTM Endo today must NOT have done Main Endo or OTM Endo earlier this work week. Check rules.weeklyEndoTracking — every entry where role = "APP" represents a prior endo placement.
+
+For each OTM Endo room:
+  - Pick an APP from the remaining pool whose name is NOT in any prior-endo entry this week.
+  - If multiple candidates exist, prefer locum APPs over Baylor APPs (locums are more flexible).
+  - If no candidate exists without prior endo, proceed to Step 5.
+
+## STEP 5 — Tier 1 OTM Endo pull (only if Step 4 fails)
+
+If an OTM Endo room cannot be staffed in Step 4 because every remaining APP has prior endo this week, pull from Tier 1 Jamail APPs in this STRICT order:
+
+  Schoene → Jackson → Rose
+
+Kima is NEVER pulled. Pulling means: remove the Tier 1 APP from her Jamail assignment in Step 1, place her at the OTM Endo room instead. The Jamail room she vacated stays md:null app:null — it becomes a Step 6 deficit if no Tier 2 backup is available.
+
+Document every pull with a flag:
+  "Tier 1 OTM Endo pull: [name] from Jamail to [OTM Endo room] (prior endo unavoidable)"
+
+If a pull happens and a Tier 2 APP is still available, fill the vacated Jamail room with a Tier 2 APP.
+
+## STEP 6 — Coverage audit
+
+After Steps 1-5, walk every McNair-side case-bearing room. For each room with no APP:
+  - If the eligible pool has remaining APPs: assign one (any campus-eligible APP not yet placed). Repeat until pool empty or every room filled.
+  - If the pool is empty and rooms remain: leave app:null. Do NOT invent an APP. Pass will emit a STRUCTURAL deficit flag.
+
+## STEP 7 — Surplus check
+
+After Step 6, count APPs in the eligible pool who did NOT receive a room. If any exist:
+  - Emit flag: "Unassigned APPs (McNair, surplus): [names]"
+
+## STEP 8 — WORK narrative
+
+Write the WORK block AFTER all assignments are final. Counts must match actual placements.
+
+Required fields, in order, separated by " | ":
+
+  PASS: McNair APP
+  ROOMS: K=X (McNair OR cases), O=X (OTM OR cases), E=X (OTM Endo cases), J=X (Jamail cases)
+  TIER_1_ROLL_CALL: Kima=YES/NO | Rose=YES/NO | Jackson=YES/NO | Schoene=YES/NO
+  TIER_1_WORKING_COUNT: X
+  APP_POOL_SIZE: X (eligible APPs working today)
+  JAMAIL_APPS: [room: name, ...] or NONE
+  McNAIR_OR_APPS: [room: name, ...] or NONE
+  OTM_OR_APPS: [room: name, ...] or NONE
+  OTM_ENDO_APPS: [room: name (prior-endo: YES/NO), ...] or NONE
+  ENDO_PULLS: [name from Jamail to room, ...] or NONE
+  UNFILLED_ROOMS: [list of McNair-side rooms with no APP] or NONE
+  UNASSIGNED_APPS: [pool members who didn't get a room] or NONE
+
+## STEP 9 — Flags (closed whitelist)
+
+Only these templates. Do NOT invent flag text.
+
+  - "Unassigned APPs (McNair, surplus): [names]"
+  - "STRUCTURAL_McNAIR_APP_DEFICIT: [N] McNair-side rooms unstaffed. Pool size=[X], demand=[Y]."
+  - "Repeat endo: [name] (role: APP; prior: [day, Main/OTM]; today: [room])"
+  - "Tier 1 OTM Endo pull: [name] from Jamail to [OTM Endo room] (prior endo unavoidable)"
+  - "Jamail empty (no Jamail cases today)"
+  - "Tier 1 APP working but Jamail closed: [names]"
+
+Do NOT flag:
+  - Rooms with md:null (that's the expected mid-state — pass 4 fills them)
+  - Tier 1 APP placed at Jamail (that's the rule, not a violation)
+  - Surplus Tier 1 APPs when J < count working (they're held for Step 5 pull or general pool)
+
+## OUTPUT FORMAT
+
+[
+  { "room": "WORK", "md": null, "app": null, "notes": "PASS: McNair APP | ROOMS: ... | ..." },
+  { "room": "Jamail OR 1", "md": null, "app": { "name": "Karina Kima", "credential": "CRNA", "agency": "Baylor" }, "notes": "" },
+  { "room": "OTM Endo 3", "md": null, "app": { "name": "...", "credential": "CRNA", "agency": "..." }, "notes": "" },
+  ...
+  { "room": "FLAGS", "md": null, "app": null, "notes": "flag 1. flag 2." }
+]
+
+Every room object MUST have md:null. Every app field is either null or { name, credential, agency }. One FLAGS block max at end, omit if no flags.`;
+}
   function buildMcnairPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's. Assign MDs and APPs to the McNAIR CAMPUS for ${date}.
 
