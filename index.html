@@ -5863,7 +5863,7 @@ function hasEndoThisWeekBackfill(name) {
       // Strips any APP placed on the wrong campus side and flags it.
       // The float sweep (pass 2 only) will backfill the now-empty rooms.
       // -----------------------------------------------------------
-      const campusLockViolations = _enforceCampusLockOnApps(assignmentsObj);
+      const campusLockViolations = _enforceCampusLockOnApps(assignmentsObj, staff);
       if (campusLockViolations.length > 0) {
         const summary = campusLockViolations
           .map(v => v.name + " removed from " + v.room.replace(/\|/, " ") +
@@ -7762,7 +7762,7 @@ function _aiRoomLabelToKey(label) {
 //   - Intra-campus placements (e.g., McNair-locked at McNair-side) are fine.
 // Returns a list of violations for flag emission.
 // ---------------------------------------------------------------
-function _enforceCampusLockOnApps(assignmentsObj) {
+function _enforceCampusLockOnApps(assignmentsObj, staff) {
   const MAIN_FLOAT_KEY = "Main OR|Float";
   const McNAIR_FLOAT_KEY = "OTM OR|Float";
 
@@ -7794,7 +7794,13 @@ function _enforceCampusLockOnApps(assignmentsObj) {
     if (!slots || typeof slots !== "object") continue;
     if (!slots.app || !slots.app.name) continue;
 
-    const category = _classifyAppCampus(slots.app);
+    // Look up the APP's shift from the day's roster — slots.app
+    // doesn't carry shift, so we reconstruct it for classification.
+    const rosterEntry = staff.find(s => s.name === slots.app.name);
+    const enrichedApp = rosterEntry
+      ? { name: slots.app.name, credential: rosterEntry.credential, agency: rosterEntry.agency, shift: rosterEntry.shift }
+      : slots.app;
+    const category = _classifyAppCampus(enrichedApp);
     if (!category) continue; // unknown — leave alone
 
     const isMain = isMainSideRoom(roomKey);
