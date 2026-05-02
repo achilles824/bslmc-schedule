@@ -3920,7 +3920,8 @@ for (const [k, v] of Object.entries(cur)) {
         if (!item.room) return;
         if (item.room === "FLAGS") { flagsText = item.notes || ""; return; }
         if (item.room === "WORK") { workText = item.notes || ""; return; }
-        assignmentsObj[item.room] = {
+        const normalizedKey = _aiRoomLabelToKey(item.room);
+        assignmentsObj[normalizedKey] = {
           md: item.md || null,
           app: item.app || null,
           notes: item.notes || ""
