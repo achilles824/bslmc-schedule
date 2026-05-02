@@ -1019,6 +1019,7 @@
         <button class="view-btn" style="background:linear-gradient(135deg,var(--day),#16a34a);" onclick="saveAssignments()">Save Assignments</button>
         <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="lockAdmin()">Lock</button>
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearDay()">Clear Day</button>
+        <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearAssignments()">Clear Assignments</button>
         <button id="finalizeBtn" class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="toggleFinalize()">✓ Finalize</button>
                 <button id="aiAssignBtn" class="view-btn" style="background:none;border:1px solid #10b981;color:#10b981;" onclick="aiAssignStart()">&#x1F916; AI Assign</button>
 <button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
@@ -2659,7 +2660,37 @@ function toggleFinalize() {
     }
   }
 }
+function confirmClearAssignments() {
+  if (!currentAdminDate) return;
+  const dt = parseDate(currentAdminDate);
+  const label = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate();
+  if (!confirm("Clear all assignments (md/app/float) for " + label + "?\n\nSurgical case data (times, surgeons, procedures) will be preserved.\nThis cannot be undone.")) return;
 
+  // Walk every room in currentAssignments and remove md, app, float fields
+  // while preserving caseTime, surgeon, procedure, and notes.
+  const roomKeys = Object.keys(currentAssignments || {});
+  const promises = [];
+  for (const rk of roomKeys) {
+    if (rk === "__closed") continue;
+    const enc = encodeURIComponent(rk);
+    const base = "https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" +
+                 currentAdminDate + "/" + enc;
+    // Send DELETE for the three assignment fields. Firebase ignores deletes
+    // on missing paths, so this is safe whether or not the field exists.
+    promises.push(fetch(base + "/md.json", {method: "DELETE"}));
+    promises.push(fetch(base + "/app.json", {method: "DELETE"}));
+    promises.push(fetch(base + "/float.json", {method: "DELETE"}));
+    // Also clear the in-memory mirror
+    if (currentAssignments[rk]) {
+      delete currentAssignments[rk].md;
+      delete currentAssignments[rk].app;
+      delete currentAssignments[rk].float;
+    }
+  }
+  Promise.all(promises).then(() => {
+    renderAdminDay(currentAdminDate);
+  });
+}
 function confirmClearDay() {
   if (!currentAdminDate) return;
   const dt = parseDate(currentAdminDate);
