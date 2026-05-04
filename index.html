@@ -3446,6 +3446,69 @@ if (window.firebaseReady) {
 // Idempotent: same key overwrites, never duplicates.
 // Hooked into toggleFinalize: writes on finalize, deletes on unfinalize.
 
+  // ─────────────────────────────────────────────────────────────
+// _classifyAppCampus — given an APP staff entry, return one of:
+//   "baylorMcnair"   — Baylor APP with -MN in shift label
+//   "baylorMain"     — Baylor APP without -MN
+//   "mcnairLocum"    — locum on the McNair-only-16 list
+//   "mainLocum"      — Seeman or Jiwani (Main-only locums)
+//   "flexibleLocum"  — any other locum
+//   "unknown"        — couldn't classify (missing fields)
+// Caller is responsible for passing an enriched object that has
+// at least { name, credential, agency, shift }. shift is required
+// for Baylor classification — without it, Baylor APPs default to
+// "unknown".
+// ─────────────────────────────────────────────────────────────
+const McNAIR_ONLY_LOCUM_APPS_SET = new Set([
+  "Sagar Patel", "Jesus Bagos", "Mark Doria", "Lina Eisa",
+  "Audra Jackson", "Lee Mabry", "Tanya McGowan", "Amanda Messarra",
+  "Adriana Montoya", "Tammy Moore", "Natty Pitera Okojie",
+  "Carla Rose", "Evie Schoene", "Tracey Sheffield",
+  "Khadijah Udu", "Young Wright"
+]);
+const MAIN_ONLY_LOCUM_APPS_SET = new Set([
+  "Zamantha Seeman", "Zehneel Jiwani"
+]);
+
+function _classifyAppCampus(appInfo) {
+  if (!appInfo || !appInfo.name) return "unknown";
+  if (appInfo.credential === "MD") return "unknown";
+  // Locum classification by name (independent of shift label)
+  if (McNAIR_ONLY_LOCUM_APPS_SET.has(appInfo.name)) return "mcnairLocum";
+  if (MAIN_ONLY_LOCUM_APPS_SET.has(appInfo.name)) return "mainLocum";
+  // Baylor classification needs the shift
+  if (appInfo.agency === "Baylor") {
+    const shift = appInfo.shift || "";
+    if (/\bMN\b/i.test(shift) || /-\s*MN\b/i.test(shift)) return "baylorMcnair";
+    return "baylorMain";
+  }
+  // Non-Baylor, not on either list — flexible locum
+  return "flexibleLocum";
+}
+
+// ─────────────────────────────────────────────────────────────
+// _extractDepartureRole — parse departure role number from a
+// Baylor McNair shift label like "1st Out APP-MN", "5th Out APP-MN".
+// Returns int or null if not found.
+// Higher number = later departure = later starting room.
+// ─────────────────────────────────────────────────────────────
+function _extractDepartureRole(shift) {
+  if (!shift || typeof shift !== "string") return null;
+  const m = shift.match(/(\d+)(?:st|nd|rd|th)\s+Out\s+APP\s*-\s*MN/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// _extractShiftHours — parse shift hours from a locum shift like
+// "D8", "D10", "D12", "D12 (M)". Returns int or null.
+// Used for shift-length-to-start-time matching.
+// ─────────────────────────────────────────────────────────────
+function _extractShiftHours(shift) {
+  if (!shift || typeof shift !== "string") return null;
+  const m = shift.match(/^D\s*(\d+)/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+  
 function mondayOfWeek(dateStr) {
   // dateStr is YYYY-MM-DD. Returns the Monday of that ISO work week as YYYY-MM-DD.
   const [y, m, d] = dateStr.split("-").map(Number);
