@@ -7246,7 +7246,184 @@ const PREFERRED_TIER_2_NAMES = [
 //
 // Returns: { swaps: [{moved, into, displaced, to}] }
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// _enforceFlexPreference — McNair APP pass validator
+//
+// Walks OTM Endo and McNair OR / OTM OR room pool. For any flex
+// slot occupied by a flexibleLocum NOT on the preference list,
+// checks if a preferred-list flexible is unplaced and eligible.
+// If so, swap them.
+//
+// Within preference list, prioritize by shiftHours: D8 > D10 > D12.
+// (Same shift-hours-ascending rule as McNair-only locums.)
+//
+// Eligibility for endo: priorEndoDays must be empty.
+// (Or rules for swap.)
+//
+// Out of scope: Jamail (Tier 1 + Tier 2 priority handles that),
+// Baylor McNair APPs (departure-role enforcer handles), McNair-only
+// locums (those go to McNair OR / OTM OR by shift-length, not
+// affected by flex preference).
+//
+// Returns: { swaps: [{moved, into, displaced, to}] }
+// ─────────────────────────────────────────────────────────────
 
+const PREFERRED_FLEX_NAMES = [
+  "Alka Brahmbhatt", "Angela Lauritano", "Candice Hude", "Jennifer Bedia",
+  "Kristen Sheehy", "Ma Ro\"Mina\" Flores", "Michelle Scott", "Nicolas Snyder",
+  "Nina Castro-Koshy", "Nicole Luongo", "Sandy Papa", "Stephen Brotherman",
+  "Chandra Ware", "Diana Suen", "Juan Montoya", "Nancy Washington",
+  "Yanting \"Cathy\" Rambow", "Wonedwossen \"Goshu\"", "Hanan Khalil",
+  "Hong Phan", "Ibraheem Robins", "Haywood Smith"
+];
+
+function _enforceFlexPreference(assignmentsObj, appContext) {
+  const result = { swaps: [] };
+  if (!appContext || !Array.isArray(appContext.apps)) return result;
+
+  const ctxByName = new Map(appContext.apps.map(a => [a.name, a]));
+  const preferredSet = new Set(PREFERRED_FLEX_NAMES);
+
+  // Identify flex-eligible room placements (OTM Endo + McNair OR + OTM OR)
+  // where a non-preferred flexibleLocum is currently placed
+  const isFlexEligibleRoom = (k) => {
+    if (k === "OTM OR|Float") return false;
+    return k.startsWith("McNair OR") ||
+           k.startsWith("OTM OR") ||
+           k.startsWith("OTM Endo");
+  };
+
+  // Build current placement map for ALL APPs
+  const placementByName = new Map();
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
+    if (slots.app && slots.app.name) {
+      placementByName.set(slots.app.name, { roomKey, location: "app" });
+    }
+    if (Array.isArray(slots.float)) {
+      slots.float.forEach((f, i) => {
+        if (f && f.name) placementByName.set(f.name, { roomKey, location: "float-" + i });
+      });
+    }
+  }
+
+  // Find candidate slots for swap: flex-eligible room with a non-preferred
+  // flexibleLocum currently placed
+  const candidateSlots = [];
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (!isFlexEligibleRoom(roomKey)) continue;
+    if (!slots || !slots.app || !slots.app.name) continue;
+    const occupant = slots.app.name;
+    const occCtx = ctxByName.get(occupant);
+    if (!occCtx) continue; // unknown occupant, skip
+    if (occCtx.campus !== "flexibleLocum") continue; // not a flex slot
+    if (preferredSet.has(occupant)) continue; // already preferred
+    candidateSlots.push({ roomKey, occupant, occCtx });
+  }
+
+  if (candidateSlots.length === 0) return result;
+
+  // For each candidate slot, find a preferred flexible who is unplaced or
+  // placed at a less-desirable location, and swap them in.
+  // Sort preferred candidates by shiftHours ascending (D8 first).
+  for (const candSlot of candidateSlots) {
+    const targetRoomKey = candSlot.roomKey;
+    const occupant = candSlot.occupant;
+    const isEndo = targetRoomKey.startsWith("OTM Endo");
+
+    // Find a preferred-list flexible eligible for swap
+    let bestPreferred = null;
+    let bestShiftHours = Infinity;
+
+    for (const name of PREFERRED_FLEX_NAMES) {
+      const ctx = ctxByName.get(name);
+      if (!ctx) continue; // not working today
+      if (ctx.campus !== "flexibleLocum") continue;
+
+      // Endo eligibility: priorEndoDays must be empty
+      if (isEndo) {
+        if (Array.isArray(ctx.priorEndoDays) && ctx.priorEndoDays.length > 0) continue;
+      }
+
+      // Where is this candidate currently?
+      const cur = placementByName.get(name);
+      // Skip if they're already at a flex-eligible room AND that room is the same
+      // tier or more desirable than the target. We want to swap UP, not sideways.
+      if (cur && cur.roomKey === targetRoomKey) continue; // already there
+      if (cur && cur.roomKey.startsWith("Jamail OR")) continue; // don't pull from Jamail
+      // If they're at another flex-eligible room, only swap if that room is
+      // strictly less desirable. For simplicity, treat all flex-eligible rooms
+      // as equivalent — we don't pull from one OR to another OR. The validator
+      // only fills genuine gaps (preferred flex unplaced or in float).
+      if (cur && cur.location === "app" && isFlexEligibleRoom(cur.roomKey)) continue;
+
+      // This candidate is eligible. Pick by shiftHours ascending.
+      const sh = typeof ctx.shiftHours === "number" ? ctx.shiftHours : 99;
+      if (sh < bestShiftHours) {
+        bestPreferred = ctx;
+        bestShiftHours = sh;
+      }
+    }
+
+    if (!bestPreferred) continue; // no preferred-list candidate to swap in
+
+    // Perform swap
+    const candidateCurrent = placementByName.get(bestPreferred.name);
+    const slots = assignmentsObj[targetRoomKey];
+    slots.app = {
+      name: bestPreferred.name,
+      credential: bestPreferred.credential,
+      agency: bestPreferred.agency
+    };
+
+    if (candidateCurrent && candidateCurrent.location === "app") {
+      // Candidate was in another room (non-flex-eligible — would be unusual)
+      // Move occupant there
+      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
+      if (otherSlots) {
+        otherSlots.app = {
+          name: occupant,
+          credential: candSlot.occCtx.credential,
+          agency: candSlot.occCtx.agency
+        };
+        result.swaps.push({
+          moved: bestPreferred.name,
+          into: targetRoomKey,
+          displaced: occupant,
+          to: candidateCurrent.roomKey
+        });
+        placementByName.set(bestPreferred.name, { roomKey: targetRoomKey, location: "app" });
+        placementByName.set(occupant, { roomKey: candidateCurrent.roomKey, location: "app" });
+      }
+    } else if (candidateCurrent && candidateCurrent.location.startsWith("float-")) {
+      // Candidate was in a float — remove from float, occupant displaced to nowhere
+      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
+      if (otherSlots && Array.isArray(otherSlots.float)) {
+        otherSlots.float = otherSlots.float.filter(f => f && f.name !== bestPreferred.name);
+      }
+      result.swaps.push({
+        moved: bestPreferred.name,
+        into: targetRoomKey,
+        displaced: occupant,
+        to: "(unplaced — surplus or completeness)"
+      });
+      placementByName.set(bestPreferred.name, { roomKey: targetRoomKey, location: "app" });
+      placementByName.delete(occupant);
+    } else {
+      // Candidate was unplaced
+      result.swaps.push({
+        moved: bestPreferred.name,
+        into: targetRoomKey,
+        displaced: occupant,
+        to: "(unplaced — surplus or completeness)"
+      });
+      placementByName.set(bestPreferred.name, { roomKey: targetRoomKey, location: "app" });
+      placementByName.delete(occupant);
+    }
+  }
+
+  return result;
+}
 function _enforceDepartureRolePlacement(assignmentsObj, appContext, currentAssignments) {
   const result = { swaps: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
