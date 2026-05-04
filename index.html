@@ -7799,6 +7799,12 @@ function _enforceEndoPriority(assignmentsObj, appContext) {
   return result;
 }
   function _enforceTier1Lock(assignmentsObj, appContext, currentAssignments) {
+    const TIER_1_PRIORITY_ORDER = [
+    "Karina Kima",
+    "Carla Rose",
+    "Audra Jackson",
+    "Evie \"Michelle\" Schoene"
+  ];
   const result = { swaps: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
 
