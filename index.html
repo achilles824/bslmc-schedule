@@ -4444,6 +4444,24 @@ for (const [k, v] of Object.entries(cur)) {
         }
       }
       // -----------------------------------------------------------
+      // McNair APP flex preference list enforcer — runs after
+      // departure-role placement, before completeness. Swaps non-
+      // preferred flexible locums out of OTM Endo / McNair OR /
+      // OTM OR slots in favor of preferred-list flexibles, sorted
+      // by shiftHours ascending (D8 > D10 > D12).
+      // -----------------------------------------------------------
+      if (label === "McNair APP" && _aiCurrentAppContext) {
+        const flexResult = _enforceFlexPreference(assignmentsObj, _aiCurrentAppContext);
+        if (flexResult.swaps.length > 0) {
+          const summary = flexResult.swaps
+            .map(s => s.moved + " <-> " + s.displaced + " (" + s.into.replace(/\|/, " ") +
+                      " <-> " + s.to.replace(/\|/, " ") + ")")
+            .join(" | ");
+          flagsArr.push("Client-side flex preference: swaps applied (" + summary + ")");
+          console.log("[Flex preference swaps]", flexResult.swaps);
+        }
+      }
+      // -----------------------------------------------------------
       // McNair APP completeness enforcement — runs after hallucinated
       // strip, before any model flags are committed. Catches APPs the
       // model dropped from its output entirely.
