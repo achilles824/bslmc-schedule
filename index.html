@@ -4479,6 +4479,27 @@ for (const [k, v] of Object.entries(cur)) {
         }
       }
       // -----------------------------------------------------------
+      // McNair APP final dedupe pass — runs after ALL swap validators
+      // (Tier 1 lock, Jamail Tier 2, endo priority, departure-role, flex
+      // preference) and BEFORE completeness. Catches duplicate placements
+      // those validators may have introduced via incomplete swap chains.
+      // Running before completeness ensures any rooms emptied by dedupe
+      // get refilled by completeness in the same pass.
+      //
+      // Idempotent: if no duplicates exist, this is a no-op.
+      // -----------------------------------------------------------
+      if (label === "McNair APP") {
+        const finalDupeRemovals = _dedupeAppsAndFloats(assignmentsObj);
+        if (finalDupeRemovals.length > 0) {
+          const summary = finalDupeRemovals
+            .map(r => r.name + " kept in " + r.keptIn.replace(/\|/, " ") +
+                      ", removed from " + r.fromRoom.replace(/\|/, " "))
+            .join(" | ");
+          flagsArr.push("Client-side final dedupe (post-swaps): " + summary);
+          console.log("[Final dedupe pass]", finalDupeRemovals);
+        }
+      }
+      // -----------------------------------------------------------
       // McNair APP completeness enforcement — runs after hallucinated
       // strip, before any model flags are committed. Catches APPs the
       // model dropped from its output entirely.
@@ -4521,25 +4542,7 @@ for (const [k, v] of Object.entries(cur)) {
           }
         }
       }
-      // -----------------------------------------------------------
-      // McNair APP final dedupe pass — runs after ALL swap validators
-      // (Jamail Tier 2, endo priority, departure-role, flex preference)
-      // and after completeness. Catches any duplicate placements those
-      // validators may have introduced via incomplete swap chains.
-      //
-      // Idempotent: if no duplicates exist, this is a no-op.
-      // -----------------------------------------------------------
-      if (label === "McNair APP") {
-        const finalDupeRemovals = _dedupeAppsAndFloats(assignmentsObj);
-        if (finalDupeRemovals.length > 0) {
-          const summary = finalDupeRemovals
-            .map(r => r.name + " kept in " + r.keptIn.replace(/\|/, " ") +
-                      ", removed from " + r.fromRoom.replace(/\|/, " "))
-            .join(" | ");
-          flagsArr.push("Client-side final dedupe (post-swaps): " + summary);
-          console.log("[Final dedupe pass]", finalDupeRemovals);
-        }
-      }
+
       // -----------------------------------------------------------
       // McNair APP stale deficit flag scrub — runs LAST, after all
       // other validators. Recounts actually-empty case-bearing
