@@ -3695,6 +3695,96 @@ async function fetchWeekJamailTracker(date) {
     return [];
   }
 }
+  // ─────────────────────────────────────────────────────────────
+// WORK-WEEK ROSTER & WEEK MAPS
+//
+// getWorkWeekRoster(dateStr) returns:
+//   { Mon: [staff...], Tue: [staff...], Wed: [staff...],
+//     Thu: [staff...], Fri: [staff...] }
+// Each entry comes from getORStaffForDay for that day.
+//
+// getWeekEndoMap(dateStr) returns { name → [Mon|Tue|...] }
+//   for APPs/MDs who already did endo earlier this week.
+//
+// getWeekJamailTier2Map(dateStr) returns { name → [Mon|Tue|...] }
+//   for Tier 2 APPs who already covered Jamail earlier this week.
+//
+// Day name conventions match DAYS_SHORT[] (Sun, Mon, Tue, ...)
+// but we only iterate Mon-Fri.
+// ─────────────────────────────────────────────────────────────
+
+const WORK_WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+
+function _workWeekDateForDay(dateStr, dayShort) {
+  // Given a date and a day-of-week short name (Mon/Tue/Wed/Thu/Fri),
+  // return the ISO date string for that day in the same work week.
+  const monday = mondayOfWeek(dateStr);
+  const offset = WORK_WEEK_DAYS.indexOf(dayShort);
+  if (offset < 0) return null;
+  const [y, m, d] = monday.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + offset);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return yy + "-" + mm + "-" + dd;
+}
+
+function getWorkWeekRoster(dateStr) {
+  const out = { Mon: [], Tue: [], Wed: [], Thu: [], Fri: [] };
+  for (const dayShort of WORK_WEEK_DAYS) {
+    const dayDate = _workWeekDateForDay(dateStr, dayShort);
+    if (!dayDate) continue;
+    try {
+      out[dayShort] = getORStaffForDay(dayDate) || [];
+    } catch(e) {
+      console.warn("getWorkWeekRoster: failed for " + dayShort + " (" + dayDate + ")", e.message);
+      out[dayShort] = [];
+    }
+  }
+  return out;
+}
+
+async function getWeekEndoMap(dateStr) {
+  // Returns { name → [day-short...] } for prior endo placements this week.
+  const map = {};
+  try {
+    const entries = await fetchWeekEndoTracker(dateStr);
+    if (!entries || !entries.length) return map;
+    for (const entry of entries) {
+      if (!entry || !entry.name || !entry.date) continue;
+      const [y, m, d] = entry.date.split("-").map(Number);
+      const dt = new Date(y, m - 1, d);
+      const dayShort = DAYS_SHORT[dt.getDay()];
+      if (!WORK_WEEK_DAYS.includes(dayShort)) continue;
+      if (!map[entry.name]) map[entry.name] = [];
+      if (!map[entry.name].includes(dayShort)) map[entry.name].push(dayShort);
+    }
+  } catch(e) {
+    console.warn("getWeekEndoMap failed:", e.message);
+  }
+  return map;
+}
+
+async function getWeekJamailTier2Map(dateStr) {
+  const map = {};
+  try {
+    const entries = await fetchWeekJamailTracker(dateStr);
+    if (!entries || !entries.length) return map;
+    for (const entry of entries) {
+      if (!entry || !entry.name || !entry.date) continue;
+      const [y, m, d] = entry.date.split("-").map(Number);
+      const dt = new Date(y, m - 1, d);
+      const dayShort = DAYS_SHORT[dt.getDay()];
+      if (!WORK_WEEK_DAYS.includes(dayShort)) continue;
+      if (!map[entry.name]) map[entry.name] = [];
+      if (!map[entry.name].includes(dayShort)) map[entry.name].push(dayShort);
+    }
+  } catch(e) {
+    console.warn("getWeekJamailTier2Map failed:", e.message);
+  }
+  return map;
+}
 // ─────────────────────────────────────────────────────────────
 // Get the working staff for a date by delegating to the existing
 // getORStaffForDay function.
