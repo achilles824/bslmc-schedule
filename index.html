@@ -4344,6 +4344,46 @@ for (const [k, v] of Object.entries(cur)) {
         console.log("[Hallucinated room strip]", hallucinatedRooms);
       }
       // -----------------------------------------------------------
+      // McNair APP hallucinated-APP strip — runs before dedupe and
+      // completeness. Removes any APP the model placed who is not
+      // actually working today.
+      // -----------------------------------------------------------
+      if (label === "McNair APP" && _aiCurrentAppContext) {
+        const stripResult = _stripHallucinatedApps(assignmentsObj, _aiCurrentAppContext);
+        if (stripResult.strippedApps.length > 0) {
+          const summary = stripResult.strippedApps
+            .map(x => x.name + " from " + x.room.replace(/\|/, " "))
+            .join(" | ");
+          flagsArr.push("Client-side hallucinated APP strip: " + summary);
+          console.log("[Hallucinated APP strip]", stripResult.strippedApps);
+        }
+        if (stripResult.strippedFloats.length > 0) {
+          const summary = stripResult.strippedFloats
+            .map(x => x.name + " from " + x.room.replace(/\|/, " "))
+            .join(" | ");
+          flagsArr.push("Client-side hallucinated float strip: " + summary);
+          console.log("[Hallucinated float strip]", stripResult.strippedFloats);
+        }
+      }
+
+      // -----------------------------------------------------------
+      // McNair APP dedupe — runs after hallucinated-APP strip,
+      // before completeness. If a real APP is in 2+ rooms, keeps
+      // the highest-priority slot (Jamail > Endo > McNair OR >
+      // OTM OR > Float) and nulls the rest.
+      // -----------------------------------------------------------
+      if (label === "McNair APP") {
+        const dupeRemovals = _dedupeAppsAndFloats(assignmentsObj);
+        if (dupeRemovals.length > 0) {
+          const summary = dupeRemovals
+            .map(r => r.name + " kept in " + r.keptIn.replace(/\|/, " ") +
+                      ", removed from " + r.fromRoom.replace(/\|/, " "))
+            .join(" | ");
+          flagsArr.push("Client-side APP dedupe: " + summary);
+          console.log("[APP dedupe]", dupeRemovals);
+        }
+      }
+      // -----------------------------------------------------------
       // McNair APP completeness enforcement — runs after hallucinated
       // strip, before any model flags are committed. Catches APPs the
       // model dropped from its output entirely.
