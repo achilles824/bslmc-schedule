@@ -4384,6 +4384,23 @@ for (const [k, v] of Object.entries(cur)) {
         }
       }
       // -----------------------------------------------------------
+      // McNair APP Tier 1 lock enforcer — runs FIRST among the swap
+      // validators. When J > 0, every working Tier 1 APP MUST be at
+      // Jamail. Priority: Kima > Rose > Jackson > Schoene. Kima always
+      // gets the latest Jamail caseTime.
+      // -----------------------------------------------------------
+      if (label === "McNair APP" && _aiCurrentAppContext) {
+        const tier1Result = _enforceTier1Lock(assignmentsObj, _aiCurrentAppContext, cur);
+        if (tier1Result.swaps.length > 0) {
+          const summary = tier1Result.swaps
+            .map(s => s.moved + " <-> " + s.displaced + " (" + s.into.replace(/\|/, " ") +
+                      " <-> " + s.to.replace(/\|/, " ") + ")")
+            .join(" | ");
+          flagsArr.push("Client-side Tier 1 lock: swaps applied (" + summary + ")");
+          console.log("[Tier 1 lock swaps]", tier1Result.swaps);
+        }
+      }
+      // -----------------------------------------------------------
       // McNair APP Jamail Tier 2 priority enforcer — runs after
       // dedupe, before completeness. If a non-preferred Tier 2 APP
       // occupies a Jamail slot while a preferred-6 name is eligible
