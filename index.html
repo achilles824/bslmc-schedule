@@ -4025,6 +4025,7 @@ let _aiAssignPlan = null;
 
 // Track which pass is currently in the preview modal (used for Retry)
 let _aiCurrentPass = null; // "mcnair" | "main" | "fullday" | null
+  let _aiCurrentAppContext = null; // McNair APP pass context, used by completeness validator
 
 // ---------------------------------------------------------------
 // Entry point — called by the "AI Assign" button
@@ -4069,6 +4070,7 @@ async function aiAssignMcnairApp() {
     try {
       const staff = (typeof getORStaffForDay === "function") ? getORStaffForDay(date) : [];
       appContext = await buildMcnairAppContext(date, staff);
+      _aiCurrentAppContext = appContext;
       console.log("[Pass 1] Built appContext for " + date + " — " + appContext.apps.length + " APPs, today=" + appContext.todayDayShort);
     } catch (e) {
       console.warn("[Pass 1] Failed to build appContext, falling back to legacy prompt:", e.message);
@@ -4340,6 +4342,49 @@ for (const [k, v] of Object.entries(cur)) {
         flagsArr.push(...scrubbed);
 
         console.log("[Hallucinated room strip]", hallucinatedRooms);
+      }
+      // -----------------------------------------------------------
+      // McNair APP completeness enforcement — runs after hallucinated
+      // strip, before any model flags are committed. Catches APPs the
+      // model dropped from its output entirely.
+      // -----------------------------------------------------------
+      if (label === "McNair APP" && _aiCurrentAppContext) {
+        const completenessResult = _enforceAppCompleteness(assignmentsObj, _aiCurrentAppContext, cur);
+        if (completenessResult.forcedPlaced.length > 0) {
+          const summary = completenessResult.forcedPlaced
+            .map(x => x.name + " -> " + x.room.replace(/\|/, " "))
+            .join(" | ");
+          flagsArr.push("Client-side completeness: force-placed " +
+            completenessResult.forcedPlaced.length + " APPs the model dropped (" + summary + ")");
+          console.log("[Client-side completeness force-placed]", completenessResult.forcedPlaced);
+        }
+        if (completenessResult.pushedToFloat.length > 0) {
+          flagsArr.push("Client-side completeness: pushed to OTM Float: " +
+            completenessResult.pushedToFloat.join(", "));
+          console.log("[Client-side completeness pushed to float]", completenessResult.pushedToFloat);
+        }
+        // Also scrub stale "Surplus flexibles" flag entries — if the model
+        // listed Walker/Yeh/etc. as surplus, but completeness placed them,
+        // they should no longer be in that flag.
+        const placedAndFloated = new Set([
+          ...completenessResult.forcedPlaced.map(x => x.name),
+          ...completenessResult.pushedToFloat
+        ]);
+        if (placedAndFloated.size > 0) {
+          for (let i = 0; i < flagsArr.length; i++) {
+            const f = flagsArr[i];
+            const m = f.match(/^Surplus flexibles[^:]*:\s*(.+?)\.?$/i);
+            if (!m) continue;
+            const names = m[1].split(/\s*,\s*/).map(s => s.trim()).filter(Boolean);
+            const filtered = names.filter(n => !placedAndFloated.has(n));
+            if (filtered.length === 0) {
+              flagsArr.splice(i, 1);
+              i--;
+            } else if (filtered.length < names.length) {
+              flagsArr[i] = "Surplus flexibles (rolling to pass 2): " + filtered.join(", ");
+            }
+          }
+        }
       }
       // ─────────────────────────────────────────────────────────────
 
