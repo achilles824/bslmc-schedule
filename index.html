@@ -4059,9 +4059,37 @@ async function aiAssignStart() {
 // ---------------------------------------------------------------
 async function aiAssignMcnairApp() {
   _aiCurrentPass = "mcnairApp";
+
+  // Build the per-APP context (look-ahead, prior endo/Jamail, departure roles, etc.)
+  // and inject it into the prompt builder via closure. _aiRunPass calls the builder
+  // with the standard 5 args; the closure adds appContext as the 6th.
+  const date = document.getElementById("adminDatePicker") && document.getElementById("adminDatePicker").value;
+  let appContext = null;
+  if (date) {
+    try {
+      const staff = (typeof getORStaffForDay === "function") ? getORStaffForDay(date) : [];
+      appContext = await buildMcnairAppContext(date, staff);
+      console.log("[Pass 1] Built appContext for " + date + " — " + appContext.apps.length + " APPs, today=" + appContext.todayDayShort);
+    } catch (e) {
+      console.warn("[Pass 1] Failed to build appContext, falling back to legacy prompt:", e.message);
+      appContext = null;
+    }
+  }
+
+  // If context built successfully, use new prompt with context injection.
+  // If anything failed, fall back to the legacy prompt.
+  const promptBuilder = appContext
+    ? (date_, staffSummary, currentAssignments, roomsNeeding, rules) =>
+        buildMcnairAppPrompt(date_, staffSummary, currentAssignments, roomsNeeding, rules, appContext)
+    : buildMcnairAppPromptLegacy;
+
+  if (!appContext) {
+    console.warn("[Pass 1] Using LEGACY prompt — appContext could not be built");
+  }
+
   await _aiRunPass({
     label: "McNair APP",
-    promptBuilder: buildMcnairAppPrompt,
+    promptBuilder: promptBuilder,
     systemPrompt: "You are an anesthesiology scheduling assistant assigning APPs to the McNair campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose. Touch only app slots; leave md fields null."
   });
 }
