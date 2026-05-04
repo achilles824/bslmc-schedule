@@ -4426,6 +4426,73 @@ for (const [k, v] of Object.entries(cur)) {
           }
         }
       }
+      // -----------------------------------------------------------
+      // McNair APP stale deficit flag scrub — runs LAST, after all
+      // other validators. Recounts actually-empty case-bearing
+      // McNair-side rooms and either drops or rewrites the model's
+      // STRUCTURAL_McNAIR_APP_DEFICIT flag if reality has changed.
+      // -----------------------------------------------------------
+      if (label === "McNair APP") {
+        const isMcnairSideRoom = (k) => {
+          if (k === "OTM OR|Float") return false;
+          return k.startsWith("McNair OR") ||
+                 k.startsWith("OTM OR") ||
+                 k.startsWith("OTM Endo") ||
+                 k.startsWith("Jamail OR");
+        };
+        const allRoomKeys = new Set([
+          ...Object.keys(assignmentsObj || {}),
+          ...Object.keys(cur || {})
+        ]);
+        const emptyCaseBearing = [];
+        for (const roomKey of allRoomKeys) {
+          if (roomKey === "__closed") continue;
+          if (!isMcnairSideRoom(roomKey)) continue;
+          const slotsAssign = assignmentsObj[roomKey];
+          const slotsCur = cur && cur[roomKey];
+          // Has APP in either source?
+          if (slotsAssign && slotsAssign.app && slotsAssign.app.name) continue;
+          if (slotsCur && slotsCur.app && slotsCur.app.name) continue;
+          // Has case data?
+          const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure)) ||
+                          (slotsAssign && (slotsAssign.caseTime || slotsAssign.surgeon || slotsAssign.procedure));
+          if (!hasCase) continue;
+          emptyCaseBearing.push(roomKey);
+        }
+        // Walk flagsArr looking for STRUCTURAL_McNAIR_APP_DEFICIT and rewrite/drop
+        const newFlags = [];
+        let flagAdjusted = false;
+        for (const f of flagsArr) {
+          const m = f.match(/^STRUCTURAL_McNAIR_APP_DEFICIT:\s*(\d+)\s*McNair-side rooms?\s*unstaffed/i);
+          if (!m) {
+            newFlags.push(f);
+            continue;
+          }
+          const claimed = parseInt(m[1], 10);
+          const actual = emptyCaseBearing.length;
+          if (actual === 0) {
+            // No real deficit — drop the flag entirely
+            console.log("[Stale deficit flag dropped] model claimed " + claimed + " unstaffed, actual=0");
+            flagAdjusted = true;
+            continue;
+          }
+          if (actual !== claimed) {
+            // Real deficit but different count — rewrite with accurate number
+            const rewritten = "STRUCTURAL_McNAIR_APP_DEFICIT: " + actual +
+              " McNair-side room" + (actual === 1 ? "" : "s") + " unstaffed (" +
+              emptyCaseBearing.map(k => k.replace(/\|/, " ")).join(", ") + ")";
+            console.log("[Stale deficit flag rewritten] " + claimed + " -> " + actual);
+            newFlags.push(rewritten);
+            flagAdjusted = true;
+          } else {
+            newFlags.push(f);
+          }
+        }
+        if (flagAdjusted) {
+          flagsArr.length = 0;
+          flagsArr.push(...newFlags);
+        }
+      }
       // ─────────────────────────────────────────────────────────────
 
       // ─────────────────────────────────────────────────────────────
