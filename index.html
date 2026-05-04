@@ -7781,6 +7781,219 @@ function _enforceEndoPriority(assignmentsObj, appContext) {
 
   return result;
 }
+  function _enforceTier1Lock(assignmentsObj, appContext, currentAssignments) {
+  const result = { swaps: [] };
+  if (!appContext || !Array.isArray(appContext.apps)) return result;
+
+  // Collect Jamail rooms (with cases)
+  const allRoomKeys = new Set([
+    ...Object.keys(assignmentsObj || {}),
+    ...Object.keys(currentAssignments || {})
+  ]);
+  const jamailRooms = [];
+  for (const roomKey of allRoomKeys) {
+    if (roomKey === "__closed") continue;
+    if (!roomKey.startsWith("Jamail OR")) continue;
+    if (roomKey === "OTM OR|Float") continue;
+    const slotsAssign = assignmentsObj[roomKey];
+    const slotsCur = currentAssignments && currentAssignments[roomKey];
+    const caseTime =
+      (slotsCur && slotsCur.caseTime) ||
+      (slotsAssign && slotsAssign.caseTime) ||
+      null;
+    if (!caseTime) continue;
+    jamailRooms.push({ roomKey, caseTime });
+  }
+
+  if (jamailRooms.length === 0) return result; // J = 0
+
+  // Sort Jamail rooms by caseTime DESCENDING (latest first)
+  jamailRooms.sort((a, b) => b.caseTime.localeCompare(a.caseTime));
+
+  // Identify Tier 1 APPs working today, in priority order
+  const ctxByName = new Map(appContext.apps.map(a => [a.name, a]));
+  const workingTier1 = [];
+  for (const name of TIER_1_PRIORITY_ORDER) {
+    const ctx = ctxByName.get(name);
+    if (ctx) workingTier1.push(ctx);
+  }
+
+  if (workingTier1.length === 0) return result;
+
+  // Build current placement map
+  const placementByName = new Map();
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
+    if (slots.app && slots.app.name) {
+      placementByName.set(slots.app.name, { roomKey, location: "app" });
+    }
+    if (Array.isArray(slots.float)) {
+      slots.float.forEach((f, i) => {
+        if (f && f.name) placementByName.set(f.name, { roomKey, location: "float-" + i });
+      });
+    }
+  }
+
+  // -------- KIMA RULE --------
+  // Kima specifically must be at the latest-caseTime Jamail room.
+  // If she's not, swap her in, displacing whoever's there.
+  const kimaCtx = workingTier1.find(c => c.name === "Karina Kima");
+  const usedJamailRooms = new Set();
+  if (kimaCtx) {
+    const targetRoom = jamailRooms[0].roomKey; // latest caseTime
+    usedJamailRooms.add(targetRoom);
+    const currentPlacement = placementByName.get("Karina Kima");
+    const currentRoomKey = currentPlacement ? currentPlacement.roomKey : null;
+
+    if (currentRoomKey !== targetRoom) {
+      const targetSlots = assignmentsObj[targetRoom];
+      const targetCurrentOccupant =
+        (targetSlots && targetSlots.app && targetSlots.app.name) || null;
+
+      if (!assignmentsObj[targetRoom]) {
+        assignmentsObj[targetRoom] = { md: null, app: null, notes: "" };
+      }
+      assignmentsObj[targetRoom].app = {
+        name: kimaCtx.name,
+        credential: kimaCtx.credential,
+        agency: kimaCtx.agency
+      };
+
+      if (targetCurrentOccupant && targetCurrentOccupant !== "Karina Kima") {
+        const displacedCtx = ctxByName.get(targetCurrentOccupant);
+        if (currentRoomKey && displacedCtx) {
+          const oldSlots = assignmentsObj[currentRoomKey];
+          if (oldSlots) {
+            oldSlots.app = {
+              name: targetCurrentOccupant,
+              credential: displacedCtx.credential,
+              agency: displacedCtx.agency
+            };
+            result.swaps.push({
+              moved: "Karina Kima",
+              into: targetRoom,
+              displaced: targetCurrentOccupant,
+              to: currentRoomKey
+            });
+            placementByName.set("Karina Kima", { roomKey: targetRoom, location: "app" });
+            placementByName.set(targetCurrentOccupant, { roomKey: currentRoomKey, location: "app" });
+          }
+        } else {
+          // Kima wasn't placed anywhere; displaced person becomes unplaced
+          result.swaps.push({
+            moved: "Karina Kima",
+            into: targetRoom,
+            displaced: targetCurrentOccupant,
+            to: "(unplaced — completeness will refill)"
+          });
+          placementByName.set("Karina Kima", { roomKey: targetRoom, location: "app" });
+          placementByName.delete(targetCurrentOccupant);
+        }
+      } else {
+        // Target was empty; null Kima's old room if she had one
+        if (currentRoomKey && currentPlacement.location === "app") {
+          const oldSlots = assignmentsObj[currentRoomKey];
+          if (oldSlots) oldSlots.app = null;
+        }
+        result.swaps.push({
+          moved: "Karina Kima",
+          into: targetRoom,
+          displaced: "(empty)",
+          to: "(none)"
+        });
+        placementByName.set("Karina Kima", { roomKey: targetRoom, location: "app" });
+      }
+    } else {
+      usedJamailRooms.add(targetRoom);
+    }
+  }
+
+  // -------- ROSE / JACKSON / SCHOENE --------
+  // Each takes any unused Jamail room. Order in TIER_1_PRIORITY_ORDER
+  // determines who gets first crack. They displace any current Tier 2 occupant
+  // (Tier 1 displacing Tier 1 doesn't happen here because Kima is settled above
+  // and the loop walks priority order).
+  for (const tier1Ctx of workingTier1) {
+    if (tier1Ctx.name === "Karina Kima") continue;
+
+    const currentPlacement = placementByName.get(tier1Ctx.name);
+    const currentRoomKey = currentPlacement ? currentPlacement.roomKey : null;
+
+    // If they're already at a Jamail room, that satisfies the rule
+    if (currentRoomKey && currentRoomKey.startsWith("Jamail OR")) {
+      usedJamailRooms.add(currentRoomKey);
+      continue;
+    }
+
+    // They're not at Jamail. Find any unused Jamail room.
+    const targetEntry = jamailRooms.find(r => !usedJamailRooms.has(r.roomKey));
+    if (!targetEntry) {
+      // No more Jamail rooms available — every Jamail slot is already occupied
+      // by a Tier 1 APP. This Tier 1 stays where they are. Should be rare.
+      continue;
+    }
+    const targetRoom = targetEntry.roomKey;
+    usedJamailRooms.add(targetRoom);
+
+    const targetSlots = assignmentsObj[targetRoom];
+    const targetCurrentOccupant =
+      (targetSlots && targetSlots.app && targetSlots.app.name) || null;
+
+    if (!assignmentsObj[targetRoom]) {
+      assignmentsObj[targetRoom] = { md: null, app: null, notes: "" };
+    }
+    assignmentsObj[targetRoom].app = {
+      name: tier1Ctx.name,
+      credential: tier1Ctx.credential,
+      agency: tier1Ctx.agency
+    };
+
+    if (targetCurrentOccupant && targetCurrentOccupant !== tier1Ctx.name) {
+      const displacedCtx = ctxByName.get(targetCurrentOccupant);
+      if (currentRoomKey && displacedCtx) {
+        const oldSlots = assignmentsObj[currentRoomKey];
+        if (oldSlots) {
+          oldSlots.app = {
+            name: targetCurrentOccupant,
+            credential: displacedCtx.credential,
+            agency: displacedCtx.agency
+          };
+          result.swaps.push({
+            moved: tier1Ctx.name,
+            into: targetRoom,
+            displaced: targetCurrentOccupant,
+            to: currentRoomKey
+          });
+          placementByName.set(tier1Ctx.name, { roomKey: targetRoom, location: "app" });
+          placementByName.set(targetCurrentOccupant, { roomKey: currentRoomKey, location: "app" });
+        }
+      } else {
+        result.swaps.push({
+          moved: tier1Ctx.name,
+          into: targetRoom,
+          displaced: targetCurrentOccupant,
+          to: "(unplaced — completeness will refill)"
+        });
+        placementByName.set(tier1Ctx.name, { roomKey: targetRoom, location: "app" });
+        placementByName.delete(targetCurrentOccupant);
+      }
+    } else {
+      if (currentRoomKey && currentPlacement.location === "app") {
+        const oldSlots = assignmentsObj[currentRoomKey];
+        if (oldSlots) oldSlots.app = null;
+      }
+      result.swaps.push({
+        moved: tier1Ctx.name,
+        into: targetRoom,
+        displaced: "(empty)",
+        to: "(none)"
+      });
+      placementByName.set(tier1Ctx.name, { roomKey: targetRoom, location: "app" });
+    }
+  }
+
+  return result;
+}
 function _enforceJamailTier2Priority(assignmentsObj, appContext) {
   const result = { swaps: [], promotions: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
