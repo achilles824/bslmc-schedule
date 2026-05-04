@@ -3612,6 +3612,89 @@ async function fetchWeekEndoTracker(date) {
     return [];
   }
 }
+  // ─────────────────────────────────────────────────────────────
+// JAMAIL TIER 2 TRACKER
+//
+// Tracks Tier 2 APP placements at Jamail across the work week.
+// Tier 1 APPs (Kima, Rose, Jackson, Schoene) are NOT tracked —
+// they live at Jamail every day they work; only Tier 2 fills are
+// tracked so we can enforce once-per-week-per-Tier-2-APP.
+//
+// Storage: /weeklyJamailTracking/{weekStartYYYY-MM-DD}/{date_name}
+// Structure mirrors weeklyEndoTracking.
+// ─────────────────────────────────────────────────────────────
+
+const TIER_1_APP_NAMES = new Set([
+  "Karina Kima", "Carla Rose", "Audra Jackson", "Evie Schoene"
+]);
+
+function collectJamailTier2Entries(date, assignments) {
+  // Returns array of {name, date} for every Jamail OR APP that is NOT Tier 1.
+  const entries = [];
+  const seen = new Set();
+  if (!assignments) return entries;
+
+  for (const [roomKey, slots] of Object.entries(assignments)) {
+    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
+    if (!roomKey.startsWith("Jamail OR")) continue;
+    if (!slots.app || !slots.app.name) continue;
+    if (TIER_1_APP_NAMES.has(slots.app.name)) continue; // skip Tier 1
+    const key = slots.app.name + "|" + date;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push({ name: slots.app.name, date });
+  }
+  return entries;
+}
+
+async function writeJamailTrackerForDate(date, assignments) {
+  if (!date || !assignments) return;
+  const weekStart = mondayOfWeek(date);
+  const entries = collectJamailTier2Entries(date, assignments);
+
+  // Idempotent: clear existing entries for this date first
+  await clearJamailTrackerForDate(date);
+
+  for (const entry of entries) {
+    const safeName = _safeKeyName(entry.name);
+    const path = "weeklyJamailTracking/" + weekStart + "/" + date + "_" + safeName;
+    try {
+      await window.fbSet(path, entry);
+    } catch(e) {
+      console.warn("Jamail tracker write failed for", entry.name, e.message);
+    }
+  }
+  console.log("[Jamail tracker] wrote " + entries.length + " Tier 2 entries for " + date + " (week " + weekStart + ")");
+}
+
+async function clearJamailTrackerForDate(date) {
+  if (!date) return;
+  const weekStart = mondayOfWeek(date);
+  try {
+    const weekData = await window.fbGet("weeklyJamailTracking/" + weekStart);
+    if (!weekData) return;
+    const keysToDelete = Object.keys(weekData).filter(k => k.startsWith(date + "_"));
+    for (const k of keysToDelete) {
+      await window.fbSet("weeklyJamailTracking/" + weekStart + "/" + k, null);
+    }
+    console.log("[Jamail tracker] cleared " + keysToDelete.length + " entries for " + date);
+  } catch(e) {
+    console.warn("Jamail tracker clear failed:", e.message);
+  }
+}
+
+async function fetchWeekJamailTracker(date) {
+  if (!date) return [];
+  const weekStart = mondayOfWeek(date);
+  try {
+    const weekData = await window.fbGet("weeklyJamailTracking/" + weekStart);
+    if (!weekData) return [];
+    return Object.values(weekData);
+  } catch(e) {
+    console.warn("Jamail tracker fetch failed:", e.message);
+    return [];
+  }
+}
 // ─────────────────────────────────────────────────────────────
 // Get the working staff for a date by delegating to the existing
 // getORStaffForDay function.
