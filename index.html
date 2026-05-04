@@ -7210,7 +7210,191 @@ const PREFERRED_TIER_2_NAMES = [
 //
 // Returns: { swaps: [{moved, into, displaced, to}] }
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// _enforceDepartureRolePlacement — McNair APP pass validator
+//
+// Walks the McNair OR + OTM OR room pool. Eligible Baylor McNair
+// APPs (campus="baylorMcnair", departureRole !== null) should be
+// sorted by departureRole descending and assigned to those rooms
+// sorted by caseTime descending. Highest departure role gets the
+// latest start.
+//
+// If a Baylor McNair APP is at a sub-optimal room (lower caseTime
+// than what their departureRole entitles), and the higher-caseTime
+// room is occupied by ANYONE (Baylor, locum, etc.), swap them.
+//
+// Out of scope: Jamail OR (Tier 1 lock), OTM Endo, OTM Float.
+// Baylor McNair APPs already at Jamail or endo are NOT moved.
+//
+// Returns: { swaps: [{moved, into, displaced, to}] }
+// ─────────────────────────────────────────────────────────────
 
+function _enforceDepartureRolePlacement(assignmentsObj, appContext, currentAssignments) {
+  const result = { swaps: [] };
+  if (!appContext || !Array.isArray(appContext.apps)) return result;
+
+  // Collect McNair OR + OTM OR room pool with caseTimes.
+  // Use currentAssignments first, then assignmentsObj as fallback.
+  const isPoolRoom = (k) =>
+    (k.startsWith("McNair OR") || k.startsWith("OTM OR")) &&
+    k !== "OTM OR|Float";
+
+  const allRoomKeys = new Set([
+    ...Object.keys(assignmentsObj || {}),
+    ...Object.keys(currentAssignments || {})
+  ]);
+
+  const poolRooms = []; // {roomKey, caseTime, occupant}
+  for (const roomKey of allRoomKeys) {
+    if (roomKey === "__closed") continue;
+    if (!isPoolRoom(roomKey)) continue;
+    const slotsAssign = assignmentsObj[roomKey];
+    const slotsCur = currentAssignments && currentAssignments[roomKey];
+    const caseTime =
+      (slotsCur && slotsCur.caseTime) ||
+      (slotsAssign && slotsAssign.caseTime) ||
+      null;
+    if (!caseTime) continue; // skip rooms without case data
+    const occupant = slotsAssign && slotsAssign.app && slotsAssign.app.name;
+    poolRooms.push({ roomKey, caseTime, occupant });
+  }
+
+  if (poolRooms.length === 0) return result;
+
+  // Sort pool rooms by caseTime descending (latest first)
+  poolRooms.sort((a, b) => b.caseTime.localeCompare(a.caseTime));
+
+  // Identify Baylor McNair APPs eligible for departure-role placement.
+  // Eligibility: campus baylorMcnair, departureRole present, and not currently
+  // at Jamail or OTM Endo (those placements are sacred for this validator).
+  const occupiedRoomByName = new Map();
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
+    if (slots.app && slots.app.name) {
+      occupiedRoomByName.set(slots.app.name, roomKey);
+    }
+  }
+
+  const isProtectedPlacement = (name) => {
+    const room = occupiedRoomByName.get(name);
+    if (!room) return false;
+    return room.startsWith("Jamail OR") || room.startsWith("OTM Endo");
+  };
+
+  const eligibleBaylor = appContext.apps
+    .filter(a =>
+      a.campus === "baylorMcnair" &&
+      typeof a.departureRole === "number" &&
+      !isProtectedPlacement(a.name)
+    )
+    .sort((a, b) => b.departureRole - a.departureRole); // descending
+
+  if (eligibleBaylor.length === 0) return result;
+
+  // Determine which pool rooms are intended for Baylor (the top N rooms by caseTime,
+  // where N = number of eligible Baylor McNair APPs)
+  const numBaylorSlots = Math.min(eligibleBaylor.length, poolRooms.length);
+  const baylorTargetRooms = poolRooms.slice(0, numBaylorSlots);
+
+  // Build the desired pairing: highest dep -> latest room
+  // Walk eligibleBaylor and baylorTargetRooms in parallel.
+  const ctxByName = new Map(appContext.apps.map(a => [a.name, a]));
+
+  for (let i = 0; i < numBaylorSlots; i++) {
+    const targetRoom = baylorTargetRooms[i].roomKey;
+    const desiredOccupant = eligibleBaylor[i];
+    const currentOccupantName = assignmentsObj[targetRoom] &&
+                                assignmentsObj[targetRoom].app &&
+                                assignmentsObj[targetRoom].app.name;
+
+    if (currentOccupantName === desiredOccupant.name) continue; // already correct
+
+    // Find where desiredOccupant is currently placed
+    const currentRoomOfDesired = occupiedRoomByName.get(desiredOccupant.name);
+
+    // If desiredOccupant is at a protected placement (shouldn't happen since we
+    // filtered eligibleBaylor for that, but defensive), skip
+    if (currentRoomOfDesired && isProtectedPlacement(desiredOccupant.name)) continue;
+
+    // Place desired occupant into target room
+    if (!assignmentsObj[targetRoom]) {
+      assignmentsObj[targetRoom] = { md: null, app: null, notes: "" };
+    }
+    assignmentsObj[targetRoom].app = {
+      name: desiredOccupant.name,
+      credential: desiredOccupant.credential,
+      agency: desiredOccupant.agency
+    };
+
+    // Place displaced person at desired's old room (if they had one)
+    if (currentRoomOfDesired && currentOccupantName) {
+      const oldOccCtx = ctxByName.get(currentOccupantName);
+      if (oldOccCtx) {
+        assignmentsObj[currentRoomOfDesired].app = {
+          name: currentOccupantName,
+          credential: oldOccCtx.credential,
+          agency: oldOccCtx.agency
+        };
+        result.swaps.push({
+          moved: desiredOccupant.name,
+          into: targetRoom,
+          displaced: currentOccupantName,
+          to: currentRoomOfDesired
+        });
+        // Update tracking
+        occupiedRoomByName.set(desiredOccupant.name, targetRoom);
+        occupiedRoomByName.set(currentOccupantName, currentRoomOfDesired);
+      } else {
+        // Old occupant context unknown — null the old room and let completeness handle
+        assignmentsObj[currentRoomOfDesired].app = null;
+        result.swaps.push({
+          moved: desiredOccupant.name,
+          into: targetRoom,
+          displaced: currentOccupantName,
+          to: currentRoomOfDesired + " (then nulled — context unknown)"
+        });
+        occupiedRoomByName.set(desiredOccupant.name, targetRoom);
+        occupiedRoomByName.delete(currentOccupantName);
+      }
+    } else if (currentRoomOfDesired && !currentOccupantName) {
+      // Target was empty; just move desiredOccupant in
+      // But the above branch should have handled this... reaching here means
+      // there's no displacement needed.
+      result.swaps.push({
+        moved: desiredOccupant.name,
+        into: targetRoom,
+        displaced: "(empty)",
+        to: "(none)"
+      });
+      occupiedRoomByName.set(desiredOccupant.name, targetRoom);
+    } else if (!currentRoomOfDesired && currentOccupantName) {
+      // desiredOccupant wasn't placed anywhere; current occupant gets bumped
+      const oldOccCtx = ctxByName.get(currentOccupantName);
+      if (oldOccCtx) {
+        // Just null the displaced occupant — completeness will refill
+        result.swaps.push({
+          moved: desiredOccupant.name,
+          into: targetRoom,
+          displaced: currentOccupantName,
+          to: "(unplaced — completeness will refill)"
+        });
+      }
+      occupiedRoomByName.set(desiredOccupant.name, targetRoom);
+      occupiedRoomByName.delete(currentOccupantName);
+    } else {
+      // Neither was placed; just place desired
+      result.swaps.push({
+        moved: desiredOccupant.name,
+        into: targetRoom,
+        displaced: "(empty)",
+        to: "(none)"
+      });
+      occupiedRoomByName.set(desiredOccupant.name, targetRoom);
+    }
+  }
+
+  return result;
+}
 function _enforceEndoPriority(assignmentsObj, appContext) {
   const result = { swaps: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
