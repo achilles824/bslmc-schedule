@@ -6867,7 +6867,145 @@ One FLAGS block max, at end. No mid-array FLAGS. Flag content must be consistent
 //
 // Returns: { forcedPlaced: [{name, room}], pushedToFloat: [name] }
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// _stripHallucinatedApps — McNair APP pass validator
+//
+// Walks every app slot and float entry in assignmentsObj. For each
+// placed name, confirms it exists in appContext.apps (the real
+// working roster). If not, nulls the slot/removes from float and
+// records the violation.
+//
+// Run BEFORE dedupe and completeness, so freed-up rooms can be
+// refilled and freed-up names can be reconsidered.
+//
+// Returns: { strippedApps: [{name, room}], strippedFloats: [{name, room}] }
+// ─────────────────────────────────────────────────────────────
 
+function _stripHallucinatedApps(assignmentsObj, appContext) {
+  const result = { strippedApps: [], strippedFloats: [] };
+  if (!appContext || !Array.isArray(appContext.apps)) return result;
+
+  const realNames = new Set(appContext.apps.map(a => a.name));
+
+  for (const [roomKey, slots] of Object.entries(assignmentsObj || {})) {
+    if (roomKey === "__closed") continue;
+    if (!slots || typeof slots !== "object") continue;
+
+    // Check the app slot
+    if (slots.app && slots.app.name && !realNames.has(slots.app.name)) {
+      result.strippedApps.push({ name: slots.app.name, room: roomKey });
+      slots.app = null;
+    }
+
+    // Check the float array
+    if (Array.isArray(slots.float)) {
+      const filtered = [];
+      for (const f of slots.float) {
+        if (!f || !f.name) continue;
+        if (realNames.has(f.name)) {
+          filtered.push(f);
+        } else {
+          result.strippedFloats.push({ name: f.name, room: roomKey });
+        }
+      }
+      slots.float = filtered;
+    }
+  }
+
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────
+// _dedupeAppsAndFloats — McNair APP pass validator
+//
+// If a name appears in multiple app slots OR multiple float entries
+// OR a mix, keeps the first occurrence in priority order:
+//   1. Jamail OR (Tier 1 sacred, never displaced)
+//   2. OTM Endo
+//   3. McNair OR
+//   4. OTM OR (excluding Float)
+//   5. OTM OR|Float
+// Within the same tier, alphabetical room order.
+//
+// Removes duplicates. Returns the list of removals so a flag can fire.
+// ─────────────────────────────────────────────────────────────
+
+function _dedupeAppsAndFloats(assignmentsObj) {
+  const removals = []; // {name, fromRoom, keptIn}
+  if (!assignmentsObj || typeof assignmentsObj !== "object") return removals;
+
+  const tier = (roomKey) => {
+    if (roomKey === "OTM OR|Float") return 5;
+    if (roomKey.startsWith("Jamail OR")) return 1;
+    if (roomKey.startsWith("OTM Endo")) return 2;
+    if (roomKey.startsWith("McNair OR")) return 3;
+    if (roomKey.startsWith("OTM OR")) return 4;
+    return 9; // anything else, lowest priority
+  };
+
+  // Build a list of all (name, roomKey, location) placements.
+  // location = "app" or "float-N" (index in float array).
+  const placements = [];
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
+    if (slots.app && slots.app.name) {
+      placements.push({ name: slots.app.name, roomKey, location: "app" });
+    }
+    if (Array.isArray(slots.float)) {
+      slots.float.forEach((f, i) => {
+        if (f && f.name) placements.push({ name: f.name, roomKey, location: "float-" + i });
+      });
+    }
+  }
+
+  // Sort placements: by tier ascending, then roomKey alphabetical, then location.
+  placements.sort((a, b) => {
+    const ta = tier(a.roomKey), tb = tier(b.roomKey);
+    if (ta !== tb) return ta - tb;
+    if (a.roomKey !== b.roomKey) return a.roomKey.localeCompare(b.roomKey);
+    return a.location.localeCompare(b.location);
+  });
+
+  // Walk in priority order. First time we see a name, keep it. Subsequent
+  // sightings get removed.
+  const kept = new Map(); // name -> {roomKey, location}
+  const toRemove = []; // collect removals to apply after we finish iterating
+  for (const p of placements) {
+    if (!kept.has(p.name)) {
+      kept.set(p.name, { roomKey: p.roomKey, location: p.location });
+    } else {
+      toRemove.push(p);
+      const keptInfo = kept.get(p.name);
+      removals.push({
+        name: p.name,
+        fromRoom: p.roomKey + " (" + p.location + ")",
+        keptIn: keptInfo.roomKey + " (" + keptInfo.location + ")"
+      });
+    }
+  }
+
+  // Apply removals. For app slots, set to null. For float entries, mark
+  // for filtered removal — we have to rebuild the float array to keep
+  // index integrity.
+  const floatRemovals = {}; // roomKey -> Set of indices to remove
+  for (const r of toRemove) {
+    if (r.location === "app") {
+      if (assignmentsObj[r.roomKey]) assignmentsObj[r.roomKey].app = null;
+    } else if (r.location.startsWith("float-")) {
+      const idx = parseInt(r.location.slice(6), 10);
+      if (!floatRemovals[r.roomKey]) floatRemovals[r.roomKey] = new Set();
+      floatRemovals[r.roomKey].add(idx);
+    }
+  }
+  // Apply float removals
+  for (const [roomKey, indices] of Object.entries(floatRemovals)) {
+    const slots = assignmentsObj[roomKey];
+    if (!slots || !Array.isArray(slots.float)) continue;
+    slots.float = slots.float.filter((_, i) => !indices.has(i));
+  }
+
+  return removals;
+}
 function _enforceAppCompleteness(assignmentsObj, appContext, currentAssignments) {
   const result = { forcedPlaced: [], pushedToFloat: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
