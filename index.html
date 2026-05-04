@@ -2648,14 +2648,16 @@ function toggleFinalize() {
   if (currentAdminDate) {
     window.fbSet("finalized/" + currentAdminDate, isFinalized);
     // Endo tracker: write on finalize, clear on unfinalize
-    if (isFinalized) {
+   if (isFinalized) {
       writeEndoTrackerForDate(currentAdminDate, currentAssignments).then(() => {
         renderEndoTrackerPanel();
       });
+      writeJamailTrackerForDate(currentAdminDate, currentAssignments);
     } else {
       clearEndoTrackerForDate(currentAdminDate).then(() => {
         renderEndoTrackerPanel();
       });
+      clearJamailTrackerForDate(currentAdminDate);
     }
   }
 }
