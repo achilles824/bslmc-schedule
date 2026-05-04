@@ -8166,7 +8166,72 @@ function _enforceJamailTier2Priority(assignmentsObj, appContext) {
     const idx = eligiblePreferred.indexOf(candidate);
     if (idx >= 0) eligiblePreferred.splice(idx, 1);
   }
+// ────────────────────────────────────────────────────────────
+  // EMPTY-SLOT FILL: walk Jamail rooms with no occupant. If a
+  // preferred-6 candidate is eligible (working today, no prior
+  // Jamail Tier 2 days, not yet placed at Jamail), promote them.
+  //
+  // This handles the case where hallucinated-strip or other
+  // validators left a Jamail slot empty, and we want to fill
+  // from the preferred-6 list rather than letting completeness
+  // dump a random eligible APP there.
+  // ────────────────────────────────────────────────────────────
+  for (const roomKey of jamailRooms) {
+    const slots = assignmentsObj[roomKey];
+    if (!slots) continue;
+    if (slots.app && slots.app.name) continue; // already occupied, handled above
 
+    // Find an eligible preferred-6 candidate not already at Jamail
+    const candidate = eligiblePreferred.find(c => {
+      const cur = placementByName.get(c.name);
+      if (cur && cur.isJamailTier2) return false;
+      return true;
+    });
+
+    if (!candidate) continue;
+
+    const candidateCurrent = placementByName.get(candidate.name);
+
+    // Place candidate at the empty Jamail slot
+    slots.app = {
+      name: candidate.name,
+      credential: candidate.credential,
+      agency: candidate.agency
+    };
+
+    if (candidateCurrent && candidateCurrent.location === "app") {
+      // Candidate was placed elsewhere; null their old room (completeness will refill)
+      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
+      if (otherSlots) otherSlots.app = null;
+      result.promotions.push({
+        name: candidate.name,
+        room: roomKey,
+        from: candidateCurrent.roomKey + " (now empty for completeness to refill)"
+      });
+    } else if (candidateCurrent && candidateCurrent.location.startsWith("float-")) {
+      // Candidate was in a float; remove from float
+      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
+      if (otherSlots && Array.isArray(otherSlots.float)) {
+        otherSlots.float = otherSlots.float.filter(f => f && f.name !== candidate.name);
+      }
+      result.promotions.push({
+        name: candidate.name,
+        room: roomKey,
+        from: "float at " + candidateCurrent.roomKey
+      });
+    } else {
+      result.promotions.push({
+        name: candidate.name,
+        room: roomKey,
+        from: "unplaced"
+      });
+    }
+
+    // Update placement tracking and remove from eligible list
+    placementByName.set(candidate.name, { roomKey, location: "app", isJamailTier2: true });
+    const idx = eligiblePreferred.indexOf(candidate);
+    if (idx >= 0) eligiblePreferred.splice(idx, 1);
+  }
   return result;
 }
 function _enforceAppCompleteness(assignmentsObj, appContext, currentAssignments) {
