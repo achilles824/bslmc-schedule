@@ -1013,9 +1013,8 @@
       <div class="admin-toolbar">
         <div class="day-input-wrap">
           <label for="adminDatePicker">Assignment Date</label>
-          <input type="date" id="adminDatePicker" />
+          <input type="date" id="adminDatePicker" onchange="loadAdminDay()" />
         </div>
-        <button class="view-btn" onclick="loadAdminDay()">Load Day</button>
         <button class="view-btn" style="background:linear-gradient(135deg,var(--day),#16a34a);" onclick="saveAssignments()">Save Assignments</button>
         <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="lockAdmin()">Lock</button>
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearDay()">Clear Day</button>
