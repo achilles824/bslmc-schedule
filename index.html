@@ -7113,6 +7113,185 @@ function _dedupeAppsAndFloats(assignmentsObj) {
 
   return removals;
 }
+  // ─────────────────────────────────────────────────────────────
+// _enforceJamailTier2Priority — McNair APP pass validator
+//
+// After hallucinated-strip and dedupe, walks Jamail OR rooms.
+// For non-Tier-1 placements (Tier 2 slots), enforces the
+// preferred-6 priority list:
+//   Adriana Montoya, Tracey Sheffield, Nina Castro-Koshy,
+//   Hong Phan, Sagar Patel, Mark Doria
+//
+// If a preferred-6 name is eligible (working today, not yet
+// placed at Jamail, no priorJamailTier2Days this week) but a
+// non-preferred Tier 2 occupies a Jamail slot, swap them. The
+// preferred-6 takes the Jamail slot; whoever was displaced
+// either takes the preferred-6 person's prior room (if they
+// had one) or is nulled (so completeness can refill).
+//
+// Tier 1 placements at Jamail are SACRED — never displaced.
+//
+// Returns: { swaps: [{moved, into}], promotions: [{name, room}] }
+// ─────────────────────────────────────────────────────────────
+
+const PREFERRED_TIER_2_NAMES = [
+  "Adriana Montoya",
+  "Tracey Sheffield",
+  "Nina Castro-Koshy",
+  "Hong Phan",
+  "Sagar Patel",
+  "Mark Doria"
+];
+
+function _enforceJamailTier2Priority(assignmentsObj, appContext) {
+  const result = { swaps: [], promotions: [] };
+  if (!appContext || !Array.isArray(appContext.apps)) return result;
+
+  // Build name -> appContext entry for fast lookup
+  const ctxByName = new Map();
+  for (const a of appContext.apps) ctxByName.set(a.name, a);
+
+  // Find all Jamail rooms in assignmentsObj
+  const jamailRooms = [];
+  for (const [roomKey, slots] of Object.entries(assignmentsObj || {})) {
+    if (!roomKey.startsWith("Jamail OR")) continue;
+    if (roomKey === "OTM OR|Float") continue;
+    if (!slots || typeof slots !== "object") continue;
+    jamailRooms.push(roomKey);
+  }
+
+  if (jamailRooms.length === 0) return result;
+
+  // Identify preferred-6 names who are working today AND eligible for Jamail Tier 2
+  // (no priorJamailTier2Days this week)
+  const eligiblePreferred = [];
+  for (const name of PREFERRED_TIER_2_NAMES) {
+    const ctx = ctxByName.get(name);
+    if (!ctx) continue; // not working today
+    if (Array.isArray(ctx.priorJamailTier2Days) && ctx.priorJamailTier2Days.length > 0) {
+      continue; // already used as Tier 2 this week
+    }
+    eligiblePreferred.push(ctx);
+  }
+
+  if (eligiblePreferred.length === 0) return result;
+
+  // Determine current placement of each preferred-6 name across the entire output
+  const placementByName = new Map(); // name -> { roomKey, isJamailTier2 }
+  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
+    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
+    if (slots.app && slots.app.name) {
+      const isJamail = roomKey.startsWith("Jamail OR");
+      placementByName.set(slots.app.name, { roomKey, location: "app", isJamailTier2: isJamail });
+    }
+    // Also check float arrays — though preferred-6 in float would be unusual
+    if (Array.isArray(slots.float)) {
+      slots.float.forEach((f, i) => {
+        if (f && f.name) {
+          placementByName.set(f.name, { roomKey, location: "float-" + i, isJamailTier2: false });
+        }
+      });
+    }
+  }
+
+  // Walk Jamail rooms. For each non-Tier-1 occupant who is NOT in preferred-6,
+  // try to swap with an eligible preferred-6 name who isn't already at Jamail.
+  for (const roomKey of jamailRooms) {
+    const slots = assignmentsObj[roomKey];
+    if (!slots) continue;
+    const occupant = slots.app && slots.app.name;
+    if (!occupant) continue; // empty Jamail slot — completeness will fill
+    if (TIER_1_APP_NAMES.has(occupant)) continue; // sacred, do not displace
+
+    // Is the current occupant already in preferred-6? Then no swap needed
+    if (PREFERRED_TIER_2_NAMES.includes(occupant)) continue;
+
+    // Find an eligible preferred-6 candidate who is NOT already at a Jamail room
+    const candidate = eligiblePreferred.find(c => {
+      if (PREFERRED_TIER_2_NAMES.includes(occupant) === false) {
+        // Skip if this preferred-6 is already at Jamail (don't pull from another Jamail slot)
+        const cur = placementByName.get(c.name);
+        if (cur && cur.isJamailTier2) return false;
+        return true;
+      }
+      return false;
+    });
+
+    if (!candidate) continue; // no preferred-6 available to swap in
+
+    // Determine where the candidate currently is
+    const candidateCurrent = placementByName.get(candidate.name);
+
+    // Perform swap:
+    // 1. Place candidate at Jamail room (overwrites occupant)
+    // 2. If candidate was placed elsewhere (in app slot), put occupant there
+    //    If candidate was in a float, just remove from float (occupant goes nowhere — completeness fills)
+    //    If candidate was unplaced, occupant goes nowhere (completeness fills if needed)
+    slots.app = {
+      name: candidate.name,
+      credential: candidate.credential,
+      agency: candidate.agency
+    };
+
+    if (candidateCurrent && candidateCurrent.location === "app") {
+      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
+      if (otherSlots) {
+        otherSlots.app = {
+          name: occupant,
+          credential: slots.app.credential || "CRNA",
+          agency: slots.app.agency || ""
+        };
+        // Need actual occupant info — recover from appContext
+        const occCtx = ctxByName.get(occupant);
+        if (occCtx) {
+          otherSlots.app = {
+            name: occupant,
+            credential: occCtx.credential,
+            agency: occCtx.agency
+          };
+        }
+        result.swaps.push({
+          moved: candidate.name,
+          into: roomKey,
+          displaced: occupant,
+          to: candidateCurrent.roomKey
+        });
+        // Update placement map
+        placementByName.set(candidate.name, { roomKey, location: "app", isJamailTier2: true });
+        placementByName.set(occupant, { roomKey: candidateCurrent.roomKey, location: "app", isJamailTier2: false });
+      }
+    } else if (candidateCurrent && candidateCurrent.location.startsWith("float-")) {
+      // Remove from float
+      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
+      if (otherSlots && Array.isArray(otherSlots.float)) {
+        otherSlots.float = otherSlots.float.filter(f => f && f.name !== candidate.name);
+      }
+      result.promotions.push({
+        name: candidate.name,
+        room: roomKey,
+        from: "float at " + candidateCurrent.roomKey
+      });
+      placementByName.set(candidate.name, { roomKey, location: "app", isJamailTier2: true });
+      // Occupant displaced; nullify in their original spot (already done above by overwrite)
+      placementByName.delete(occupant);
+    } else {
+      // Candidate was unplaced before — they're now at Jamail. Occupant displaced.
+      result.promotions.push({
+        name: candidate.name,
+        room: roomKey,
+        from: "unplaced"
+      });
+      placementByName.set(candidate.name, { roomKey, location: "app", isJamailTier2: true });
+      placementByName.delete(occupant);
+    }
+
+    // Remove candidate from eligiblePreferred so we don't try to use them again
+    const idx = eligiblePreferred.indexOf(candidate);
+    if (idx >= 0) eligiblePreferred.splice(idx, 1);
+  }
+
+  return result;
+}
 function _enforceAppCompleteness(assignmentsObj, appContext, currentAssignments) {
   const result = { forcedPlaced: [], pushedToFloat: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
