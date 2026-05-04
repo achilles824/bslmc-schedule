@@ -3785,6 +3785,96 @@ async function getWeekJamailTier2Map(dateStr) {
   }
   return map;
 }
+  // ─────────────────────────────────────────────────────────────
+// buildMcnairAppContext(date, staff)
+//
+// Builds a per-APP context blob for pass 1 (McNair APP). Each
+// entry contains everything the model needs to apply the look-ahead
+// rules without re-deriving anything from the staff list.
+//
+// Output: array of objects like
+//   {
+//     name, credential, agency, shift,
+//     campus,                  // baylorMcnair | mcnairLocum | flexibleLocum | ...
+//     departureRole,           // int or null
+//     shiftHours,              // int or null
+//     daysWorkedThisWeek,      // ["Mon","Wed","Fri"]
+//     daysRemainingThisWeek,   // ["Wed","Fri"]  (today onward)
+//     workingMcnairWednesday,  // bool
+//     priorEndoDays,           // ["Mon"]
+//     priorJamailTier2Days,    // ["Tue"]
+//     todayDayShort            // "Wed"
+//   }
+//
+// Only includes APPs (credential != "MD") working today.
+// ─────────────────────────────────────────────────────────────
+
+async function buildMcnairAppContext(date, staff) {
+  const todayDt = parseDate(date);
+  const todayDayShort = DAYS_SHORT[todayDt.getDay()];
+
+  const weekRoster = getWorkWeekRoster(date);
+  const endoMap = await getWeekEndoMap(date);
+  const jamailMap = await getWeekJamailTier2Map(date);
+
+  // Build per-name working-days map across the week
+  const daysByName = {};
+  for (const dayShort of WORK_WEEK_DAYS) {
+    const roster = weekRoster[dayShort] || [];
+    for (const s of roster) {
+      if (!s || !s.name) continue;
+      if (!daysByName[s.name]) daysByName[s.name] = [];
+      if (!daysByName[s.name].includes(dayShort)) daysByName[s.name].push(dayShort);
+    }
+  }
+
+  // Working at McNair on Wednesday this week — defined as appearing
+  // in Wednesday's roster AND classified as a McNair-side APP that day.
+  const wedRoster = weekRoster.Wed || [];
+  const workingMcnairWedSet = new Set();
+  for (const s of wedRoster) {
+    if (!s || !s.name) continue;
+    if (s.credential === "MD") continue;
+    const cat = _classifyAppCampus(s);
+    if (cat === "baylorMcnair" || cat === "mcnairLocum") {
+      workingMcnairWedSet.add(s.name);
+    }
+  }
+
+  // Remaining work-week days for each APP (today onward through Fri)
+  const todayIdx = WORK_WEEK_DAYS.indexOf(todayDayShort);
+  const remainingDays = todayIdx >= 0 ? WORK_WEEK_DAYS.slice(todayIdx) : [];
+
+  // Build the context array — one entry per APP working today
+  const context = [];
+  for (const s of staff) {
+    if (!s || !s.name || s.credential === "MD") continue;
+    const campus = _classifyAppCampus(s);
+    const allDays = daysByName[s.name] || [];
+    const remaining = allDays.filter(d => remainingDays.includes(d));
+    context.push({
+      name: s.name,
+      credential: s.credential,
+      agency: s.agency || "",
+      shift: s.shift || "",
+      campus,
+      departureRole: _extractDepartureRole(s.shift),
+      shiftHours: _extractShiftHours(s.shift),
+      daysWorkedThisWeek: allDays,
+      daysRemainingThisWeek: remaining,
+      workingMcnairWednesday: workingMcnairWedSet.has(s.name),
+      priorEndoDays: endoMap[s.name] || [],
+      priorJamailTier2Days: jamailMap[s.name] || [],
+      todayDayShort
+    });
+  }
+
+  return {
+    todayDayShort,
+    workWeekDays: WORK_WEEK_DAYS,
+    apps: context
+  };
+}
 // ─────────────────────────────────────────────────────────────
 // Get the working staff for a date by delegating to the existing
 // getORStaffForDay function.
