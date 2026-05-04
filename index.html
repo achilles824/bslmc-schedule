@@ -4409,6 +4409,23 @@ for (const [k, v] of Object.entries(cur)) {
         }
       }
       // -----------------------------------------------------------
+      // McNair APP endo priority enforcer — runs after Jamail Tier 2,
+      // before completeness. Walks OTM Endo placements and swaps
+      // them with higher-priority candidates per the look-ahead rule
+      // (Wednesday rule, single-day rule, fewest remaining days).
+      // -----------------------------------------------------------
+      if (label === "McNair APP" && _aiCurrentAppContext) {
+        const endoResult = _enforceEndoPriority(assignmentsObj, _aiCurrentAppContext);
+        if (endoResult.swaps.length > 0) {
+          const summary = endoResult.swaps
+            .map(s => s.moved + " <-> " + s.displaced + " (" + s.into.replace(/\|/, " ") +
+                      " <-> " + s.to.replace(/\|/, " ") + ")")
+            .join(" | ");
+          flagsArr.push("Client-side endo priority: swaps applied (" + summary + ")");
+          console.log("[Endo priority swaps]", endoResult.swaps);
+        }
+      }
+      // -----------------------------------------------------------
       // McNair APP completeness enforcement — runs after hallucinated
       // strip, before any model flags are committed. Catches APPs the
       // model dropped from its output entirely.
