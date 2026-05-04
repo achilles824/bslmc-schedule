@@ -6781,7 +6781,7 @@ If no APP AND campus verdict = DEFICIT: "app": null, empty note. STRUCTURAL flag
 
 One FLAGS block max, at end. No mid-array FLAGS. Flag content must be consistent with WORK block.`;
 }
-function buildMcnairAppPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
+function buildMcnairAppPromptLegacy(date, staffSummary, currentAssignments, roomsNeeding, rules) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's. Assign APPs to the McNAIR CAMPUS for ${date}.
 
 OUTPUT: Raw JSON array. Start with [, end with ]. No prose, no markdown. First element is WORK block. Last element (if any) is FLAGS block. All other elements are room assignments.
