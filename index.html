@@ -8010,15 +8010,37 @@ function _enforceAppCompleteness(assignmentsObj, appContext, currentAssignments)
 
   // Fill empty rooms with eligible-unplaced APPs.
   // Priority: Baylor McNair first (matches your method), then McNair locums,
-  // then flexibles. Within each group, by daysRemainingThisWeek ascending.
+  // then flexibles. Within Baylor McNair and McNair locum groups, by
+  // daysRemainingThisWeek ascending. Within flexibleLocum group, preferred-list
+  // names first (sorted by shiftHours ascending), then non-preferred flexibles.
   const sortGroup = (group) =>
     eligibleUnplaced
       .filter(a => a.campus === group)
       .sort((a, b) => a.daysRemainingThisWeek.length - b.daysRemainingThisWeek.length);
+
+  const preferredSet = (typeof PREFERRED_FLEX_NAMES !== "undefined")
+    ? new Set(PREFERRED_FLEX_NAMES)
+    : new Set();
+  const sortFlexibles = () => {
+    const flex = eligibleUnplaced.filter(a => a.campus === "flexibleLocum");
+    return flex.sort((a, b) => {
+      // Preferred-list names first
+      const aPref = preferredSet.has(a.name) ? 0 : 1;
+      const bPref = preferredSet.has(b.name) ? 0 : 1;
+      if (aPref !== bPref) return aPref - bPref;
+      // Within same preference status, shiftHours ascending (D8 first, D12 last)
+      const aHrs = typeof a.shiftHours === "number" ? a.shiftHours : 99;
+      const bHrs = typeof b.shiftHours === "number" ? b.shiftHours : 99;
+      if (aHrs !== bHrs) return aHrs - bHrs;
+      // Tiebreaker: daysRemainingThisWeek ascending
+      return a.daysRemainingThisWeek.length - b.daysRemainingThisWeek.length;
+    });
+  };
+
   const sortedEligible = [
     ...sortGroup("baylorMcnair"),
     ...sortGroup("mcnairLocum"),
-    ...sortGroup("flexibleLocum")
+    ...sortFlexibles()
   ];
 
   let candidateIdx = 0;
