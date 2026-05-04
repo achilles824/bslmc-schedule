@@ -6809,6 +6809,152 @@ If no APP AND campus verdict = DEFICIT: "app": null, empty note. STRUCTURAL flag
 
 One FLAGS block max, at end. No mid-array FLAGS. Flag content must be consistent with WORK block.`;
 }
+  // ─────────────────────────────────────────────────────────────
+// _enforceAppCompleteness — McNair APP pass validator
+//
+// Walks the working APP roster (from appContext) and identifies
+// anyone the model neither placed nor flagged. Force-places them
+// in remaining empty McNair-side rooms or pushes them to OTM
+// OR|Float.
+//
+// Run AFTER hallucinated-room strip but BEFORE the model's
+// surplus flag is committed. Mutates assignmentsObj in place.
+//
+// Returns: { forcedPlaced: [{name, room}], pushedToFloat: [name] }
+// ─────────────────────────────────────────────────────────────
+
+function _enforceAppCompleteness(assignmentsObj, appContext, currentAssignments) {
+  const result = { forcedPlaced: [], pushedToFloat: [] };
+  if (!appContext || !Array.isArray(appContext.apps)) return result;
+
+  // Build the "already placed" set across assignmentsObj AND currentAssignments
+  // (currentAssignments locks names from prior passes — they're already taken)
+  const placedNames = new Set();
+  const recordPlaced = (slots) => {
+    if (!slots || typeof slots !== "object") return;
+    if (slots.app && slots.app.name) placedNames.add(slots.app.name);
+    if (Array.isArray(slots.float)) {
+      slots.float.forEach(f => { if (f && f.name) placedNames.add(f.name); });
+    }
+  };
+  for (const [room, slots] of Object.entries(assignmentsObj || {})) {
+    if (room === "__closed") continue;
+    recordPlaced(slots);
+  }
+  for (const [room, slots] of Object.entries(currentAssignments || {})) {
+    if (room === "__closed") continue;
+    recordPlaced(slots);
+  }
+
+  // Identify eligible-but-unplaced APPs.
+  // Eligible for McNair pass: campus in {baylorMcnair, mcnairLocum, flexibleLocum}
+  const eligibleUnplaced = appContext.apps.filter(a =>
+    (a.campus === "baylorMcnair" || a.campus === "mcnairLocum" || a.campus === "flexibleLocum") &&
+    !placedNames.has(a.name)
+  );
+
+  if (eligibleUnplaced.length === 0) return result;
+
+  // Find empty McNair-side rooms in assignmentsObj that have no APP.
+  // Eligible rooms: McNair OR, OTM OR, OTM Endo, Jamail OR, with caseTime or surgeon
+  // (i.e., real cases — not phantom rooms). Skip rooms where md is set but app
+  // is null (those will get APPs from a later pass... no wait, this is the APP
+  // pass. There won't be MDs set yet from current pass. Just check app:null.)
+  const isMcnairSide = (roomKey) => {
+    if (roomKey === "OTM OR|Float") return false; // Float handled separately
+    return roomKey.startsWith("McNair OR") ||
+           roomKey.startsWith("OTM OR") ||
+           roomKey.startsWith("OTM Endo") ||
+           roomKey.startsWith("Jamail OR");
+  };
+
+  const emptyMcnairRooms = [];
+  // Walk both assignmentsObj and currentAssignments — a room with a case but
+  // no app should get filled.
+  const allRoomKeys = new Set([
+    ...Object.keys(assignmentsObj || {}),
+    ...Object.keys(currentAssignments || {})
+  ]);
+  for (const roomKey of allRoomKeys) {
+    if (roomKey === "__closed") continue;
+    if (!isMcnairSide(roomKey)) continue;
+    const slotsAssign = assignmentsObj[roomKey];
+    const slotsCur = currentAssignments && currentAssignments[roomKey];
+    // Skip if current pass placed an APP here
+    if (slotsAssign && slotsAssign.app && slotsAssign.app.name) continue;
+    // Skip if currentAssignments already has an APP here (prior pass locked it)
+    if (slotsCur && slotsCur.app && slotsCur.app.name) continue;
+    // Determine if there's a case (caseTime or surgeon in either source)
+    const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure)) ||
+                    (slotsAssign && (slotsAssign.caseTime || slotsAssign.surgeon || slotsAssign.procedure));
+    if (!hasCase) continue;
+    emptyMcnairRooms.push(roomKey);
+  }
+
+  // Sort empty rooms by caseTime ascending so we fill earliest first.
+  // Without caseTime, push to end.
+  emptyMcnairRooms.sort((a, b) => {
+    const tA = (currentAssignments && currentAssignments[a] && currentAssignments[a].caseTime) ||
+               (assignmentsObj[a] && assignmentsObj[a].caseTime) || "99:99";
+    const tB = (currentAssignments && currentAssignments[b] && currentAssignments[b].caseTime) ||
+               (assignmentsObj[b] && assignmentsObj[b].caseTime) || "99:99";
+    return tA.localeCompare(tB);
+  });
+
+  // Fill empty rooms with eligible-unplaced APPs.
+  // Priority: Baylor McNair first (matches your method), then McNair locums,
+  // then flexibles. Within each group, by daysRemainingThisWeek ascending.
+  const sortGroup = (group) =>
+    eligibleUnplaced
+      .filter(a => a.campus === group)
+      .sort((a, b) => a.daysRemainingThisWeek.length - b.daysRemainingThisWeek.length);
+  const sortedEligible = [
+    ...sortGroup("baylorMcnair"),
+    ...sortGroup("mcnairLocum"),
+    ...sortGroup("flexibleLocum")
+  ];
+
+  let candidateIdx = 0;
+  for (const roomKey of emptyMcnairRooms) {
+    if (candidateIdx >= sortedEligible.length) break;
+    const candidate = sortedEligible[candidateIdx++];
+    if (!assignmentsObj[roomKey]) assignmentsObj[roomKey] = { md: null, app: null, notes: "" };
+    assignmentsObj[roomKey].app = {
+      name: candidate.name,
+      credential: candidate.credential,
+      agency: candidate.agency
+    };
+    if (!assignmentsObj[roomKey].notes) assignmentsObj[roomKey].notes = "";
+    assignmentsObj[roomKey].notes += (assignmentsObj[roomKey].notes ? " | " : "") +
+      "Client-side completeness: force-placed " + candidate.name;
+    result.forcedPlaced.push({ name: candidate.name, room: roomKey });
+    placedNames.add(candidate.name);
+  }
+
+  // Anyone still unplaced who is McNair-only (Baylor McNair or McNair locum)
+  // goes to OTM OR|Float. Flexibles stay surplus and roll to pass 2.
+  const FLOAT_KEY = "OTM OR|Float";
+  for (let i = candidateIdx; i < sortedEligible.length; i++) {
+    const candidate = sortedEligible[i];
+    if (candidate.campus === "flexibleLocum") continue; // surplus, not float
+    if (placedNames.has(candidate.name)) continue;
+    if (!assignmentsObj[FLOAT_KEY]) {
+      assignmentsObj[FLOAT_KEY] = { md: null, app: null, float: [], notes: "" };
+    }
+    if (!Array.isArray(assignmentsObj[FLOAT_KEY].float)) {
+      assignmentsObj[FLOAT_KEY].float = [];
+    }
+    assignmentsObj[FLOAT_KEY].float.push({
+      name: candidate.name,
+      credential: candidate.credential,
+      agency: candidate.agency
+    });
+    result.pushedToFloat.push(candidate.name);
+    placedNames.add(candidate.name);
+  }
+
+  return result;
+}
   function buildMcnairAppPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules, appContext) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's. Assign APPs to the McNAIR CAMPUS for ${date}.
 
