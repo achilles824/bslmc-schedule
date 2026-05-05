@@ -5007,10 +5007,594 @@ for (const [k, v] of Object.entries(cur)) {
           console.log("[Pass 3 cross-pass MD scrub]", crossPassMdRemovals);
         }
 
-        // VALIDATORS 6-13 to follow in Chunk 5B.
+// ─────────────────────────────────────────────────────────────
+        // VALIDATOR 6 — ROLE EXCLUSIVITY ENFORCER
+        //
+        // Build a map: mdName -> {mainOr: [rooms], mainEndo: [rooms],
+        // radiology: [rooms]}. If any MD has rooms in 2+ roles, drop
+        // the lower-priority rooms.
+        //
+        // Priority within a single MD: Main Endo > Radiology > Main OR.
+        // Reasoning: Main Endo is the most constrained role (must be
+        // exactly 3 rooms, all 3 Endo rooms). Radiology is mid-flexible.
+        // Main OR is the most flexible (any 2-3 Main OR rooms).
+        //
+        // Special case: if Main Endo MD === Radiology MD (same person
+        // covering both roles), drop the Radiology rooms (keep Main
+        // Endo). This forces the model's would-be combined Endo+Rad MD
+        // to become Endo-only, and Radiology becomes md:null for the
+        // room completeness audit (Step 11) to refill.
+        // ─────────────────────────────────────────────────────────────
+        const roleOfRoom = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (disp.startsWith("Main Endo")) return "mainEndo";
+          if (disp.startsWith("NIR") || disp.startsWith("MRI") ||
+              disp.startsWith("IR") || disp.startsWith("CT") ||
+              disp.startsWith("RM-IR")) return "radiology";
+          if (disp.startsWith("Main OR")) return "mainOr";
+          return null;
+        };
+        // Build per-MD role map
+        const mdRoleMap = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          const role = roleOfRoom(room);
+          if (!role) continue;
+          mdRoleMap[v.md.name] = mdRoleMap[v.md.name] || { mainOr: [], mainEndo: [], radiology: [] };
+          mdRoleMap[v.md.name][role].push(room);
+        }
+        const roleViolations = [];
+        for (const [mdName, roles] of Object.entries(mdRoleMap)) {
+          const activeRoles = ["mainEndo", "radiology", "mainOr"].filter(r => roles[r].length > 0);
+          if (activeRoles.length <= 1) continue;
+          // Multi-role violation. Keep highest-priority role; drop rooms in others.
+          const keep = activeRoles[0]; // mainEndo > radiology > mainOr (sort order)
+          for (const dropRole of activeRoles.slice(1)) {
+            for (const room of roles[dropRole]) {
+              const slots = assignmentsObj[room];
+              if (!slots) continue;
+              roleViolations.push({
+                md: mdName, droppedRoom: room, droppedRole: dropRole, keptRole: keep
+              });
+              slots.md = null;
+              slots.notes = (slots.notes ? slots.notes + " | " : "") +
+                            "Pass 3 role exclusivity: " + mdName +
+                            " kept on " + keep + ", removed from " + dropRole;
+            }
+          }
+        }
+        if (roleViolations.length > 0) {
+          const byMd = {};
+          roleViolations.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || { kept: x.keptRole, dropped: [] }).dropped.push(
+              x.droppedRoom.replace(/\|/, " ") + " (" + x.droppedRole + ")"
+            );
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, info]) => md + " kept on " + info.kept + ", dropped from " + info.dropped.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side role exclusivity: " + summary);
+          console.log("[Pass 3 role exclusivity]", roleViolations);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 7 — MAIN ENDO "EXACTLY 3 ROOMS" ENFORCER
+        //
+        // The Main Endo MD must be on Main Endo 1, 2, AND 3. The role
+        // exclusivity validator already dropped any non-Endo rooms from
+        // them. Now check that they have all 3 Endo rooms. If they have
+        // fewer (1 or 2), the missing Endo rooms become md:null for
+        // Step 11 to refill from the same MD.
+        //
+        // If multiple MDs are spread across Main Endo 1/2/3, that's a
+        // violation — pick the one with the most Endo rooms as the "real"
+        // Main Endo MD, drop the others.
+        // ─────────────────────────────────────────────────────────────
+        const ENDO_ROOMS = ["Main Endo 1", "Main Endo 2", "Main Endo 3"];
+        // Find every MD assigned to any Endo room
+        const endoAssignments = {}; // mdName -> [rooms]
+        for (const endoRoom of ENDO_ROOMS) {
+          const fbForm = "Main Endo|" + endoRoom.split(" ")[2];
+          const slots = assignmentsObj[endoRoom] || assignmentsObj[fbForm];
+          if (!slots || !slots.md || !slots.md.name) continue;
+          (endoAssignments[slots.md.name] = endoAssignments[slots.md.name] || []).push(endoRoom);
+        }
+        const endoMdNames = Object.keys(endoAssignments);
+        if (endoMdNames.length > 1) {
+          // Multiple MDs across Endo rooms. Keep the one with most rooms; drop others.
+          endoMdNames.sort((a, b) => endoAssignments[b].length - endoAssignments[a].length);
+          const keepMd = endoMdNames[0];
+          const endoConflicts = [];
+          for (const dropMd of endoMdNames.slice(1)) {
+            for (const room of endoAssignments[dropMd]) {
+              const fbForm = "Main Endo|" + room.split(" ")[2];
+              const slots = assignmentsObj[room] || assignmentsObj[fbForm];
+              if (!slots) continue;
+              endoConflicts.push({ md: dropMd, room });
+              slots.md = null;
+              slots.notes = (slots.notes ? slots.notes + " | " : "") +
+                            "Pass 3 Main Endo conflict: " + dropMd +
+                            " dropped, " + keepMd + " is the Main Endo MD";
+            }
+          }
+          if (endoConflicts.length > 0) {
+            const summary = endoConflicts
+              .map(x => x.md + " from " + x.room)
+              .join(" | ");
+            flagsArr.push("Client-side Main Endo conflict: " + keepMd +
+              " is the Main Endo MD; dropped " + summary);
+            console.log("[Pass 3 Main Endo conflict]", endoConflicts);
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 8 — CAP ENFORCER
+        //
+        // Main OR MD: max 2 rooms baseline. 3 rooms ONLY IF exactly one
+        // of the 3 has caseTime >= 12:00 (late-start absorption). 3+
+        // rooms with no late-start, or 2+ late-starts, or 4+ rooms ever
+        // → drop excess.
+        //
+        // Drop priority: rooms without caseTime first, then earliest
+        // caseTime, then alphabetical room key.
+        //
+        // Main Endo MD: handled by Validator 7. Skipped here.
+        // Radiology MD: no cap. Skipped here.
+        // ─────────────────────────────────────────────────────────────
+        const getCaseTime = (room) => {
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const curEntry = cur[room] || cur[disp] || cur[fbForm];
+          const assignEntry = assignmentsObj[room];
+          return (curEntry && curEntry.caseTime) ||
+                 (assignEntry && assignEntry.caseTime) || null;
+        };
+        const isLateStart = (room) => {
+          const ct = getCaseTime(room);
+          if (!ct) return false;
+          // caseTime format is "HH:MM" (24-hour). Late-start = >= 12:00.
+          const m = ct.match(/^(\d{1,2}):(\d{2})/);
+          if (!m) return false;
+          return parseInt(m[1], 10) >= 12;
+        };
+        // Build per-MD Main OR room list
+        const mainOrByMd = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          if (roleOfRoom(room) !== "mainOr") continue;
+          (mainOrByMd[v.md.name] = mainOrByMd[v.md.name] || []).push(room);
+        }
+        const capDrops = [];
+        for (const [mdName, rooms] of Object.entries(mainOrByMd)) {
+          if (rooms.length <= 2) continue; // within baseline, OK
+          // 3+ rooms. Count late-starts.
+          const lateRooms = rooms.filter(isLateStart);
+          if (rooms.length === 3 && lateRooms.length === 1) continue; // legal 2+1-late
+          // Otherwise: violation. Sort by drop priority and drop excess.
+          // Drop priority: no caseTime first, then earliest caseTime, then alphabetical.
+          // Keep behavior: keep up to 2 non-late rooms + 1 late room (max 3 if 1 late).
+          // If too many lates: drop all but the latest.
+          const sorted = rooms.slice().sort((a, b) => {
+            const aLate = isLateStart(a), bLate = isLateStart(b);
+            if (aLate !== bLate) return aLate ? 1 : -1; // non-late first (kept first)
+            const aTime = getCaseTime(a) || "99:99";
+            const bTime = getCaseTime(b) || "99:99";
+            if (aTime !== bTime) return aTime.localeCompare(bTime); // earlier first (kept first)
+            return a.localeCompare(b);
+          });
+          // Decide what to keep:
+          //   - If exactly 1 late: keep first 2 non-late + that 1 late = 3 rooms.
+          //   - If 0 late OR 2+ late: cap at 2 rooms (drop everything beyond first 2 in sort order).
+          let keepCount;
+          if (lateRooms.length === 1) {
+            keepCount = 3;
+          } else {
+            keepCount = 2;
+          }
+          const toDrop = sorted.slice(keepCount);
+          for (const room of toDrop) {
+            const slots = assignmentsObj[room];
+            if (!slots) continue;
+            const reason = lateRooms.length === 0
+              ? "3-room MD with no late-start"
+              : lateRooms.length >= 2
+              ? "3-room MD with multiple late-starts"
+              : "over 3-room cap";
+            capDrops.push({ md: mdName, room, reason });
+            slots.md = null;
+            slots.notes = (slots.notes ? slots.notes + " | " : "") +
+                          "Pass 3 cap enforcer: " + reason;
+          }
+        }
+        if (capDrops.length > 0) {
+          const byMd = {};
+          capDrops.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || { rooms: [], reason: x.reason }).rooms.push(
+              x.room.replace(/\|/, " ")
+            );
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, info]) => md + " (" + info.reason + ") -> " + info.rooms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side cap enforcer: " + summary);
+          console.log("[Pass 3 cap enforcer]", capDrops);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 9 — ONCE-PER-WEEK ENDO FOR MAIN ENDO MD
+        //
+        // The Main Endo MD must not have done endo (Main or OTM) earlier
+        // this work week. Check rules.weeklyEndoTracking. If violation,
+        // find a flexible MD without prior endo and swap.
+        //
+        // If no replacement candidate exists, leave the MD in place and
+        // emit unavoidable-repeat flag.
+        // ─────────────────────────────────────────────────────────────
+        const endoTrackerEntries_P3 = Array.isArray(rules.weeklyEndoTracking)
+          ? rules.weeklyEndoTracking : [];
+        const todayDate_P3 = date;
+        const priorEndoMDs_P3 = new Map();
+        for (const entry of endoTrackerEntries_P3) {
+          if (!entry || !entry.name || !entry.date || entry.role !== "MD") continue;
+          if (entry.date === todayDate_P3) continue;
+          if (!priorEndoMDs_P3.has(entry.name)) {
+            priorEndoMDs_P3.set(entry.name, { date: entry.date, location: entry.location });
+          }
+        }
+        const dayOfWeek_P3 = (dateStr) => {
+          if (!dateStr) return "?";
+          const [y, m, d] = dateStr.split("-").map(Number);
+          const dt = new Date(y, m - 1, d);
+          return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dt.getDay()];
+        };
+        // Find current Main Endo MD (the one still on Endo rooms after Validator 7)
+        let currentMainEndoMd = null;
+        for (const endoRoom of ENDO_ROOMS) {
+          const fbForm = "Main Endo|" + endoRoom.split(" ")[2];
+          const slots = assignmentsObj[endoRoom] || assignmentsObj[fbForm];
+          if (slots && slots.md && slots.md.name) {
+            currentMainEndoMd = slots.md.name;
+            break;
+          }
+        }
+        if (currentMainEndoMd && priorEndoMDs_P3.has(currentMainEndoMd)) {
+          const prior = priorEndoMDs_P3.get(currentMainEndoMd);
+          // Find an eligible flexible replacement
+          const placedMds = new Set();
+          for (const v of Object.values(assignmentsObj)) {
+            if (v && v.md && v.md.name) placedMds.add(v.md.name);
+          }
+          for (const [r, c] of Object.entries(cur)) {
+            if (r === "__closed" || !c || typeof c !== "object") continue;
+            if (c.md && c.md.name) placedMds.add(c.md.name);
+          }
+          // Eligible: flexible (non-Baylor) OR Main-anchored Baylor, not placed,
+          // not Ganderson, not McNair-anchored, not in prior endo this week
+          const candidate = staff.find(s =>
+            s.credential === "MD" &&
+            !placedMds.has(s.name) &&
+            s.name !== "Lauren Ganderson" &&
+            !MCNAIR_ANCHORED_SHIFT_P3(s.shift) &&
+            !priorEndoMDs_P3.has(s.name)
+          );
+          if (candidate) {
+            // Swap: replace Main Endo MD on all 3 Endo rooms
+            const oldName = currentMainEndoMd;
+            for (const endoRoom of ENDO_ROOMS) {
+              const fbForm = "Main Endo|" + endoRoom.split(" ")[2];
+              const slots = assignmentsObj[endoRoom] || assignmentsObj[fbForm];
+              if (slots && slots.md && slots.md.name === oldName) {
+                slots.md = {
+                  name: candidate.name, credential: candidate.credential, agency: candidate.agency
+                };
+                slots.notes = (slots.notes ? slots.notes + " | " : "") +
+                              "Pass 3 once-per-week endo: replaced " + oldName +
+                              " (prior: " + dayOfWeek_P3(prior.date) + " " + prior.location + ")";
+              }
+            }
+            flagsArr.push("Client-side once-per-week endo: Main Endo MD " + oldName +
+              " replaced by " + candidate.name + " (prior: " +
+              dayOfWeek_P3(prior.date) + " " + prior.location + ")");
+            console.log("[Pass 3 once-per-week endo]", { from: oldName, to: candidate.name, prior });
+          } else {
+            flagsArr.push("Repeat endo: " + currentMainEndoMd +
+              " (role: MD; prior: " + dayOfWeek_P3(prior.date) + ", " + prior.location +
+              "; today: Main Endo) — no replacement available");
+            console.log("[Pass 3 once-per-week endo unavoidable]", { md: currentMainEndoMd, prior });
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 10 — ROOM COMPLETENESS AUDIT
+        //
+        // Walk every Main-side room. For each room with md:null AND
+        // (case-bearing OR mandatory), find an unplaced eligible MD and
+        // place them.
+        //
+        // Pool priority:
+        //   1. Main-anchored Baylor MDs with 0 rooms (unplaced)
+        //   2. Flexibles with 0 rooms (would otherwise be surplus)
+        //   3. Flexibles with 1 room and under cap
+        //   4. Main-anchored MDs with 1 room and under cap
+        //   5. Late-start absorption: any 2-room MD eligible (not 8-hour
+        //      shift) can take a 3rd late-start room
+        //
+        // Only Main-side rooms. McNair-side gaps go to Pass 4.
+        // ─────────────────────────────────────────────────────────────
+        const MANDATORY_MAIN_ROOMS = new Set([
+          "Main OR 10", "Main OR 15",
+          "Main Endo 1", "Main Endo 2", "Main Endo 3",
+          "NIR 1"
+        ]);
+        const isEightHourMd = (mdInfo) => {
+          if (!mdInfo || !mdInfo.shift) return false;
+          return /^OR\s*8\s*-\s*MD/i.test(mdInfo.shift) || /^D\s*8\b/i.test(mdInfo.shift);
+        };
+        // Find empty Main-side rooms that need filling
+        const allRoomKeys = new Set([
+          ...Object.keys(assignmentsObj || {}),
+          ...Object.keys(cur || {})
+        ]);
+        const gapRooms = [];
+        for (const roomKey of allRoomKeys) {
+          if (roomKey === "__closed" || roomKey === "WORK" || roomKey === "FLAGS") continue;
+          if (!isMainSideRoom(roomKey)) continue;
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const slotsAssign = assignmentsObj[roomKey] || assignmentsObj[disp] || assignmentsObj[fbForm];
+          const slotsCur = cur[roomKey] || cur[disp] || cur[fbForm];
+          // Skip if MD already set in either source
+          const hasMdAssign = slotsAssign && slotsAssign.md && slotsAssign.md.name;
+          const hasMdCur = slotsCur && slotsCur.md && slotsCur.md.name;
+          if (hasMdAssign || hasMdCur) continue;
+          // Need filling if: case-bearing OR mandatory
+          const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure)) ||
+                          (slotsAssign && (slotsAssign.caseTime || slotsAssign.surgeon || slotsAssign.procedure));
+          const isMandatory = MANDATORY_MAIN_ROOMS.has(disp);
+          if (!hasCase && !isMandatory) continue;
+          gapRooms.push({ key: roomKey, disp, role: roleOfRoom(roomKey), isLate: isLateStart(roomKey) });
+        }
+        // Build current per-MD room counts (across Pass 3 output only; cur MDs
+        // are locked from prior passes, but this pass shouldn't have any anyway)
+        const mdRoomCount_P3 = {};
+        for (const v of Object.values(assignmentsObj)) {
+          if (v && v.md && v.md.name) {
+            mdRoomCount_P3[v.md.name] = (mdRoomCount_P3[v.md.name] || 0) + 1;
+          }
+        }
+        // Build pool
+        const eligibleMds = staff.filter(s =>
+          s.credential === "MD" &&
+          s.name !== "Lauren Ganderson" &&
+          !MCNAIR_ANCHORED_SHIFT_P3(s.shift)
+        );
+        // Helper: pick the next MD for a gap room, returns the MD object or null
+        const pickMdForGap = (gap) => {
+          // For Main Endo gaps: prefer the existing Main Endo MD if any,
+          // so all 3 Endo rooms stay with one MD.
+          if (gap.role === "mainEndo") {
+            // Look for any current Main Endo MD assignment in assignmentsObj
+            for (const er of ENDO_ROOMS) {
+              const fb = "Main Endo|" + er.split(" ")[2];
+              const slots = assignmentsObj[er] || assignmentsObj[fb];
+              if (slots && slots.md && slots.md.name) {
+                const mdInfo = staffByName_P3[slots.md.name];
+                if (mdInfo) return mdInfo;
+              }
+            }
+            // No existing Main Endo MD — pick a flexible without prior endo
+            return eligibleMds.find(s =>
+              (mdRoomCount_P3[s.name] || 0) === 0 &&
+              s.agency !== "Baylor" &&
+              !priorEndoMDs_P3.has(s.name)
+            ) || eligibleMds.find(s =>
+              (mdRoomCount_P3[s.name] || 0) === 0 &&
+              !priorEndoMDs_P3.has(s.name)
+            ) || null;
+          }
+          // For Radiology gaps: prefer the existing Radiology MD
+          if (gap.role === "radiology") {
+            for (const [room, v] of Object.entries(assignmentsObj)) {
+              if (roleOfRoom(room) === "radiology" && v && v.md && v.md.name) {
+                const mdInfo = staffByName_P3[v.md.name];
+                if (mdInfo) return mdInfo;
+              }
+            }
+            // No existing Radiology MD — pick a flexible
+            return eligibleMds.find(s =>
+              (mdRoomCount_P3[s.name] || 0) === 0 && s.agency !== "Baylor"
+            ) || eligibleMds.find(s => (mdRoomCount_P3[s.name] || 0) === 0) || null;
+          }
+          // For Main OR gaps: priority order
+          // 1. Main-anchored Baylor with 0 rooms
+          let pick = eligibleMds.find(s =>
+            (mdRoomCount_P3[s.name] || 0) === 0 &&
+            s.agency === "Baylor" &&
+            MAIN_ANCHORED_RE_P3.test(s.shift || "")
+          );
+          if (pick) return pick;
+          // 2. Flexible with 0 rooms
+          pick = eligibleMds.find(s =>
+            (mdRoomCount_P3[s.name] || 0) === 0 && s.agency !== "Baylor"
+          );
+          if (pick) return pick;
+          // 3. Flexible with 1 room (under cap of 2)
+          pick = eligibleMds.find(s =>
+            (mdRoomCount_P3[s.name] || 0) === 1 && s.agency !== "Baylor"
+          );
+          if (pick) return pick;
+          // 4. Main-anchored Baylor with 1 room
+          pick = eligibleMds.find(s =>
+            (mdRoomCount_P3[s.name] || 0) === 1 &&
+            s.agency === "Baylor" &&
+            MAIN_ANCHORED_RE_P3.test(s.shift || "")
+          );
+          if (pick) return pick;
+          // 5. Late-start absorption: any 2-room MD not 8-hour
+          if (gap.isLate) {
+            pick = eligibleMds.find(s => {
+              if ((mdRoomCount_P3[s.name] || 0) !== 2) return false;
+              if (isEightHourMd(s)) return false;
+              return true;
+            });
+            if (pick) return pick;
+          }
+          return null;
+        };
+        // Sort gap rooms: mandatory first, then case-bearing earliest caseTime first
+        gapRooms.sort((a, b) => {
+          const aMand = MANDATORY_MAIN_ROOMS.has(a.disp), bMand = MANDATORY_MAIN_ROOMS.has(b.disp);
+          if (aMand !== bMand) return aMand ? -1 : 1;
+          const aTime = getCaseTime(a.key) || "99:99";
+          const bTime = getCaseTime(b.key) || "99:99";
+          return aTime.localeCompare(bTime);
+        });
+        const completenessFills = [];
+        for (const gap of gapRooms) {
+          const pick = pickMdForGap(gap);
+          if (!pick) {
+            // No MD available — leave gap, will be flagged
+            continue;
+          }
+          // Place the MD
+          const writeKey = gap.key;
+          const existing = assignmentsObj[writeKey] || cur[writeKey] || {};
+          assignmentsObj[writeKey] = {
+            md: { name: pick.name, credential: pick.credential, agency: pick.agency },
+            app: existing.app || null,
+            notes: (existing.notes ? existing.notes + " | " : "") +
+                   "Pass 3 room completeness: filled gap with " + pick.name
+          };
+          mdRoomCount_P3[pick.name] = (mdRoomCount_P3[pick.name] || 0) + 1;
+          completenessFills.push({ md: pick.name, room: gap.disp, role: gap.role });
+        }
+        if (completenessFills.length > 0) {
+          const byMd = {};
+          completenessFills.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room);
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " -> " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side room completeness: filled gaps (" + summary + ")");
+          console.log("[Pass 3 room completeness]", completenessFills);
+        }
+        // Remaining gaps after completeness audit
+        const stillGap = [];
+        for (const gap of gapRooms) {
+          const slots = assignmentsObj[gap.key] || cur[gap.key];
+          if (!slots || !slots.md || !slots.md.name) stillGap.push(gap.disp);
+        }
+        if (stillGap.length > 0) {
+          flagsArr.push("Mandatory/case-bearing rooms unstaffed after Pass 3 (likely short-staffed): " +
+            stillGap.join(", "));
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 11 — MD COMPLETENESS AUDIT
+        //
+        // Every Main-anchored Baylor MD working today (not in cur) must
+        // be placed somewhere by Pass 3. After room completeness, any
+        // unplaced Main-anchored MD = bug. Place them in any remaining
+        // empty Main-side room. If no rooms exist (over-supply), flag.
+        // ─────────────────────────────────────────────────────────────
+        const unplacedAnchored = [];
+        for (const s of staff) {
+          if (s.credential !== "MD") continue;
+          if (s.agency !== "Baylor") continue;
+          if (!MAIN_ANCHORED_RE_P3.test(s.shift || "")) continue;
+          if ((mdRoomCount_P3[s.name] || 0) > 0) continue;
+          // Skip if already placed in cur (prior pass)
+          if (curMdPlacements[s.name] && curMdPlacements[s.name].length > 0) continue;
+          unplacedAnchored.push(s);
+        }
+        if (unplacedAnchored.length > 0) {
+          // Try to place each in any remaining empty Main OR room (ignore mandatory)
+          const remainingEmptyRooms = [];
+          for (const roomKey of allRoomKeys) {
+            if (!isMainSideRoom(roomKey)) continue;
+            if (roleOfRoom(roomKey) !== "mainOr") continue;
+            const slotsAssign = assignmentsObj[roomKey];
+            const slotsCur = cur[roomKey];
+            const hasMd = (slotsAssign && slotsAssign.md && slotsAssign.md.name) ||
+                          (slotsCur && slotsCur.md && slotsCur.md.name);
+            if (hasMd) continue;
+            const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon)) ||
+                            (slotsAssign && (slotsAssign.caseTime || slotsAssign.surgeon));
+            if (!hasCase) continue;
+            remainingEmptyRooms.push(roomKey);
+          }
+          const forcedAnchored = [];
+          for (const md of unplacedAnchored) {
+            if (remainingEmptyRooms.length === 0) {
+              flagsArr.push("Unplaced Main-anchored MD: " + md.name + " (no rooms available)");
+              continue;
+            }
+            const room = remainingEmptyRooms.shift();
+            const existing = assignmentsObj[room] || cur[room] || {};
+            assignmentsObj[room] = {
+              md: { name: md.name, credential: md.credential, agency: md.agency },
+              app: existing.app || null,
+              notes: (existing.notes ? existing.notes + " | " : "") +
+                     "Pass 3 MD completeness: force-placed unplaced Main-anchored MD"
+            };
+            mdRoomCount_P3[md.name] = 1;
+            forcedAnchored.push({ md: md.name, room: room.replace(/\|/, " ") });
+          }
+          if (forcedAnchored.length > 0) {
+            const summary = forcedAnchored.map(x => x.md + " -> " + x.room).join(" | ");
+            flagsArr.push("Client-side MD completeness: force-placed unplaced Main-anchored MDs (" +
+              summary + ")");
+            console.log("[Pass 3 MD completeness]", forcedAnchored);
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 12 — STALE FLAG SCRUB
+        //
+        // After all the above, walk flagsArr for the model's "Surplus
+        // flexibles (rolling to pass 4): [names]" flag. Recompute the
+        // surplus list based on actual final state. Names that ended up
+        // placed by completeness audits should not appear as surplus.
+        // ─────────────────────────────────────────────────────────────
+        const placedMdNames = new Set();
+        for (const v of Object.values(assignmentsObj)) {
+          if (v && v.md && v.md.name) placedMdNames.add(v.md.name);
+        }
+        const actualSurplus = staff
+          .filter(s => s.credential === "MD")
+          .filter(s => s.name !== "Lauren Ganderson")
+          .filter(s => !MCNAIR_ANCHORED_SHIFT_P3(s.shift))
+          .filter(s => s.agency !== "Baylor") // only flexibles count as surplus
+          .filter(s => !placedMdNames.has(s.name))
+          .filter(s => !(curMdPlacements[s.name] && curMdPlacements[s.name].length > 0))
+          .map(s => s.name);
+        // Walk flagsArr, replace any "Surplus flexibles" flag with our recomputed version
+        const newFlags = [];
+        let surplusFlagSeen = false;
+        for (const f of flagsArr) {
+          if (/^Surplus flexibles/i.test(f)) {
+            surplusFlagSeen = true;
+            if (actualSurplus.length === 0) {
+              console.log("[Pass 3 stale flag scrub] dropped surplus flag - no actual surplus");
+              continue;
+            }
+            newFlags.push("Surplus flexibles (rolling to pass 4): " + actualSurplus.join(", "));
+            continue;
+          }
+          newFlags.push(f);
+        }
+        // If model didn't emit a surplus flag but we have surplus, add one
+        if (!surplusFlagSeen && actualSurplus.length > 0) {
+          newFlags.push("Surplus flexibles (rolling to pass 4): " + actualSurplus.join(", "));
+        }
+        flagsArr.length = 0;
+        flagsArr.push(...newFlags);
       }
       // ═════════════════════════════════════════════════════════════
-      // END PASS 3 VALIDATORS (5A — scrubs only)
+      // END PASS 3 VALIDATORS
       // ═════════════════════════════════════════════════════════════
       // ─────────────────────────────────────────────────────────────
       // CLIENT-SIDE IDLE-FLEXIBLE BACKFILL VALIDATOR (Main pass only)
