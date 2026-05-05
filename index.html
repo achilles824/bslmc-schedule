@@ -4038,20 +4038,23 @@ async function aiAssignStart() {
     "Which pass would you like to run?\n\n" +
     "  1 = McNair APP (NEW — Tier 1 lock, Jamail/McNair OR/OTM/Endo APPs)\n" +
     "  2 = Main APP (NEW — Main OR/Endo/Radiology APPs)\n" +
-    "  3 = McNair (legacy two-pass)\n" +
-    "  4 = Main (legacy two-pass)\n" +
-    "  5 = Full Day (legacy v9.3)\n\n" +
-    "Strict order for new passes: 1 → 2 → 3 → 4. Type 1, 2, 3, 4, or 5:"
+    "  3 = Main MD (NEW — Main OR/Endo/Radiology MDs)\n" +
+    "  4 = McNair MD (NEW — not yet built)\n" +
+    "  5 = McNair (legacy two-pass)\n" +
+    "  6 = Main (legacy two-pass)\n" +
+    "  7 = Full Day (legacy v9.3)\n\n" +
+    "Strict order for new passes: 1 → 2 → 3 → 4. Type 1, 2, 3, 5, 6, or 7:"
   );
 
   if (choice === "1") return aiAssignMcnairApp();
   if (choice === "2") return aiAssignMainApp();
-  if (choice === "3") return aiAssignMcnair();
-  if (choice === "4") return aiAssignMain();
-  if (choice === "5") return aiAssignFullDay();
+  if (choice === "3") return aiAssignMainMd();
+  if (choice === "4") { alert("Pass 4 (McNair MD) not yet built."); return; }
+  if (choice === "5") return aiAssignMcnair();
+  if (choice === "6") return aiAssignMain();
+  if (choice === "7") return aiAssignFullDay();
   // Cancel or invalid input — do nothing
 }
-
 // ---------------------------------------------------------------
 // McNair pass
 // ---------------------------------------------------------------
