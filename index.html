@@ -5717,6 +5717,397 @@ for (const [k, v] of Object.entries(cur)) {
       // ═════════════════════════════════════════════════════════════
       // END PASS 3 VALIDATORS
       // ═════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════
+      // PASS 4 (McNair MD) VALIDATORS — Chunk 5a (structural strips)
+      // ═════════════════════════════════════════════════════════════
+      if (label === "McNair MD") {
+        // Helpers for Pass 4 validators
+        const isMainSideRoom_P4 = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (disp.startsWith("Main OR")) return true;
+          if (disp.startsWith("Main Endo")) return true;
+          if (disp.startsWith("NIR")) return true;
+          if (disp.startsWith("MRI")) return true;
+          if (disp.startsWith("IR")) return true;
+          if (disp.startsWith("CT")) return true;
+          if (disp.startsWith("RM-IR")) return true;
+          return false;
+        };
+        const isFloatRoom_P4 = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          return disp === "OTM OR Float" || disp === "Main OR Float" || disp === "McNair OR Float" ||
+                 disp === "OTM OR|Float" || disp === "Main OR|Float" || disp === "McNair OR|Float";
+        };
+        const isJamailRoom_P4 = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          return disp.startsWith("Jamail OR");
+        };
+        const isMcnairSideRoom_P4 = roomKey => {
+          if (isMainSideRoom_P4(roomKey)) return false;
+          if (isFloatRoom_P4(roomKey)) return false;
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          return disp.startsWith("McNair OR") ||
+                 disp.startsWith("OTM OR") ||
+                 disp.startsWith("OTM Endo") ||
+                 disp.startsWith("Jamail OR");
+        };
+        const JAMAIL_SUB_NAMES_P4 = new Set([
+          "Qiping Chen", "Tara Ninan", "Karla Medrano-England",
+          "Veeral Nazareth", "Chidi Ani"
+        ]);
+        const staffByName_P4 = {};
+        for (const s of staff) staffByName_P4[s.name] = s;
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 1 — CROSS-PASS APP PRESERVATION
+        //
+        // Pass 4 must NOT touch APPs locked by passes 1 and 2 (and Pass 3
+        // didn't touch them either). The model is told to pass APPs through
+        // unchanged, but if it nulls one or substitutes one, restore from cur.
+        // ─────────────────────────────────────────────────────────────
+        const appPreservations_P4 = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || typeof v !== "object") continue;
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const curEntry = cur[room] || cur[disp] || cur[fbForm];
+          const curApp = curEntry && curEntry.app && curEntry.app.name ? curEntry.app : null;
+          const modelApp = v.app && v.app.name ? v.app : null;
+          if (curApp) {
+            const same = modelApp &&
+                         modelApp.name === curApp.name &&
+                         modelApp.credential === curApp.credential;
+            if (!same) {
+              appPreservations_P4.push({
+                room: disp,
+                modelHad: modelApp ? modelApp.name : "(null)",
+                restored: curApp.name
+              });
+              v.app = curApp;
+            }
+          }
+        }
+        if (appPreservations_P4.length > 0) {
+          const summary = appPreservations_P4
+            .map(p => p.room + ": " + p.modelHad + " -> " + p.restored)
+            .join(" | ");
+          flagsArr.push("Client-side APP preservation: restored APPs from prior passes (" + summary + ")");
+          console.log("[Pass 4 APP preservation]", appPreservations_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 2 — MAIN-SIDE ROOM SCRUB
+        //
+        // Pass 4 is McNair-side only. Drop any Main-side room the model
+        // emitted (Main OR, Main Endo, NIR, IR, CT, MRI, RM-IR).
+        // ─────────────────────────────────────────────────────────────
+        const mainSideStripped_P4 = [];
+        for (const room of Object.keys(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (isMainSideRoom_P4(room)) {
+            mainSideStripped_P4.push(room);
+            delete assignmentsObj[room];
+          }
+        }
+        if (mainSideStripped_P4.length > 0) {
+          flagsArr.push("Client-side Main-side room scrub: dropped " +
+            mainSideStripped_P4.map(r => r.replace(/\|/, " ")).join(", ") +
+            " (out of scope for Pass 4)");
+          console.log("[Pass 4 Main-side scrub]", mainSideStripped_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 3 — FLOAT ROOM SCRUB
+        //
+        // Float rooms (OTM OR|Float, McNair OR|Float, Main OR|Float) are
+        // managed by Pass 1. Drop from assignmentsObj — does NOT touch cur.
+        // ─────────────────────────────────────────────────────────────
+        const floatStripped_P4 = [];
+        for (const room of Object.keys(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (isFloatRoom_P4(room)) {
+            floatStripped_P4.push(room);
+            delete assignmentsObj[room];
+          }
+        }
+        if (floatStripped_P4.length > 0) {
+          console.log("[Pass 4 Float scrub]", floatStripped_P4);
+          // No flag — Float scrubs are routine.
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 4 — FORBIDDEN MD STRIP (Main-anchored MDs)
+        //
+        // Pass 4 must never place a Main-anchored Baylor MD. The model
+        // is told this but occasionally violates. Strip any Main-anchored
+        // MD; the room stays so a real McNair MD can be placed by the
+        // completeness audit (Chunk 5b).
+        // ─────────────────────────────────────────────────────────────
+        const mainAnchoredStripped_P4 = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          const mdName = v.md.name;
+          const mdInfo = staffByName_P4[mdName];
+          if (!mdInfo) continue;
+          if (mdInfo.credential !== "MD") continue;
+          if (mdInfo.agency !== "Baylor") continue;
+          if (typeof _isMainAnchoredMd === "function" && _isMainAnchoredMd(mdInfo.shift)) {
+            mainAnchoredStripped_P4.push({
+              md: mdName, room,
+              reason: "Main-anchored shift (\"" + (mdInfo.shift || "") + "\")"
+            });
+            v.md = null;
+            v.notes = (v.notes ? v.notes + " | " : "") +
+                      "Pass 4 forbidden MD strip: Main-anchored MD belongs to Pass 3";
+          }
+        }
+        if (mainAnchoredStripped_P4.length > 0) {
+          const byMd = {};
+          mainAnchoredStripped_P4.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || { rooms: [], reason: x.reason }).rooms.push(
+              x.room.replace(/\|/, " ")
+            );
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, info]) => md + " from " + info.rooms.join(", ") + " (" + info.reason + ")")
+            .join(" | ");
+          flagsArr.push("Client-side forbidden MD strip: " + summary);
+          console.log("[Pass 4 forbidden MD strip]", mainAnchoredStripped_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 5 — CROSS-PASS MD SCRUB
+        //
+        // If an MD was already placed in cur by Pass 3 (locked there) AND
+        // the Pass 4 model places them again on a different room, preserve
+        // cur's placement and drop Pass 4's duplicate. The model is told
+        // not to re-use cur MDs but occasionally tries.
+        // ─────────────────────────────────────────────────────────────
+        const curMdPlacements_P4 = {}; // mdName -> [roomKeys in cur]
+        for (const [room, v] of Object.entries(cur || {})) {
+          if (room === "__closed" || !v || typeof v !== "object") continue;
+          if (!v.md || !v.md.name) continue;
+          (curMdPlacements_P4[v.md.name] = curMdPlacements_P4[v.md.name] || []).push(room);
+        }
+        const crossPassMdRemovals_P4 = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          const mdName = v.md.name;
+          const curRooms = curMdPlacements_P4[mdName];
+          if (!curRooms || curRooms.length === 0) continue;
+          // This MD is already placed in cur. Is the current room one of cur's rooms?
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const matches = curRooms.some(cr => {
+            const crDisp = cr.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+            return crDisp === disp || cr === room || cr === fbForm;
+          });
+          if (matches) continue; // legitimate — cur and model agree
+          // Model placed this MD on a room cur doesn't have. Drop.
+          crossPassMdRemovals_P4.push({ md: mdName, room: disp, curRooms });
+          v.md = null;
+          v.notes = (v.notes ? v.notes + " | " : "") +
+                    "Pass 4 cross-pass MD scrub: MD already placed by prior pass";
+        }
+        if (crossPassMdRemovals_P4.length > 0) {
+          const summary = crossPassMdRemovals_P4
+            .map(x => x.md + " from " + x.room + " (already on " +
+                      x.curRooms.map(r => r.replace(/\|/, " ")).join(", ") + ")")
+            .join(" | ");
+          flagsArr.push("Client-side cross-pass MD scrub: " + summary);
+          console.log("[Pass 4 cross-pass MD scrub]", crossPassMdRemovals_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 6 — JAMAIL SUBSTITUTE SCOPE CHECK
+        //
+        // Chen, Ninan, Medrano-England, Nazareth, Ani are valid in Pass 4
+        // ONLY at Jamail OR rooms. Strip them from McNair OR / OTM OR /
+        // OTM Endo. Their rooms become md:null for completeness to refill
+        // from McNair-anchored or flexible pool.
+        // ─────────────────────────────────────────────────────────────
+        const jamailSubStripped_P4 = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          if (!JAMAIL_SUB_NAMES_P4.has(v.md.name)) continue;
+          if (isJamailRoom_P4(room)) continue; // legitimate
+          jamailSubStripped_P4.push({ md: v.md.name, room });
+          v.md = null;
+          v.notes = (v.notes ? v.notes + " | " : "") +
+                    "Pass 4 Jamail substitute scope: subs only valid at Jamail";
+        }
+        if (jamailSubStripped_P4.length > 0) {
+          const byMd = {};
+          jamailSubStripped_P4.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room.replace(/\|/, " "));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " from " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side Jamail substitute scope: " + summary);
+          console.log("[Pass 4 Jamail sub strip]", jamailSubStripped_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 7 — JAMAIL OCCUPANT CHECK + GANDERSON LOCK
+        //
+        // Jamail OR rooms must be staffed by:
+        //   - Lauren Ganderson (when working AND J > 0), OR
+        //   - A Jamail substitute (Chen/Ninan/Medrano-England/Nazareth/Ani)
+        //     when Ganderson is absent or for J ≥ 5 overflow
+        //
+        // If a McNair-anchored MD or any other MD is on a Jamail room,
+        // strip them. The room becomes md:null so completeness can refill
+        // it with the proper Jamail MD.
+        //
+        // Also handles Ganderson lock:
+        //   - J > 0: She must be at Jamail rooms only. Strip her from
+        //     non-Jamail rooms.
+        //   - J = 0: She is OFF. Strip her from any room. If the room is
+        //     a phantom (no case data), delete it entirely (mirror of
+        //     Pass 1's phantom-room handling).
+        // ─────────────────────────────────────────────────────────────
+
+        // Count Jamail rooms with cases (J)
+        const allRoomKeys_P4 = new Set([
+          ...Object.keys(assignmentsObj || {}),
+          ...Object.keys(cur || {})
+        ]);
+        let J_P4 = 0;
+        const jamailCaseRooms_P4 = [];
+        for (const roomKey of allRoomKeys_P4) {
+          if (roomKey === "__closed" || roomKey === "WORK" || roomKey === "FLAGS") continue;
+          if (!isJamailRoom_P4(roomKey)) continue;
+          if ((cur.__closed || {})[roomKey]) continue;
+          const slotsAssign = assignmentsObj[roomKey];
+          const slotsCur = cur[roomKey];
+          const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure)) ||
+                          (slotsAssign && (slotsAssign.caseTime || slotsAssign.surgeon || slotsAssign.procedure));
+          if (!hasCase) continue;
+          jamailCaseRooms_P4.push(roomKey);
+          J_P4 += 1;
+        }
+        const isGandersonWorking_P4 = staffByName_P4["Lauren Ganderson"] !== undefined;
+
+        // -- 7a. Strip non-Jamail-eligible MDs from Jamail rooms --
+        const jamailIneligibleStripped_P4 = [];
+        for (const roomKey of Object.keys(assignmentsObj)) {
+          if (roomKey === "WORK" || roomKey === "FLAGS") continue;
+          if (!isJamailRoom_P4(roomKey)) continue;
+          const v = assignmentsObj[roomKey];
+          if (!v || !v.md || !v.md.name) continue;
+          const mdName = v.md.name;
+          const isGanderson = mdName === "Lauren Ganderson";
+          const isSub = JAMAIL_SUB_NAMES_P4.has(mdName);
+          if (isGanderson || isSub) continue; // legitimate Jamail MD
+          // Anyone else is ineligible at Jamail. Strip.
+          jamailIneligibleStripped_P4.push({ md: mdName, room: roomKey });
+          v.md = null;
+          v.notes = (v.notes ? v.notes + " | " : "") +
+                    "Pass 4 Jamail occupant check: only Ganderson + named subs valid at Jamail";
+        }
+        if (jamailIneligibleStripped_P4.length > 0) {
+          const byMd = {};
+          jamailIneligibleStripped_P4.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room.replace(/\|/, " "));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " from " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side Jamail occupant check: " + summary);
+          console.log("[Pass 4 Jamail ineligible strip]", jamailIneligibleStripped_P4);
+        }
+
+        // -- 7b. Strip Ganderson from non-Jamail rooms --
+        const gandersonNonJamailStripped_P4 = [];
+        const gandersonPhantomDeleted_P4 = [];
+        for (const roomKey of Object.keys(assignmentsObj)) {
+          if (roomKey === "WORK" || roomKey === "FLAGS") continue;
+          const v = assignmentsObj[roomKey];
+          if (!v || !v.md || v.md.name !== "Lauren Ganderson") continue;
+          if (isJamailRoom_P4(roomKey)) continue; // legitimate
+
+          // Ganderson on a non-Jamail room. Determine if real or phantom.
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const curEntry = cur[fbForm] || cur[disp] || cur[roomKey];
+          const hasCaseData = curEntry && (
+            curEntry.caseTime || curEntry.surgeon ||
+            curEntry.procedure || curEntry.mandatory
+          );
+          if (hasCaseData) {
+            // Real room — keep, just null Ganderson
+            gandersonNonJamailStripped_P4.push(roomKey);
+            const existingApp = v.app;
+            assignmentsObj[roomKey] = {
+              md: null,
+              app: existingApp || null,
+              notes: "Pass 4 Ganderson lock: removed from non-Jamail room (Jamail-only)"
+            };
+          } else {
+            // Phantom — delete entirely
+            gandersonPhantomDeleted_P4.push(roomKey);
+            delete assignmentsObj[roomKey];
+          }
+        }
+        if (gandersonNonJamailStripped_P4.length > 0) {
+          flagsArr.push("Client-side Ganderson lock: removed from " +
+            gandersonNonJamailStripped_P4.map(r => r.replace(/\|/, " ")).join(", ") +
+            " (Jamail-only)");
+          console.log("[Pass 4 Ganderson non-Jamail strip]", gandersonNonJamailStripped_P4);
+        }
+        if (gandersonPhantomDeleted_P4.length > 0) {
+          flagsArr.push("Client-side phantom-room deletion (Ganderson on non-case room): " +
+            gandersonPhantomDeleted_P4.map(r => r.replace(/\|/, " ")).join(", "));
+          console.log("[Pass 4 Ganderson phantom delete]", gandersonPhantomDeleted_P4);
+        }
+
+        // -- 7c. J = 0: Ganderson is OFF. She should not appear anywhere. --
+        if (J_P4 === 0 && isGandersonWorking_P4) {
+          const gandersonAnyRoomStripped_P4 = [];
+          const gandersonAnyPhantomDeleted_P4 = [];
+          for (const roomKey of Object.keys(assignmentsObj)) {
+            if (roomKey === "WORK" || roomKey === "FLAGS") continue;
+            const v = assignmentsObj[roomKey];
+            if (!v || !v.md || v.md.name !== "Lauren Ganderson") continue;
+            const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+            const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+            const curEntry = cur[fbForm] || cur[disp] || cur[roomKey];
+            const hasCaseData = curEntry && (
+              curEntry.caseTime || curEntry.surgeon ||
+              curEntry.procedure || curEntry.mandatory
+            );
+            if (hasCaseData) {
+              gandersonAnyRoomStripped_P4.push(roomKey);
+              const existingApp = v.app;
+              assignmentsObj[roomKey] = {
+                md: null,
+                app: existingApp || null,
+                notes: "Pass 4 Ganderson off-duty (J=0): removed; needs other MD"
+              };
+            } else {
+              gandersonAnyPhantomDeleted_P4.push(roomKey);
+              delete assignmentsObj[roomKey];
+            }
+          }
+          if (gandersonAnyRoomStripped_P4.length > 0 || gandersonAnyPhantomDeleted_P4.length > 0) {
+            flagsArr.push("Ganderson not assigned (Jamail closed)");
+            if (gandersonAnyRoomStripped_P4.length > 0) {
+              console.log("[Pass 4 Ganderson J=0 strip]", gandersonAnyRoomStripped_P4);
+            }
+            if (gandersonAnyPhantomDeleted_P4.length > 0) {
+              console.log("[Pass 4 Ganderson J=0 phantom]", gandersonAnyPhantomDeleted_P4);
+            }
+          }
+        }
+      }
+      // ═════════════════════════════════════════════════════════════
+      // END PASS 4 VALIDATORS — Chunk 5a
+      // ═════════════════════════════════════════════════════════════
       // ─────────────────────────────────────────────────────────────
       // CLIENT-SIDE IDLE-FLEXIBLE BACKFILL VALIDATOR (Main pass only)
       // If any flexible MD ended with 0 rooms AND any McNair-side
