@@ -8080,8 +8080,18 @@ function _enforceJamailTier2Priority(assignmentsObj, appContext) {
     if (!occupant) continue; // empty Jamail slot — completeness will fill
     if (TIER_1_APP_NAMES.has(occupant)) continue; // sacred, do not displace
 
-    // Is the current occupant already in preferred-6? Then no swap needed
-    if (PREFERRED_TIER_2_NAMES.includes(occupant)) continue;
+// Is the current occupant in preferred-6 AND eligible this week? If yes, leave them.
+    // If they're in preferred-6 but already used Jamail this week (priorJamailTier2Days
+    // non-empty), they need to be displaced even though they're a preferred name.
+    if (PREFERRED_TIER_2_NAMES.includes(occupant)) {
+      const occCtx = ctxByName.get(occupant);
+      const occIneligible = occCtx &&
+        Array.isArray(occCtx.priorJamailTier2Days) &&
+        occCtx.priorJamailTier2Days.length > 0;
+      if (!occIneligible) continue;
+      // else: fall through to swap logic — this preferred-6 name has already been
+      // at Jamail this week and must be replaced by a different eligible candidate.
+    }
 
     // Find an eligible preferred-6 candidate who is NOT already at a Jamail room
     const candidate = eligiblePreferred.find(c => {
