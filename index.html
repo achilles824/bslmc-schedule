@@ -4108,17 +4108,17 @@ async function aiAssignStart() {
     "  1 = McNair APP (NEW — Tier 1 lock, Jamail/McNair OR/OTM/Endo APPs)\n" +
     "  2 = Main APP (NEW — Main OR/Endo/Radiology APPs)\n" +
     "  3 = Main MD (NEW — Main OR/Endo/Radiology MDs)\n" +
-    "  4 = McNair MD (NEW — not yet built)\n" +
+    "  4 = McNair MD (NEW — Jamail/McNair OR/OTM/Endo MDs)\n" +
     "  5 = McNair (legacy two-pass)\n" +
     "  6 = Main (legacy two-pass)\n" +
     "  7 = Full Day (legacy v9.3)\n\n" +
-    "Strict order for new passes: 1 → 2 → 3 → 4. Type 1, 2, 3, 5, 6, or 7:"
+    "Strict order for new passes: 1 → 2 → 3 → 4. Type 1, 2, 3, 4, 5, 6, or 7:"
   );
 
   if (choice === "1") return aiAssignMcnairApp();
   if (choice === "2") return aiAssignMainApp();
   if (choice === "3") return aiAssignMainMd();
-  if (choice === "4") { alert("Pass 4 (McNair MD) not yet built."); return; }
+  if (choice === "4") return aiAssignMcnairMd();
   if (choice === "5") return aiAssignMcnair();
   if (choice === "6") return aiAssignMain();
   if (choice === "7") return aiAssignFullDay();
@@ -4200,6 +4200,58 @@ async function aiAssignMainMd() {
     promptBuilder: buildMainMdPrompt,
     systemPrompt: "You are an anesthesiology scheduling assistant assigning MDs to the Main campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose. Touch only md slots; preserve app fields from currentAssignments unchanged."
   });
+}
+  // ─────────────────────────────────────────────────────────────
+// Pass 4 of four-pass system: McNair MD
+// ─────────────────────────────────────────────────────────────
+async function aiAssignMcnairMd() {
+  _aiCurrentPass = "mcnairMd";
+  await _aiRunPass({
+    label: "McNair MD",
+    promptBuilder: buildMcnairMdPrompt,
+    systemPrompt: "You are an anesthesiology scheduling assistant assigning MDs to the McNair campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose. Touch only md slots; preserve app fields from currentAssignments unchanged. Only McNair-side rooms (Jamail OR, McNair OR, OTM OR, OTM Endo)."
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// _extractMdDepartureRole — parse Out-MNC ordering from a McNair-anchored
+// shift label. Returns int 1-6+ or null if not a numbered Out-MNC role.
+// Examples:
+//   "OR - McNair / 1st Out-MNC"        -> 1
+//   "3rd Out-MNC / OR - McNair"        -> 3
+//   "OR - McNair / McNair Call"        -> null (non-numbered, kept role)
+//   "OR - McNair / Late MD-MNC"        -> null
+//   "OR - McNair"                       -> null
+//   "OR 8 - MD"                         -> null (not McNair-anchored)
+//
+// The number can appear before OR after the "OR - McNair" segment.
+// Used by Pass 4 surplus-drop logic and the displacement validator.
+// ─────────────────────────────────────────────────────────────
+function _extractMdDepartureRole(shift) {
+  if (!shift || typeof shift !== "string") return null;
+  const m = shift.match(/(\d+)(?:st|nd|rd|th)\s+Out\s*-\s*MNC/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// _isMcnairAnchoredMd — true if shift label contains "OR - McNair"
+// (anywhere in the string, with or without sub-role like Out-MNC,
+// McNair Call, Late MD-MNC, Charge, etc.). Used by Pass 4 to identify
+// the McNair-anchored MD pool, distinct from Main-anchored ("OR N - MD").
+// ─────────────────────────────────────────────────────────────
+function _isMcnairAnchoredMd(shift) {
+  if (!shift || typeof shift !== "string") return false;
+  return /OR\s*-\s*McNair/i.test(shift);
+}
+
+// ─────────────────────────────────────────────────────────────
+// _isMainAnchoredMd — true if shift starts with "OR N - MD" pattern
+// (Main-anchored). Already used by Pass 3; redefined here as a named
+// helper so Pass 4's validators can call it consistently.
+// ─────────────────────────────────────────────────────────────
+function _isMainAnchoredMd(shift) {
+  if (!shift || typeof shift !== "string") return false;
+  return /^OR\s*\d+\s*-\s*MD/i.test(shift);
 }
 async function aiAssignMain() {
   _aiCurrentPass = "main";
@@ -7433,6 +7485,7 @@ function aiAssignRetry() {
   if (_aiCurrentPass === "mcnairApp") aiAssignMcnairApp();
   else if (_aiCurrentPass === "mainApp") aiAssignMainApp();
   else if (_aiCurrentPass === "mainMd") aiAssignMainMd();
+  else if (_aiCurrentPass === "mcnairMd") aiAssignMcnairMd();
   else if (_aiCurrentPass === "mcnair") aiAssignMcnair();
   else if (_aiCurrentPass === "main") aiAssignMain();
   else if (_aiCurrentPass === "fullday") aiAssignFullDay();
@@ -10373,6 +10426,275 @@ Do NOT flag:
 ]
 
 Every room object has md set to either {name, credential, agency} or null. The app field is preserved from currentAssignments (do NOT modify it). One FLAGS block max at end, omit if no flags. Only Main-side rooms in your output — McNair-side rooms are out of scope.`;
+}
+  function buildMcnairMdPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
+  return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's. Assign MDs to the McNAIR CAMPUS for ${date}.
+
+OUTPUT: Raw JSON array. Start with [, end with ]. No prose, no markdown. First element is WORK block. Last element (if any) is FLAGS block. All other elements are room assignments.
+
+SCOPE: Jamail OR, McNair OR (rooms 1-7), OTM OR, OTM Endo. Ignore Main-side rooms — Pass 3 already handled those.
+
+CRITICAL — MD-ONLY PASS:
+- You assign ONLY MDs (credential "MD"). You do NOT touch app slots.
+- Every room object in your output preserves the existing app field from currentAssignments. If a room already has an APP assigned (from passes 1, 2, or 3), pass it through unchanged. If it has no APP, leave app:null.
+- Main-side rooms (Main OR, Main Endo, NIR, MRI, IR, CT, RM-IR) are out of scope — do NOT emit them in your output.
+- Float rooms (OTM OR|Float, McNair OR|Float, Main OR|Float) are out of scope — do NOT emit them.
+
+PRIOR PASSES ALREADY RAN:
+APPs are locked from passes 1 and 2. MDs on Main-side rooms are locked from pass 3. Some McNair-side rooms may already have MDs in currentAssignments — leave those alone. You only fill McNair-side rooms with md:null.
+
+## INPUTS
+
+Staff working today:
+${staffSummary}
+
+Current assignments (passes 1, 2, and 3 saved these — APPs LOCKED on all rooms, MDs LOCKED on Main-side rooms — do NOT modify):
+${currentAssignments}
+
+Rooms needing assignment:
+${roomsNeeding}
+
+Rules reference:
+${JSON.stringify(rules, null, 2)}
+
+## TERMINOLOGY
+
+McNair-anchored shift labels (these MDs work the McNair side):
+- "OR - McNair" — plain McNair anchor, no specific role
+- "OR - McNair / Nth Out-MNC" — Nth Out-MN, leaves earliest in the day. Numbered 1 (earliest leave) through ~6 (latest stay).
+- "OR - McNair / McNair Call" — covers McNair call obligations
+- "OR - McNair / Late MD-MNC" — Late MD on McNair side
+- "Late MD 2 / OR - McNair" — secondary late MD
+- "OR - McNair / Post-McNair Call" — working post-call
+- "OR - McNair / Charge" — McNair Charge MD
+- The numbered Out-MNC role can appear before OR after the "OR - McNair" segment.
+
+Main-anchored shift labels (NOT for this pass):
+- "OR N - MD" (e.g., "OR 8 - MD", "OR 12 - MD / Charge") — Main-side anchor
+
+"Out-Main" labels (e.g., "OR - McNair / 1st Out-Main") are Main-side roles — those MDs are anchored at Main today; ignore for this pass.
+
+## ABSOLUTE RULES
+
+1. CREDENTIALS
+   Every md slot you emit has credential "MD". Every app field is passed through from currentAssignments unchanged (or null if it was null).
+
+2. STRICT CAMPUS LOCK — McNAIR ONLY
+   Eligible MD pool for this pass:
+   - McNair-anchored Baylor MDs (shift contains "OR - McNair", regardless of additional sub-role)
+   - Lauren Ganderson by NAME (anchored at Jamail; her shift label can be anything)
+   - Jamail substitute MDs by NAME — ONLY at Jamail OR rooms in this pass: Qiping Chen, Tara Ninan, Karla Medrano-England, Veeral Nazareth, Chidi Ani
+   - Surplus flexible MDs from Pass 3 (rolled forward) NOT already in currentAssignments
+
+   FORBIDDEN MDs for this pass:
+   - Main-anchored Baylor MDs (shift starts with "OR" + hours like "OR 8 - MD") — Pass 3's responsibility
+   - Any MD already placed in currentAssignments (locked by prior pass — they cannot take additional rooms here)
+   - Any APP (credential CRNA or CAA). MDs only.
+
+3. NO MANDATORY ROOMS ON McNAIR SIDE
+   McNair-side rooms only need an MD if they have cases (caseTime, surgeon, or procedure) or already exist in roomsNeeding/currentAssignments with case data. Empty McNair-side rooms are not staffed.
+
+4. ONE-AREA-PER-MD (within McNair side)
+   Each MD covers ONE area: McNair OR, OTM OR, OTM Endo, OR Jamail OR. No bridging across areas EXCEPT:
+   - **1+1 bridges allowed (1 max per area-pair)** between: McNair OR ↔ OTM OR, McNair OR ↔ OTM Endo, OTM OR ↔ OTM Endo. The bridging MD takes 1 room in each of two areas (total 2 rooms).
+   - **Triple-block exception**: when 3 or more simultaneous block cases (anesthesia type contains "block" anywhere in the case posting) require block-capable MDs, up to 2 bridges are permitted between McNair OR and OTM OR.
+   - Jamail does NOT bridge to any other area. Jamail MDs (Ganderson + Jamail substitutes) cover only Jamail rooms.
+
+5. CAPS
+   - McNair-anchored Baylor MD: max 3 rooms (1+1 bridge counts as 2 rooms total).
+   - Surplus flexible MD: max 3 rooms.
+   - Ganderson at Jamail: max 4 rooms (Jamail-only exception).
+   - Jamail substitute MD: max 3 rooms (only valid AT Jamail).
+
+6. NO 1-ROOM MD (except as half of a 1+1 bridge)
+   No MD ends with exactly 1 room unless that 1 room is one half of a 1+1 bridge with another room in a different area. Surplus MDs (when supply > demand even at 3-cap) stay UNASSIGNED, not assigned to a single room.
+
+7. SURPLUS MD UNASSIGNED, ORDERED BY OUT-MNC ASCENDING
+   When more McNair-anchored MDs are available than rooms allow at 3-cap with no 1-room MDs:
+   - Drop in ascending Out-MNC order: 1st Out-MNC dropped first, then 2nd, then 3rd, etc. (1st Out-MN leaves earliest in the day, so they're least needed).
+   - Non-numbered McNair-anchored roles are ALWAYS kept: McNair Call, Late MD-MNC, Late MD 2, Post-McNair Call, Charge, plain "OR - McNair" with no sub-role.
+   - Surplus flexibles (rolled in from Pass 3) DISPLACE numbered Out-MNC McNair-anchored MDs first, in the same ascending order. So if Pass 3 rolled in 2 surplus flexibles, 1st Out-MNC and 2nd Out-MNC are displaced before any non-numbered McNair-anchored is touched.
+   - Once-per-week endo applies: if displacing for OTM Endo coverage, prefer flexibles without prior endo this week.
+
+8. GANDERSON LOCK
+   - When "Lauren Ganderson" is in staffSummary AND J > 0 (Jamail has any case-bearing rooms): she covers all Jamail rooms (cap 4). She covers ONLY Jamail.
+   - When J = 0 (no Jamail cases): Ganderson is OFF today. Do NOT place her on any room.
+   - If Jamail has 5+ rooms: Ganderson covers 3-4, plus 1 Jamail substitute MD for overflow (even split).
+
+9. JAMAIL SUBSTITUTE SCOPE
+   The 5 named subs (Chen, Ninan, Medrano-England, Nazareth, Ani) are valid ONLY at Jamail OR rooms in this pass. They are FORBIDDEN at McNair OR, OTM OR, and OTM Endo. Even though they may appear "flexible" in shift labels, they are Jamail-locked here.
+
+10. McNAIR OR DISTRIBUTION
+   - K ≤ 3: 1 MD covers all McNair OR rooms.
+   - K = 4-6: ≥ 2 MDs (respect 3-cap each).
+   - K = 7: ≥ 3 MDs. NEVER 1 MD on 4+ rooms. Distribution must split: 3+3+1 (with the 1 as a bridge half), 3+2+2, etc.
+
+11. OTM OR / OTM ENDO DISTRIBUTION
+   - Target 2-3 rooms per MD. Cap 3 each.
+   - 1 bridge OTM OR ↔ OTM Endo (the bridging MD has FEWEST total rooms).
+
+## STEP 1 — IDENTIFY POOL
+
+From staffSummary, classify EXCLUDING those in currentAssignments:
+
+- **McNair-anchored**: shift contains "OR - McNair" (with or without sub-role). Extract Out-MNC number if present (1-6). Non-numbered roles include McNair Call, Late MD-MNC, Late MD 2, Post-McNair Call, Charge, plain.
+- **Ganderson**: by name "Lauren Ganderson", regardless of shift.
+- **Jamail substitutes**: by name (Chen, Ninan, Medrano-England, Nazareth, Ani), regardless of shift. Valid only at Jamail.
+- **Flexibles (rolled from Pass 3)**: any other MD not in currentAssignments, not Main-anchored.
+- **IGNORE**: Main-anchored MDs (handled by Pass 3), MDs already in currentAssignments.
+
+## STEP 2 — ASSIGN JAMAIL FIRST
+
+Count J = Jamail rooms with cases.
+
+If J = 0: Skip Jamail entirely. Ganderson is off today. Note in WORK: "JAMAIL: J=0, closed today."
+
+If J > 0:
+- Ganderson present, J ≤ 4: she covers all Jamail rooms.
+- Ganderson present, J ≥ 5: Ganderson covers 3-4 rooms, plus 1 Jamail substitute MD for overflow.
+- Ganderson absent, J ≤ 4: assign 1 Jamail substitute MD.
+- Ganderson absent, J ≥ 5: assign 2 Jamail substitute MDs (even split).
+- If Ganderson absent and no Jamail substitute working: leave Jamail unstaffed, emit "Jamail overflow with no approved substitute available".
+
+Once Jamail is assigned, lock those rooms. Don't revisit.
+
+## STEP 3 — COUNT REMAINING DEMAND AND SUPPLY
+
+After Jamail:
+- K = McNair OR rooms with cases (and md:null in currentAssignments)
+- O = OTM OR rooms with cases (and md:null in currentAssignments)
+- E = OTM Endo rooms with cases (and md:null in currentAssignments)
+- ROOMS_NEEDED = K + O + E
+
+McNair-anchored MD supply (excluding Ganderson):
+- N = total McNair-anchored MDs available
+- N_NUMBERED = those with numbered Out-MNC role
+- N_PROTECTED = those without numbered role (Call, Late, Charge, plain) — never dropped
+
+Flexible supply:
+- F = surplus flexibles rolled from Pass 3 not in currentAssignments
+- TOTAL = N + F
+
+CAP_CAPACITY = (N + F) × 3 rooms
+
+VERDICT:
+- TOTAL_DEMAND > CAP_CAPACITY: SHORT-STAFFED. Place every MD at cap; emit STRUCTURAL_McNAIR_MD_DEFICIT for the unstaffed rooms.
+- TOTAL_DEMAND = CAP_CAPACITY × something between: NORMAL. Distribute to fit; surplus flexibles + numbered Out-MNCs may be dropped per Rule 7.
+- TOTAL_DEMAND < (N + F − number of dropped) × 3: SURPLUS. Drop numbered Out-MNCs in ascending order until supply matches demand.
+
+## STEP 4 — APPLY DISPLACEMENT (when surplus exists)
+
+If supply > demand at 3-cap-no-1-room-MD:
+1. Identify how many MDs need to be dropped to make demand fit cleanly (every kept MD at 2-3 rooms, no 1-room MDs unless bridged).
+2. First drop surplus flexibles' lowest-priority candidates (oldest endo prior; lowest-utility).
+3. Then drop McNair-anchored MDs in ascending Out-MNC order (1st Out-MNC first, then 2nd, etc.).
+4. Never drop a non-numbered McNair-anchored (Call, Late, Charge, plain).
+5. If displacing for OTM Endo coverage, prefer flexibles without prior endo this week.
+
+Dropped MDs become UNASSIGNED. They get no rooms. Emit informational flag: "Surplus McNair MDs unassigned (Out-MNC ascending): [names]".
+
+## STEP 5 — ASSIGN REMAINING MDs
+
+Each MD covers ONE area, with up to one 1+1 bridge per area-pair.
+
+### McNair OR (K rooms)
+- Distribute per Rule 10. Prefer McNair-anchored over flexibles where possible.
+- 7 rooms requires ≥ 3 MDs (not 1 MD on 4+).
+- Block cases (anesthesia type contains "block" — case posting): require block-capable MDs. If 3+ simultaneous blocks, allow up to 2 McNair OR ↔ OTM OR bridges.
+
+### OTM OR / OTM Endo
+- Target 2-3 rooms per MD. Cap 3.
+- 1 bridge OTM OR ↔ OTM Endo allowed (bridging MD has FEWEST total rooms).
+- Apply ONCE-PER-WEEK ENDO RULE for OTM Endo MDs: check rules.weeklyEndoTracking. Skip MDs (role=MD) who appear with prior Main Endo or OTM Endo this week. If unavoidable repeat, prefer earliest prior-endo day, emit flag.
+
+### Bridging
+Valid pairs: McNair OR ↔ OTM OR, McNair OR ↔ OTM Endo, OTM OR ↔ OTM Endo. 1 bridge max per pair (except triple-block: up to 2 McNair OR ↔ OTM OR).
+Forbidden: any pair involving Jamail. Any pair involving Main-side.
+
+## STEP 6 — POST-ASSIGNMENT AUDIT (do this BEFORE emitting output)
+
+### EVERY-NUMBERED-OUT-MNC-OR-DROPPED
+Every numbered Out-MNC McNair-anchored MD is either placed (with rooms) OR explicitly listed in surplus drops (Rule 7). Non-numbered McNair-anchored never dropped.
+
+### NO-1-ROOM-MD
+No MD has exactly 1 room unless that room is half of a documented 1+1 bridge pair with another area.
+
+### CAPS
+- McNair-anchored / flexible: max 3 rooms
+- Ganderson at Jamail: max 4 rooms
+- Jamail substitute: max 3 rooms at Jamail only
+
+### CAMPUS LOCK
+- No Main-anchored MD in any room of your output.
+- No MD already in currentAssignments has a new room here.
+
+### GANDERSON
+- J > 0 AND Ganderson working: she's at Jamail rooms only.
+- J = 0: Ganderson appears nowhere in your output.
+
+### JAMAIL SUBSTITUTES
+- Chen, Ninan, Medrano-England, Nazareth, Ani: only at Jamail rooms.
+
+### ONE-AREA-PER-MD
+- Each MD in exactly ONE area, except the documented 1+1 bridges (1 max per pair, or up to 2 for triple-block exception).
+
+### McNAIR OR DISTRIBUTION
+- K=7 → ≥ 3 MDs.
+- No 1 MD with 4+ McNair OR rooms.
+
+### CREDENTIALS
+- Every md.credential = "MD". No APP names in MD slots.
+
+### APPs UNTOUCHED
+- For every room emitted, the app field equals currentAssignments's app field (unchanged) or null if currentAssignments had null.
+
+## STEP 7 — WORK NARRATIVE
+
+Required fields, separated by " | ":
+
+PASS: McNair MD
+ROOMS: K=X, O=X, E=X, J=X
+DEMAND: ROOMS_NEEDED (post-Jamail)=X
+SUPPLY: N=X (McNair-anchored), N_NUMBERED=X, N_PROTECTED=X, F=X (flexibles from Pass 3), TOTAL=X
+SUPPLY_VERDICT: SHORT | NORMAL | SURPLUS
+JAMAIL: GANDERSON=YES/NO | J=X | Jamail MD: [names] | (substitute used: YES/NO)
+McNAIR_OR_MDS: [name (role)]: rooms [list] (count) | ...
+OTM_OR_MDS: [name (role)]: rooms [list] (count) | ...
+OTM_ENDO_MDS: [name (role)] (prior-endo this week: YES/NO): rooms [list] (count) | ...
+BRIDGES: [name: room A + room B (area pair), ...] or NONE
+SURPLUS_DROPPED: [names of dropped MDs in ascending Out-MNC order] or NONE
+UNFILLED_ROOMS: [list] or NONE
+
+## STEP 8 — FLAGS (closed whitelist)
+
+Permitted templates only. Do NOT invent flag text.
+
+- "Surplus McNair MDs unassigned (Out-MNC ascending): [names]"
+- "STRUCTURAL_McNAIR_MD_DEFICIT: [N] McNair-side rooms unstaffed. Supply at cap=[X], demand=[Y]"
+- "Jamail overflow with no approved substitute available"
+- "Repeat endo: [name] (role: MD; prior: [day, Main/OTM]; today: OTM Endo [room])"
+- "Triple-block detected: [N] simultaneous block cases — bridges expanded"
+- "Ganderson not assigned (Jamail closed)"
+- "Unplaced McNair-anchored MD: [name]" — only if a non-numbered McNair-anchored ends with 0 rooms despite available cap (rare bug indicator)
+- "1+1 bridge: [MD name] covers [room A] + [room B]" — informational, one per bridge
+- "No cases, not staffed: [rooms]"
+
+Do NOT flag:
+- Rooms with app field present (that's pass 1/2's work, not a violation)
+- Standard Out-MNC drop in normal supply scenarios (this IS the rule, document via SURPLUS_DROPPED narrative not flags)
+- Standard once-per-week endo replacements when a swap was made
+
+## OUTPUT FORMAT
+
+[
+  { "room": "WORK", "md": null, "app": null, "notes": "PASS: McNair MD | ROOMS: ... | ..." },
+  { "room": "Jamail OR 1", "md": { "name": "Lauren Ganderson", "credential": "MD", "agency": "Baylor" }, "app": <pass-through>, "notes": "" },
+  { "room": "McNair OR 1", "md": { "name": "...", "credential": "MD", "agency": "Baylor" }, "app": <pass-through>, "notes": "" },
+  ...
+  { "room": "FLAGS", "md": null, "app": null, "notes": "flag 1. flag 2." }
+]
+
+Every room object has md set to either {name, credential, agency} or null. The app field is preserved from currentAssignments (do NOT modify it). One FLAGS block max at end, omit if no flags. Only McNair-side rooms in your output — Main-side is out of scope.`;
 }
   function buildMainPrompt(date, staffSummary, currentAssignments, roomsNeeding, rules) {
   return `You are an anesthesiology scheduling assistant for Baylor College of Medicine at CHI St. Luke's Health System. Your task is to assign MDs and APPs to the MAIN CAMPUS only for ${date}.
