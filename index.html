@@ -6102,11 +6102,745 @@ for (const [k, v] of Object.entries(cur)) {
             if (gandersonAnyPhantomDeleted_P4.length > 0) {
               console.log("[Pass 4 Ganderson J=0 phantom]", gandersonAnyPhantomDeleted_P4);
             }
+}
+        }
+
+        // ═════════════════════════════════════════════════════════════
+        // PASS 4 VALIDATORS — Chunk 5b (redistribution + completeness)
+        // ═════════════════════════════════════════════════════════════
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 8 — ONE-AREA-PER-MD ENFORCER
+        //
+        // Each MD covers ONE McNair-side area: McNair OR, OTM OR,
+        // OTM Endo, OR Jamail. Multi-area placements are allowed only as:
+        //   - 1+1 bridges (1 max per area-pair) between McNair OR ↔ OTM OR,
+        //     McNair OR ↔ OTM Endo, OTM OR ↔ OTM Endo
+        //   - Triple-block exception: up to 2 bridges McNair OR ↔ OTM OR
+        //   - Jamail does NOT bridge to anything
+        //
+        // Strategy: for each MD, identify the area distribution. If one area
+        // has > 1 room AND another area has any rooms, drop the cross-area
+        // rooms (keep the primary area). If the cross-area room is exactly
+        // 1 in each of two compatible areas, that's a legitimate 1+1 bridge —
+        // keep both.
+        // ─────────────────────────────────────────────────────────────
+        const areaOf_P4 = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (disp.startsWith("Jamail OR")) return "Jamail";
+          if (disp.startsWith("McNair OR")) return "McNair OR";
+          if (disp.startsWith("OTM Endo")) return "OTM Endo";
+          if (disp.startsWith("OTM OR")) return "OTM OR";
+          return null;
+        };
+        const isLegalBridgePair_P4 = (a, b) => {
+          if (a === b) return false;
+          if (a === "Jamail" || b === "Jamail") return false;
+          const valid = [
+            ["McNair OR", "OTM OR"],
+            ["McNair OR", "OTM Endo"],
+            ["OTM OR", "OTM Endo"]
+          ];
+          return valid.some(([x, y]) =>
+            (a === x && b === y) || (a === y && b === x)
+          );
+        };
+
+        // Build MD -> {area -> [rooms]} map
+        const mdAreaMap_P4 = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          const area = areaOf_P4(room);
+          if (!area) continue;
+          if (!mdAreaMap_P4[v.md.name]) mdAreaMap_P4[v.md.name] = {};
+          if (!mdAreaMap_P4[v.md.name][area]) mdAreaMap_P4[v.md.name][area] = [];
+          mdAreaMap_P4[v.md.name][area].push(room);
+        }
+
+        // Detect triple-block: count case-bearing rooms with anesthesia type
+        // containing "block" in OTM OR + McNair OR
+        let blockCaseCount_P4 = 0;
+        for (const roomKey of allRoomKeys_P4) {
+          if (roomKey === "__closed" || roomKey === "WORK" || roomKey === "FLAGS") continue;
+          const a = areaOf_P4(roomKey);
+          if (a !== "OTM OR" && a !== "McNair OR") continue;
+          const slotsCur = cur[roomKey];
+          const slotsAssign = assignmentsObj[roomKey];
+          const cases = (slotsCur && slotsCur.cases) || (slotsAssign && slotsAssign.cases) || [];
+          const anesthesiaText = (() => {
+            const fromCur = (slotsCur && (slotsCur.anesthesiaType || slotsCur.anesthesia_type)) || "";
+            const fromCases = Array.isArray(cases)
+              ? cases.map(c => (c && (c.anesthesiaType || c.anesthesia_type)) || "").join(" ")
+              : "";
+            return (fromCur + " " + fromCases).toLowerCase();
+          })();
+          if (anesthesiaText.includes("block")) blockCaseCount_P4 += 1;
+        }
+        const tripleBlockExceptionActive_P4 = blockCaseCount_P4 >= 3;
+        if (tripleBlockExceptionActive_P4) {
+          flagsArr.push("Triple-block detected: " + blockCaseCount_P4 +
+            " simultaneous block cases — bridges expanded");
+        }
+
+        // Track bridges per area-pair (key = sorted "A|B")
+        const bridgeCount_P4 = {};
+        const bridgeCap_P4 = pairKey => {
+          if (pairKey === "McNair OR|OTM OR" && tripleBlockExceptionActive_P4) return 2;
+          return 1;
+        };
+        const pairKeyOf = (a, b) => [a, b].sort().join("|");
+
+        const oneAreaStripped_P4 = [];
+        for (const [mdName, areas] of Object.entries(mdAreaMap_P4)) {
+          const areaList = Object.keys(areas);
+          if (areaList.length <= 1) continue; // single-area, fine
+
+          // Determine primary area: the one with the most rooms
+          // (tie-break: McNair OR > OTM OR > OTM Endo > Jamail)
+          const tiebreak = { "McNair OR": 4, "OTM OR": 3, "OTM Endo": 2, "Jamail": 1 };
+          areaList.sort((a, b) => {
+            const diff = areas[b].length - areas[a].length;
+            if (diff !== 0) return diff;
+            return (tiebreak[b] || 0) - (tiebreak[a] || 0);
+          });
+          const primaryArea = areaList[0];
+          const primaryCount = areas[primaryArea].length;
+          const otherAreas = areaList.slice(1);
+
+          // Check if this is a legal 1+1 bridge:
+          // primaryCount === 1 AND exactly one other area with exactly 1 room
+          // AND the pair is legal AND we haven't exceeded the cap
+          const isOnePlusOneBridge =
+            primaryCount === 1 &&
+            otherAreas.length === 1 &&
+            areas[otherAreas[0]].length === 1 &&
+            isLegalBridgePair_P4(primaryArea, otherAreas[0]);
+
+          if (isOnePlusOneBridge) {
+            const pk = pairKeyOf(primaryArea, otherAreas[0]);
+            bridgeCount_P4[pk] = (bridgeCount_P4[pk] || 0) + 1;
+            if (bridgeCount_P4[pk] <= bridgeCap_P4(pk)) {
+              flagsArr.push("1+1 bridge: " + mdName + " covers " +
+                areas[primaryArea][0].replace(/\|/, " ") + " + " +
+                areas[otherAreas[0]][0].replace(/\|/, " "));
+              continue; // legitimate, keep both
+            }
+            // Cap exceeded — strip the secondary area
+            const stripArea = otherAreas[0];
+            for (const room of areas[stripArea]) {
+              const v = assignmentsObj[room];
+              if (v && v.md && v.md.name === mdName) {
+                oneAreaStripped_P4.push({ md: mdName, room, reason: "bridge cap exceeded" });
+                v.md = null;
+                v.notes = (v.notes ? v.notes + " | " : "") +
+                          "Pass 4 one-area: bridge cap exceeded on " + pk;
+              }
+            }
+            continue;
+          }
+
+          // Not a legal 1+1 bridge. Strip from all non-primary areas.
+          for (const otherArea of otherAreas) {
+            for (const room of areas[otherArea]) {
+              const v = assignmentsObj[room];
+              if (v && v.md && v.md.name === mdName) {
+                oneAreaStripped_P4.push({ md: mdName, room, reason: "non-primary area" });
+                v.md = null;
+                v.notes = (v.notes ? v.notes + " | " : "") +
+                          "Pass 4 one-area: non-primary area (primary=" + primaryArea + ")";
+              }
+            }
           }
         }
+        if (oneAreaStripped_P4.length > 0) {
+          const byMd = {};
+          oneAreaStripped_P4.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room.replace(/\|/, " "));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " from " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side one-area-per-MD: " + summary);
+          console.log("[Pass 4 one-area strip]", oneAreaStripped_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 9 — CAP ENFORCER
+        //
+        // McNair-anchored / flexible MD: max 3 rooms (excluding Jamail —
+        //   they shouldn't BE on Jamail; that's validator 7's job)
+        // Ganderson at Jamail: max 4 rooms
+        // Jamail substitute: max 3 rooms (Jamail-only)
+        //
+        // Drop excess rooms in stable order. Prefer to drop the highest
+        // room number within the area (works as deterministic tiebreak).
+        // ─────────────────────────────────────────────────────────────
+        const capStripped_P4 = [];
+        const capFor_P4 = mdName => {
+          if (mdName === "Lauren Ganderson") return 4;
+          return 3;
+        };
+
+        // Recompute MD -> rooms after validator 8
+        const mdRooms_P4 = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          (mdRooms_P4[v.md.name] = mdRooms_P4[v.md.name] || []).push(room);
+        }
+        for (const [mdName, rooms] of Object.entries(mdRooms_P4)) {
+          const cap = capFor_P4(mdName);
+          if (rooms.length <= cap) continue;
+          // Sort rooms — drop higher numbers first (descending)
+          rooms.sort((a, b) => {
+            const numA = parseInt(a.match(/(\d+)/)?.[1] || "0", 10);
+            const numB = parseInt(b.match(/(\d+)/)?.[1] || "0", 10);
+            return numB - numA;
+          });
+          const overage = rooms.length - cap;
+          const toDrop = rooms.slice(0, overage);
+          for (const room of toDrop) {
+            const v = assignmentsObj[room];
+            if (v && v.md && v.md.name === mdName) {
+              capStripped_P4.push({ md: mdName, room, cap });
+              v.md = null;
+              v.notes = (v.notes ? v.notes + " | " : "") +
+                        "Pass 4 cap enforcer: " + mdName + " over cap (" + cap + ")";
+            }
+          }
+        }
+        if (capStripped_P4.length > 0) {
+          const byMd = {};
+          capStripped_P4.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || { rooms: [], cap: x.cap }).rooms.push(
+              x.room.replace(/\|/, " ")
+            );
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, info]) => md + " (cap " + info.cap + "): dropped " +
+                                  info.rooms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side cap enforcer: " + summary);
+          console.log("[Pass 4 cap strip]", capStripped_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 10 — ONCE-PER-WEEK ENDO FOR OTM ENDO
+        //
+        // Check OTM Endo MDs. If any has prior endo (Main or OTM) earlier
+        // this week per rules.weeklyEndoTracking, try to find a replacement
+        // among unplaced (or even placed-but-droppable) McNair-anchored Baylor
+        // MDs without prior endo.
+        //
+        // Priority order for replacement:
+        //   1. Unplaced eligible no-prior-endo MD (best — no displacement)
+        //   2. A McNair-anchored MD currently being dropped per surplus rule
+        //      (e.g., 1st Out-MNC) — "rescue" them onto OTM Endo
+        //   3. Eligible flexible (rolled from Pass 3) without prior endo
+        //
+        // If no eligible no-prior-endo candidate exists: keep Y. Kim, leave
+        // existing repeat-endo flag.
+        //
+        // Note: this validator may swap MDs but does NOT yet do surplus drop
+        // recompute — that comes in validator 11.
+        // ─────────────────────────────────────────────────────────────
+        const weeklyEndo_P4 = (rules && rules.weeklyEndoTracking) || {};
+        const weekStart_P4 = ((d) => {
+          // Compute Monday of this week
+          const dt = new Date(d + "T00:00:00");
+          const day = dt.getDay();
+          const offset = day === 0 ? -6 : 1 - day;
+          dt.setDate(dt.getDate() + offset);
+          return dt.toISOString().slice(0, 10);
+        })(date);
+
+        const hasPriorEndoThisWeek_P4 = (mdName) => {
+          // Check rules.weeklyEndoTracking — structure: { "YYYY-MM-DD": [name, name, ...] }
+          // OR { mdName: { lastDate, areas } }. Tolerate both shapes.
+          const wtAsDates = weeklyEndo_P4;
+          let prior = null;
+          // Shape A: date-keyed
+          for (const [dt, names] of Object.entries(wtAsDates)) {
+            if (!Array.isArray(names)) continue;
+            if (dt >= weekStart_P4 && dt < date && names.includes(mdName)) {
+              prior = { day: dt, area: "(unknown)" };
+              break;
+            }
+          }
+          // Shape B: name-keyed
+          if (!prior) {
+            const entry = wtAsDates[mdName];
+            if (entry && entry.lastDate && entry.lastDate >= weekStart_P4 && entry.lastDate < date) {
+              prior = { day: entry.lastDate, area: entry.area || "(unknown)" };
+            }
+          }
+          return prior;
+        };
+
+        // Identify OTM Endo MDs in current output
+        const otmEndoOccupants_P4 = {}; // mdName -> [rooms]
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          if (areaOf_P4(room) !== "OTM Endo") continue;
+          (otmEndoOccupants_P4[v.md.name] = otmEndoOccupants_P4[v.md.name] || []).push(room);
+        }
+
+        // Build candidate replacement pool: unplaced McNair-anchored Baylor MDs
+        // with no prior endo this week, plus unplaced flexibles
+        const placedMds_P4 = new Set();
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (v && v.md && v.md.name) placedMds_P4.add(v.md.name);
+        }
+        // Also count cur as placed (Pass 3 MDs)
+        for (const [room, v] of Object.entries(cur || {})) {
+          if (room === "__closed") continue;
+          if (v && v.md && v.md.name) placedMds_P4.add(v.md.name);
+        }
+
+        const isMcnairEligibleMd_P4 = (s) => {
+          if (!s) return false;
+          if (s.credential !== "MD") return false;
+          if (JAMAIL_SUB_NAMES_P4.has(s.name)) return false;
+          if (s.name === "Lauren Ganderson") return false;
+          // McNair-anchored Baylor OR a flexible (any agency, not Main-anchored)
+          if (s.agency === "Baylor" && _isMcnairAnchoredMd(s.shift)) return true;
+          // Flexible: not Main-anchored, not McNair-anchored, but credential MD
+          if (s.shift && !_isMainAnchoredMd(s.shift) && !_isMcnairAnchoredMd(s.shift)) {
+            // Is the shift a working shift? (exclude PTO/off/etc.)
+            const sl = s.shift.toLowerCase();
+            if (sl.includes("pto") || sl.includes("fto") || sl === "no call" ||
+                sl.includes("off -") || sl.includes("off-") || sl.includes("post-")) {
+              // Still check — Post-McNair Call might be working. Skip pure Off.
+              if (sl === "off - md" || sl.includes("sl pto") || sl.includes("fto")) return false;
+            }
+            return true;
+          }
+          return false;
+        };
+
+        const unplacedEligibleMds_P4 = staff.filter(s =>
+          isMcnairEligibleMd_P4(s) && !placedMds_P4.has(s.name)
+        );
+
+        // Process each OTM Endo MD with prior endo
+        const endoSwaps_P4 = [];
+        const repeatEndoUnavoidable_P4 = [];
+        for (const [mdName, rooms] of Object.entries(otmEndoOccupants_P4)) {
+          const prior = hasPriorEndoThisWeek_P4(mdName);
+          if (!prior) continue;
+
+          // Try to find a replacement
+          // Priority 1: unplaced no-prior-endo McNair-anchored Baylor MD
+          let replacement = null;
+          for (const cand of unplacedEligibleMds_P4) {
+            if (cand.agency !== "Baylor") continue;
+            if (!_isMcnairAnchoredMd(cand.shift)) continue;
+            if (hasPriorEndoThisWeek_P4(cand.name)) continue;
+            replacement = cand;
+            break;
+          }
+          // Priority 2: unplaced no-prior-endo flexible
+          if (!replacement) {
+            for (const cand of unplacedEligibleMds_P4) {
+              if (cand.agency === "Baylor" && _isMcnairAnchoredMd(cand.shift)) continue;
+              if (hasPriorEndoThisWeek_P4(cand.name)) continue;
+              replacement = cand;
+              break;
+            }
+          }
+          // Priority 3 (if still none): keep Y. Kim, log unavoidable
+          if (!replacement) {
+            repeatEndoUnavoidable_P4.push({
+              md: mdName,
+              priorDay: prior.day,
+              priorArea: prior.area,
+              rooms: rooms.map(r => r.replace(/\|/, " "))
+            });
+            continue;
+          }
+          // Apply swap: move all of mdName's OTM Endo rooms to replacement
+          for (const room of rooms) {
+            const v = assignmentsObj[room];
+            if (v) {
+              v.md = {
+                name: replacement.name,
+                credential: replacement.credential,
+                agency: replacement.agency
+              };
+              v.notes = (v.notes ? v.notes + " | " : "") +
+                        "Pass 4 once-per-week endo: replaced " + mdName + " with " +
+                        replacement.name;
+            }
+          }
+          placedMds_P4.add(replacement.name);
+          // Don't remove mdName from placedMds yet — they may be re-placed elsewhere
+          // by completeness audit. Just mark for the rescue tracking.
+          endoSwaps_P4.push({
+            from: mdName,
+            to: replacement.name,
+            rooms: rooms.map(r => r.replace(/\|/, " ")),
+            priorDay: prior.day
+          });
+          // Clear mdName from placedMds so completeness audit can re-place them
+          // elsewhere. (They were on OTM Endo only, and we just took those rooms.)
+          const stillElsewhere = Object.entries(assignmentsObj).some(([rk, vv]) =>
+            rk !== "WORK" && rk !== "FLAGS" && vv && vv.md && vv.md.name === mdName
+          );
+          if (!stillElsewhere) placedMds_P4.delete(mdName);
+        }
+        if (endoSwaps_P4.length > 0) {
+          for (const sw of endoSwaps_P4) {
+            flagsArr.push("Once-per-week endo swap: " + sw.from + " (prior endo " +
+              sw.priorDay + ") replaced by " + sw.to + " on OTM Endo " +
+              sw.rooms.join(", "));
+          }
+          console.log("[Pass 4 endo swaps]", endoSwaps_P4);
+        }
+        if (repeatEndoUnavoidable_P4.length > 0) {
+          // Existing repeat-endo flag from model already covers this.
+          // Don't double-flag.
+          console.log("[Pass 4 repeat endo unavoidable]", repeatEndoUnavoidable_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 11 — SURPLUS DROP RECOMPUTE
+        //
+        // After validators 8-10 may have moved MDs around, recompute who's
+        // a surplus drop candidate. Surplus exists when the count of
+        // unplaced eligible McNair-anchored Baylor MDs (after rescues)
+        // exceeds the unfilled demand. Drop the lowest-numbered Out-MNC
+        // first; non-numbered roles always kept.
+        //
+        // Note: this validator does NOT itself drop MDs — it just identifies
+        // who SHOULD be dropped if the placement audit (validator 13) tries
+        // to place them. The audit will skip surplus drops.
+        // ─────────────────────────────────────────────────────────────
+
+        // Recompute placedMds after validator 10
+        placedMds_P4.clear();
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (v && v.md && v.md.name) placedMds_P4.add(v.md.name);
+        }
+        for (const [room, v] of Object.entries(cur || {})) {
+          if (room === "__closed") continue;
+          if (v && v.md && v.md.name) placedMds_P4.add(v.md.name);
+        }
+
+        // Count unfilled McNair-side rooms
+        let unfilledCount_P4 = 0;
+        for (const roomKey of allRoomKeys_P4) {
+          if (roomKey === "__closed" || roomKey === "WORK" || roomKey === "FLAGS") continue;
+          if (!isMcnairSideRoom_P4(roomKey)) continue;
+          if ((cur.__closed || {})[roomKey]) continue;
+          const slotsAssign = assignmentsObj[roomKey];
+          const slotsCur = cur[roomKey];
+          const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure)) ||
+                          (slotsAssign && (slotsAssign.caseTime || slotsAssign.surgeon || slotsAssign.procedure));
+          if (!hasCase) continue;
+          const filled = (slotsAssign && slotsAssign.md && slotsAssign.md.name) ||
+                         (slotsCur && slotsCur.md && slotsCur.md.name);
+          if (!filled) unfilledCount_P4 += 1;
+        }
+
+        // Build unplaced eligible pool with departure roles
+        const unplacedPool_P4 = staff
+          .filter(s => isMcnairEligibleMd_P4(s) && !placedMds_P4.has(s.name))
+          .map(s => ({
+            ...s,
+            departureRole: _extractMdDepartureRole(s.shift),
+            isMcnairAnchored: s.agency === "Baylor" && _isMcnairAnchoredMd(s.shift)
+          }));
+
+        // Identify surplus: total available room-slots vs demand
+        const totalSlotsAvailable_P4 = unplacedPool_P4.length * 3;
+        const surplusDropList_P4 = [];
+        if (totalSlotsAvailable_P4 > unfilledCount_P4) {
+          // We have surplus. Drop in this order:
+          //   1. Numbered Out-MNC McNair-anchored, ascending (1st first)
+          //   2. Flexibles (non-McNair-anchored)
+          //   3. Never drop non-numbered McNair-anchored
+          // Keep dropping until total slots ≤ unfilled (rounded up to multiples of 3)
+          const droppable = unplacedPool_P4
+            .filter(m => m.departureRole !== null || !m.isMcnairAnchored)
+            .sort((a, b) => {
+              // Flexibles drop before numbered? No — your earlier confirmation said
+              // flexibles DISPLACE numbered Out-MNCs (so flexibles get rooms, Out-MNCs
+              // get dropped). When BOTH are unplaced and we're dropping for surplus,
+              // drop numbered Out-MNCs first (lowest number), then flexibles.
+              const aNum = a.departureRole;
+              const bNum = b.departureRole;
+              if (aNum !== null && bNum !== null) return aNum - bNum;
+              if (aNum !== null) return -1;
+              if (bNum !== null) return 1;
+              return a.name.localeCompare(b.name);
+            });
+
+          let slotsToTrim = totalSlotsAvailable_P4 - unfilledCount_P4;
+          for (const cand of droppable) {
+            if (slotsToTrim <= 0) break;
+            surplusDropList_P4.push(cand.name);
+            slotsToTrim -= 3;
+          }
+        }
+        if (surplusDropList_P4.length > 0) {
+          flagsArr.push("Surplus McNair MDs unassigned (Out-MNC ascending): " +
+            surplusDropList_P4.join(", "));
+          console.log("[Pass 4 surplus drop list]", surplusDropList_P4);
+        }
+        const surplusDropSet_P4 = new Set(surplusDropList_P4);
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 12 — ROOM COMPLETENESS AUDIT
+        //
+        // Find every McNair-side case-bearing room with md:null (after all
+        // strips). Make sure they're all in assignmentsObj so the
+        // completeness audit (validator 13) can fill them. Also re-create
+        // any room that was in cur with case data but is missing from
+        // assignmentsObj (model didn't emit it).
+        // ─────────────────────────────────────────────────────────────
+        const restoredMissingRooms_P4 = [];
+        for (const roomKey of allRoomKeys_P4) {
+          if (roomKey === "__closed" || roomKey === "WORK" || roomKey === "FLAGS") continue;
+          if (!isMcnairSideRoom_P4(roomKey)) continue;
+          if ((cur.__closed || {})[roomKey]) continue;
+          const slotsCur = cur[roomKey];
+          const hasCase = slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure);
+          if (!hasCase) continue;
+          if (!assignmentsObj[roomKey]) {
+            // Model omitted this room; create it as md:null with cur's APP
+            assignmentsObj[roomKey] = {
+              md: null,
+              app: (slotsCur && slotsCur.app) ? slotsCur.app : null,
+              notes: "Pass 4 completeness: model omitted, restored from cur"
+            };
+            restoredMissingRooms_P4.push(roomKey);
+          }
+        }
+        if (restoredMissingRooms_P4.length > 0) {
+          flagsArr.push("Client-side completeness: restored " +
+            restoredMissingRooms_P4.map(r => r.replace(/\|/, " ")).join(", ") +
+            " (model omitted)");
+          console.log("[Pass 4 completeness restore]", restoredMissingRooms_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 13 — MD COMPLETENESS AUDIT
+        //
+        // Force-place unplaced McNair-anchored Baylor MDs (and unplaced
+        // flexibles) onto McNair-side rooms with md:null, respecting:
+        //   - Surplus drop list (validator 11) — skip those MDs
+        //   - One-area-per-MD
+        //   - Cap (3 per MD)
+        //   - Once-per-week endo for OTM Endo
+        //
+        // Strategy: greedy fill area-by-area. For each unfilled room, pick
+        // the best available MD by:
+        //   1. MD already has rooms in this area (extend their assignment)
+        //   2. MD is unplaced and not on surplus drop list
+        //   3. For OTM Endo: skip MDs with prior endo if any non-prior alt exists
+        //
+        // After pass: any MD with exactly 1 room → try to bridge with another
+        // single-room MD in a compatible area, else drop and re-fill.
+        // ─────────────────────────────────────────────────────────────
+
+        const fillableMds_P4 = unplacedPool_P4.filter(m => !surplusDropSet_P4.has(m.name));
+        // Build current MD -> count (excluding surplus drops, which are unplaced)
+        const mdRoomCount_P4 = {};
+        const mdAreas_P4 = {};
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          mdRoomCount_P4[v.md.name] = (mdRoomCount_P4[v.md.name] || 0) + 1;
+          const area = areaOf_P4(room);
+          if (!mdAreas_P4[v.md.name]) mdAreas_P4[v.md.name] = new Set();
+          mdAreas_P4[v.md.name].add(area);
+        }
+
+        // Sort fillable: McNair-anchored first, then flexibles
+        fillableMds_P4.sort((a, b) => {
+          if (a.isMcnairAnchored && !b.isMcnairAnchored) return -1;
+          if (!a.isMcnairAnchored && b.isMcnairAnchored) return 1;
+          // Within McNair-anchored, prefer non-numbered (always-kept) first,
+          // then by ascending Out-MNC (so 1st Out covers first, then 2nd, etc.)
+          // No wait — we want the LATEST stay first to take rooms most reliably.
+          // But actually the surplus drop already removed who shouldn't be placed,
+          // so any still here SHOULD be placed. Order doesn't matter much for
+          // completeness — just be deterministic.
+          const aNum = a.departureRole === null ? -1 : a.departureRole;
+          const bNum = b.departureRole === null ? -1 : b.departureRole;
+          return bNum - aNum; // higher Out-MNC (later stay) gets rooms first
+        });
+
+        // Fill unfilled rooms
+        const fillSequence_P4 = ["McNair OR", "OTM OR", "OTM Endo"]; // Jamail handled separately
+        const completenessPlacements_P4 = [];
+
+        for (const targetArea of fillSequence_P4) {
+          // Get unfilled rooms in this area, sorted by room number
+          const unfilledRooms = Object.keys(assignmentsObj)
+            .filter(rk => {
+              if (rk === "WORK" || rk === "FLAGS") return false;
+              if (areaOf_P4(rk) !== targetArea) return false;
+              const v = assignmentsObj[rk];
+              if (!v) return false;
+              if (v.md && v.md.name) return false;
+              const slotsCur = cur[rk];
+              const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure)) ||
+                              (v.caseTime || v.surgeon || v.procedure);
+              return hasCase;
+            })
+            .sort((a, b) => {
+              const numA = parseInt(a.match(/(\d+)/)?.[1] || "0", 10);
+              const numB = parseInt(b.match(/(\d+)/)?.[1] || "0", 10);
+              return numA - numB;
+            });
+
+          for (const room of unfilledRooms) {
+            // Find best candidate
+            // Pass 1: existing MD already in this area, under cap
+            let chosen = null;
+            for (const cand of Object.keys(mdRoomCount_P4)) {
+              if (mdRoomCount_P4[cand] >= 3) continue;
+              if (cand === "Lauren Ganderson") continue; // Jamail-locked
+              if (JAMAIL_SUB_NAMES_P4.has(cand)) continue;
+              const sInfo = staffByName_P4[cand];
+              if (!sInfo) continue;
+              if (sInfo.agency === "Baylor" && _isMainAnchoredMd(sInfo.shift)) continue;
+              const areas = mdAreas_P4[cand];
+              if (!areas) continue;
+              // Already in this area? Extend.
+              if (areas.has(targetArea) && areas.size === 1) {
+                chosen = sInfo;
+                break;
+              }
+            }
+            // Pass 2: unplaced fillable MD
+            if (!chosen) {
+              for (const cand of fillableMds_P4) {
+                if (placedMds_P4.has(cand.name)) {
+                  // already placed in fillableMds_P4 by a previous fill
+                  if ((mdRoomCount_P4[cand.name] || 0) >= 3) continue;
+                  if (mdAreas_P4[cand.name] && !mdAreas_P4[cand.name].has(targetArea)) continue;
+                }
+                // For OTM Endo, skip prior-endo if other options exist
+                if (targetArea === "OTM Endo" && hasPriorEndoThisWeek_P4(cand.name)) {
+                  // Tentatively skip; we'll come back if no alternative
+                  continue;
+                }
+                chosen = cand;
+                break;
+              }
+            }
+            // Pass 3 (Endo only): allow prior-endo if no choice
+            if (!chosen && targetArea === "OTM Endo") {
+              for (const cand of fillableMds_P4) {
+                if ((mdRoomCount_P4[cand.name] || 0) >= 3) continue;
+                if (mdAreas_P4[cand.name] && !mdAreas_P4[cand.name].has(targetArea)) continue;
+                chosen = cand;
+                if (hasPriorEndoThisWeek_P4(cand.name)) {
+                  flagsArr.push("Repeat endo (unavoidable): " + cand.name +
+                    " on OTM Endo " + room.replace(/\|/, " ") +
+                    " — no eligible no-prior-endo replacement");
+                }
+                break;
+              }
+            }
+            if (!chosen) continue; // truly out of MDs for this room
+
+            // Place chosen
+            const v = assignmentsObj[room];
+            v.md = {
+              name: chosen.name,
+              credential: chosen.credential,
+              agency: chosen.agency
+            };
+            v.notes = (v.notes ? v.notes + " | " : "") +
+                      "Pass 4 completeness: placed " + chosen.name;
+            placedMds_P4.add(chosen.name);
+            mdRoomCount_P4[chosen.name] = (mdRoomCount_P4[chosen.name] || 0) + 1;
+            if (!mdAreas_P4[chosen.name]) mdAreas_P4[chosen.name] = new Set();
+            mdAreas_P4[chosen.name].add(targetArea);
+            completenessPlacements_P4.push({ md: chosen.name, room, area: targetArea });
+          }
+        }
+
+        if (completenessPlacements_P4.length > 0) {
+          const byMd = {};
+          completenessPlacements_P4.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || []).push(x.room.replace(/\|/, " "));
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, rms]) => md + " -> " + rms.join(", "))
+            .join(" | ");
+          flagsArr.push("Client-side MD completeness: " + summary);
+          console.log("[Pass 4 completeness placements]", completenessPlacements_P4);
+        }
+
+        // 1-room MD check after completeness
+        const oneRoomMds_P4 = [];
+        for (const [mdName, count] of Object.entries(mdRoomCount_P4)) {
+          if (count === 1 && mdName !== "Lauren Ganderson" && !JAMAIL_SUB_NAMES_P4.has(mdName)) {
+            // Check if their 1 room is half of a bridge already (from validator 8)
+            // by inspecting areas count
+            const areasSet = mdAreas_P4[mdName];
+            if (areasSet && areasSet.size === 1) {
+              oneRoomMds_P4.push(mdName);
+            }
+          }
+        }
+        if (oneRoomMds_P4.length > 0) {
+          flagsArr.push("Pass 4 placement note: 1-room MDs detected after audit: " +
+            oneRoomMds_P4.join(", ") + " (rebridge or accept)");
+          console.log("[Pass 4 1-room MDs]", oneRoomMds_P4);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 14 — STALE FLAG SCRUB
+        //
+        // Recompute STRUCTURAL_McNAIR_MD_DEFICIT against actual final state.
+        // The model may have emitted this flag based on its own (wrong)
+        // deficit count. Replace with accurate count, OR remove if zero.
+        // ─────────────────────────────────────────────────────────────
+        let actualDeficit_P4 = 0;
+        const actualUnfilled_P4 = [];
+        for (const roomKey of allRoomKeys_P4) {
+          if (roomKey === "__closed" || roomKey === "WORK" || roomKey === "FLAGS") continue;
+          if (!isMcnairSideRoom_P4(roomKey)) continue;
+          if ((cur.__closed || {})[roomKey]) continue;
+          const slotsAssign = assignmentsObj[roomKey];
+          const slotsCur = cur[roomKey];
+          const hasCase = (slotsCur && (slotsCur.caseTime || slotsCur.surgeon || slotsCur.procedure)) ||
+                          (slotsAssign && (slotsAssign.caseTime || slotsAssign.surgeon || slotsAssign.procedure));
+          if (!hasCase) continue;
+          const filled = (slotsAssign && slotsAssign.md && slotsAssign.md.name) ||
+                         (slotsCur && slotsCur.md && slotsCur.md.name);
+          if (!filled) {
+            actualDeficit_P4 += 1;
+            actualUnfilled_P4.push(roomKey);
+          }
+        }
+        // Remove model's deficit flag if any
+        const cleanedFlags_P4 = flagsArr.filter(f =>
+          !/STRUCTURAL_McNAIR_MD_DEFICIT/i.test(f)
+        );
+        if (actualDeficit_P4 > 0) {
+          const totalSupply = Object.keys(mdRoomCount_P4).reduce((a, n) => a + capFor_P4(n), 0);
+          const totalDemand = Object.values(mdRoomCount_P4).reduce((a, n) => a + n, 0) + actualDeficit_P4;
+          cleanedFlags_P4.push("STRUCTURAL_McNAIR_MD_DEFICIT: " + actualDeficit_P4 +
+            " McNair-side rooms unstaffed. Supply at cap=" + totalSupply +
+            ", demand=" + totalDemand + " | Unfilled: " +
+            actualUnfilled_P4.map(r => r.replace(/\|/, " ")).join(", "));
+        }
+        flagsArr.length = 0;
+        flagsArr.push(...cleanedFlags_P4);
       }
       // ═════════════════════════════════════════════════════════════
-      // END PASS 4 VALIDATORS — Chunk 5a
+      // END PASS 4 VALIDATORS — Chunks 5a + 5b
+      // ═════════════════════════════════════════════════════════════
       // ═════════════════════════════════════════════════════════════
       // ─────────────────────────────────────────────────────────────
       // CLIENT-SIDE IDLE-FLEXIBLE BACKFILL VALIDATOR (Main pass only)
