@@ -4432,7 +4432,7 @@ for (const [k, v] of Object.entries(cur)) {
       // (Wednesday rule, single-day rule, fewest remaining days).
       // -----------------------------------------------------------
       if (label === "McNair APP" && _aiCurrentAppContext) {
-        const endoResult = _enforceEndoPriority(assignmentsObj, _aiCurrentAppContext);
+        const endoResult = _enforceEndoPriority(assignmentsObj, _aiCurrentAppContext, cur);
         if (endoResult.swaps.length > 0) {
           const summary = endoResult.swaps
             .map(s => s.moved + " <-> " + s.displaced + " (" + s.into.replace(/\|/, " ") +
@@ -7647,7 +7647,7 @@ function _enforceDepartureRolePlacement(assignmentsObj, appContext, currentAssig
 
   return result;
 }
-function _enforceEndoPriority(assignmentsObj, appContext) {
+function _enforceEndoPriority(assignmentsObj, appContext, currentAssignments) {
   const result = { swaps: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
 
@@ -7657,14 +7657,18 @@ function _enforceEndoPriority(assignmentsObj, appContext) {
   const ctxByName = new Map();
   for (const a of appContext.apps) ctxByName.set(a.name, a);
 
-  // Find all OTM Endo room placements
+// Find all OTM Endo room placements, sorted by caseTime DESCENDING
+  // (caseTime comes from currentAssignments — the model output doesn't preserve it)
   const endoRooms = [];
   for (const [roomKey, slots] of Object.entries(assignmentsObj || {})) {
     if (!roomKey.startsWith("OTM Endo")) continue;
     if (!slots || typeof slots !== "object") continue;
     if (!slots.app || !slots.app.name) continue;
-    endoRooms.push({ roomKey, occupant: slots.app.name });
+    const curEntry = (currentAssignments && currentAssignments[roomKey]) || {};
+    const caseTime = curEntry.caseTime || slots.caseTime || "00:00";
+    endoRooms.push({ roomKey, occupant: slots.app.name, caseTime });
   }
+  endoRooms.sort((a, b) => b.caseTime.localeCompare(a.caseTime));
 
   if (endoRooms.length === 0) return result;
 
@@ -8080,8 +8084,18 @@ function _enforceJamailTier2Priority(assignmentsObj, appContext) {
     if (!occupant) continue; // empty Jamail slot — completeness will fill
     if (TIER_1_APP_NAMES.has(occupant)) continue; // sacred, do not displace
 
-    // Is the current occupant already in preferred-6? Then no swap needed
-    if (PREFERRED_TIER_2_NAMES.includes(occupant)) continue;
+// Is the current occupant in preferred-6 AND eligible this week? If yes, leave them.
+    // If they're in preferred-6 but already used Jamail this week (priorJamailTier2Days
+    // non-empty), they need to be displaced even though they're a preferred name.
+    if (PREFERRED_TIER_2_NAMES.includes(occupant)) {
+      const occCtx = ctxByName.get(occupant);
+      const occIneligible = occCtx &&
+        Array.isArray(occCtx.priorJamailTier2Days) &&
+        occCtx.priorJamailTier2Days.length > 0;
+      if (!occIneligible) continue;
+      // else: fall through to swap logic — this preferred-6 name has already been
+      // at Jamail this week and must be replaced by a different eligible candidate.
+    }
 
     // Find an eligible preferred-6 candidate who is NOT already at a Jamail room
     const candidate = eligiblePreferred.find(c => {
