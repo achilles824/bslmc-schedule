@@ -2684,9 +2684,13 @@ function toggleFinalize() {
       const message = "Cannot finalize: " + incompleteRooms.length +
         " room" + (incompleteRooms.length === 1 ? "" : "s") +
         " incomplete.\n\n" + lines.join("\n") +
-        "\n\nFix the above rooms and try again, or close any rooms that genuinely have no staff today.";
-      alert(message);
-      return; // abort finalize
+"\n\nClick OK to finalize anyway, or Cancel to fix the rooms first.";
+      if (!confirm(message)) {
+        return; // user chose to fix; abort finalize
+      }
+      // User chose to finalize despite incomplete rooms — fall through.
+      console.log("[Finalize] User overrode incomplete-rooms warning:",
+        incompleteRooms.map(r => r.room + " (missing " + r.missing.join("+") + ")"));
     }
   }
 
