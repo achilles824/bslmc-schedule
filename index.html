@@ -4118,6 +4118,17 @@ async function aiAssignMainApp() {
     systemPrompt: "You are an anesthesiology scheduling assistant assigning APPs to the Main campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose. Touch only app slots; leave md fields null."
   });
 }
+  // ---------------------------------------------------------------
+// Pass 3 of four-pass system: Main MD
+// ---------------------------------------------------------------
+async function aiAssignMainMd() {
+  _aiCurrentPass = "mainMd";
+  await _aiRunPass({
+    label: "Main MD",
+    promptBuilder: buildMainMdPrompt,
+    systemPrompt: "You are an anesthesiology scheduling assistant assigning MDs to the Main campus. Output ONLY a raw JSON array starting with [ and ending with ]. No prose. Touch only md slots; preserve app fields from currentAssignments unchanged."
+  });
+}
 async function aiAssignMain() {
   _aiCurrentPass = "main";
   await _aiRunPass({
