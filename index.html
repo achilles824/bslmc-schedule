@@ -7651,14 +7651,12 @@ function _enforceEndoPriority(assignmentsObj, appContext, currentAssignments) {
   const result = { swaps: [] };
   if (!appContext || !Array.isArray(appContext.apps)) return result;
 
-  const todayIsWed = appContext.todayDayShort === "Wed";
-
   // Build name -> appContext entry for fast lookup
   const ctxByName = new Map();
   for (const a of appContext.apps) ctxByName.set(a.name, a);
 
-// Find all OTM Endo room placements, sorted by caseTime DESCENDING
-  // (caseTime comes from currentAssignments — the model output doesn't preserve it)
+  // Find every OTM Endo room with an APP placed, with caseTime from currentAssignments
+  // (the model output doesn't preserve caseTime).
   const endoRooms = [];
   for (const [roomKey, slots] of Object.entries(assignmentsObj || {})) {
     if (!roomKey.startsWith("OTM Endo")) continue;
@@ -7668,139 +7666,77 @@ function _enforceEndoPriority(assignmentsObj, appContext, currentAssignments) {
     const caseTime = curEntry.caseTime || slots.caseTime || "00:00";
     endoRooms.push({ roomKey, occupant: slots.app.name, caseTime });
   }
-  endoRooms.sort((a, b) => b.caseTime.localeCompare(a.caseTime));
 
   if (endoRooms.length === 0) return result;
 
-  // Determine current placement of every working APP
-  const placementByName = new Map();
-  for (const [roomKey, slots] of Object.entries(assignmentsObj)) {
-    if (roomKey === "__closed" || !slots || typeof slots !== "object") continue;
-    if (slots.app && slots.app.name) {
-      placementByName.set(slots.app.name, { roomKey, location: "app" });
-    }
-    if (Array.isArray(slots.float)) {
-      slots.float.forEach((f, i) => {
-        if (f && f.name) {
-          placementByName.set(f.name, { roomKey, location: "float-" + i });
-        }
-      });
-    }
+  // Identify Baylor McNair APPs currently at endo. They are the only ones
+  // we reposition — locums and flexibles at endo stay where the model put them.
+  const baylorMcnairAtEndo = [];
+  for (const room of endoRooms) {
+    const ctx = ctxByName.get(room.occupant);
+    if (!ctx) continue;
+    if (ctx.campus !== "baylorMcnair") continue;
+    if (TIER_1_APP_NAMES.has(room.occupant)) continue; // Tier 1 should already be at Jamail
+    baylorMcnairAtEndo.push({ ...room, ctx });
   }
 
-  // Priority score — campus-aware.
-  // Lower score = higher priority.
-  const priorityScore = (ctx) => {
-    let score = 0;
-    const remaining = ctx.daysRemainingThisWeek || [];
+  // Need at least 2 Baylor McNair APPs at endo to have anything to reorder.
+  if (baylorMcnairAtEndo.length < 2) return result;
 
-    if (ctx.campus === "baylorMcnair") {
-      // Tier A: Wednesday rule + single-day rule + fewest remaining days
-      if (todayIsWed && ctx.workingMcnairWednesday) score -= 1000;
-      if (remaining.length === 1) score -= 500;
-      score += remaining.length * 10;
-    } else {
-      // Tier B/C (locums): fewest remaining days + shorter shift hours tiebreaker
-      // No Wednesday boost.
-      score += remaining.length * 10;
-      // Shift hours tiebreaker — D8 (8) before D12 (12) means lower score for shorter shift
-      if (typeof ctx.shiftHours === "number") {
-        score += ctx.shiftHours * 0.1; // small fractional weight; only matters for ties
-      }
-    }
-    return score;
-  };
+  // The endo rooms HOLDING Baylor McNair APPs — these are the rooms in play.
+  // Sort by caseTime descending: latest start first.
+  const baylorEndoRoomKeys = baylorMcnairAtEndo
+    .map(x => ({ roomKey: x.roomKey, caseTime: x.caseTime }))
+    .sort((a, b) => b.caseTime.localeCompare(a.caseTime));
 
-  // Tier order: baylorMcnair > mcnairLocum > flexibleLocum
-  const tierRank = (campus) => {
-    if (campus === "baylorMcnair") return 0;
-    if (campus === "mcnairLocum") return 1;
-    if (campus === "flexibleLocum") return 2;
-    return 99;
-  };
+  // Sort Baylor McNair APPs by departureRole descending (last out first).
+  // APPs without departureRole sort last.
+  const baylorAppsSorted = baylorMcnairAtEndo
+    .slice()
+    .sort((a, b) => {
+      const da = (typeof a.ctx.departureRole === "number") ? a.ctx.departureRole : -1;
+      const db = (typeof b.ctx.departureRole === "number") ? b.ctx.departureRole : -1;
+      return db - da;
+    });
 
-  // For each endo room, evaluate whether a swap is warranted
-  for (const { roomKey, occupant } of endoRooms) {
-    const occupantCtx = ctxByName.get(occupant);
-    if (!occupantCtx) continue;
+  // Build the desired pairing: highest depRole -> latest endo room
+  const desired = {}; // roomKey -> name
+  for (let i = 0; i < baylorEndoRoomKeys.length; i++) {
+    desired[baylorEndoRoomKeys[i].roomKey] = baylorAppsSorted[i].occupant;
+  }
 
-    const occupantTier = tierRank(occupantCtx.campus);
-    const occupantScore = priorityScore(occupantCtx);
+  // Apply swaps. For each Baylor-held endo room, if the current occupant
+  // doesn't match desired, swap with the room that holds the desired person.
+  for (const roomKey of Object.keys(desired)) {
+    const wanted = desired[roomKey];
+    const currentSlots = assignmentsObj[roomKey];
+    if (!currentSlots || !currentSlots.app) continue;
+    if (currentSlots.app.name === wanted) continue; // already correct
 
-    let bestCandidate = null;
-    let bestRank = [occupantTier, occupantScore];
+    // Find the room currently holding `wanted`
+    const otherRoomKey = baylorMcnairAtEndo.find(x => x.occupant === wanted)?.roomKey;
+    if (!otherRoomKey || otherRoomKey === roomKey) continue;
+    const otherSlots = assignmentsObj[otherRoomKey];
+    if (!otherSlots || !otherSlots.app) continue;
 
-    for (const ctx of appContext.apps) {
-      if (ctx.name === occupant) continue;
-      if (ctx.campus !== "baylorMcnair" && ctx.campus !== "mcnairLocum" && ctx.campus !== "flexibleLocum") continue;
-      if (Array.isArray(ctx.priorEndoDays) && ctx.priorEndoDays.length > 0) continue;
-      if (TIER_1_APP_NAMES.has(ctx.name)) continue;
+    // Perform the swap
+    const swapA = currentSlots.app;
+    const swapB = otherSlots.app;
+    currentSlots.app = swapB;
+    otherSlots.app = swapA;
 
-      const candidateTier = tierRank(ctx.campus);
-      const candidateScore = priorityScore(ctx);
+    result.swaps.push({
+      moved: swapB.name,
+      into: roomKey,
+      displaced: swapA.name,
+      to: otherRoomKey
+    });
 
-      const isBetter =
-        (candidateTier < bestRank[0]) ||
-        (candidateTier === bestRank[0] && candidateScore < bestRank[1]);
-      if (!isBetter) continue;
-
-      const candidateCurrent = placementByName.get(ctx.name);
-      if (candidateCurrent && candidateCurrent.roomKey.startsWith("OTM Endo")) continue;
-
-      bestCandidate = ctx;
-      bestRank = [candidateTier, candidateScore];
-    }
-
-    if (!bestCandidate) continue;
-
-    const candidateCurrent = placementByName.get(bestCandidate.name);
-    const slots = assignmentsObj[roomKey];
-    slots.app = {
-      name: bestCandidate.name,
-      credential: bestCandidate.credential,
-      agency: bestCandidate.agency
-    };
-
-    if (candidateCurrent && candidateCurrent.location === "app") {
-      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
-      if (otherSlots) {
-        otherSlots.app = {
-          name: occupant,
-          credential: occupantCtx.credential,
-          agency: occupantCtx.agency
-        };
-        result.swaps.push({
-          moved: bestCandidate.name,
-          into: roomKey,
-          displaced: occupant,
-          to: candidateCurrent.roomKey
-        });
-        placementByName.set(bestCandidate.name, { roomKey, location: "app" });
-        placementByName.set(occupant, { roomKey: candidateCurrent.roomKey, location: "app" });
-      }
-    } else if (candidateCurrent && candidateCurrent.location.startsWith("float-")) {
-      const otherSlots = assignmentsObj[candidateCurrent.roomKey];
-      if (otherSlots && Array.isArray(otherSlots.float)) {
-        otherSlots.float = otherSlots.float.filter(f => f && f.name !== bestCandidate.name);
-      }
-      result.swaps.push({
-        moved: bestCandidate.name,
-        into: roomKey,
-        displaced: occupant,
-        to: "(unplaced — completeness will refill)"
-      });
-      placementByName.set(bestCandidate.name, { roomKey, location: "app" });
-      placementByName.delete(occupant);
-    } else {
-      result.swaps.push({
-        moved: bestCandidate.name,
-        into: roomKey,
-        displaced: occupant,
-        to: "(unplaced — completeness will refill)"
-      });
-      placementByName.set(bestCandidate.name, { roomKey, location: "app" });
-      placementByName.delete(occupant);
-    }
+    // Update tracking so subsequent iterations see the new state
+    const ai = baylorMcnairAtEndo.findIndex(x => x.occupant === swapA.name);
+    const bi = baylorMcnairAtEndo.findIndex(x => x.occupant === swapB.name);
+    if (ai >= 0) baylorMcnairAtEndo[ai].roomKey = otherRoomKey;
+    if (bi >= 0) baylorMcnairAtEndo[bi].roomKey = roomKey;
   }
 
   return result;
