@@ -4787,7 +4787,231 @@ for (const [k, v] of Object.entries(cur)) {
         flagsArr.push(...scrubbed);
         console.log("[Known-bad rooms stripped]", knownBadStripped);
       }
+// ═════════════════════════════════════════════════════════════
+      // PASS 3 (Main MD) VALIDATORS
+      // ═════════════════════════════════════════════════════════════
+      if (label === "Main MD") {
+        // Helpers used throughout Pass 3 validators.
+        const isMcnairSideRoom = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          return disp.startsWith("McNair OR") ||
+                 disp.startsWith("OTM OR") ||
+                 disp.startsWith("OTM Endo") ||
+                 disp.startsWith("Jamail OR");
+        };
+        const isFloatRoom = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          return disp === "OTM OR Float" || disp === "Main OR Float" ||
+                 disp === "OTM OR|Float" || disp === "Main OR|Float";
+        };
+        const isMainSideRoom = roomKey => {
+          const disp = roomKey.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          if (isMcnairSideRoom(roomKey) || isFloatRoom(roomKey)) return false;
+          return disp.startsWith("Main OR") ||
+                 disp.startsWith("Main Endo") ||
+                 disp.startsWith("NIR") ||
+                 disp.startsWith("MRI") ||
+                 disp.startsWith("IR") ||
+                 disp.startsWith("CT") ||
+                 disp.startsWith("RM-IR");
+        };
+        const MAIN_ANCHORED_RE_P3 = /^OR\s*\d+\s*-\s*MD/i;
+        const MCNAIR_ANCHORED_SHIFT_P3 = s =>
+          /McNair|MNC|Out-MNC|Late MD-MNC|McNair Call|OR - McNair/i.test(s || "");
+        const staffByName_P3 = {};
+        for (const s of staff) staffByName_P3[s.name] = s;
 
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 1 — CROSS-PASS APP PRESERVATION
+        //
+        // Pass 3 must NOT touch APPs locked by passes 1 and 2. The model
+        // is told to pass APPs through unchanged, but if it nulls one or
+        // substitutes one, restore from cur. Walk every room in
+        // assignmentsObj. For each, force the app field to match cur's
+        // app field for that same room (under either key format).
+        // ─────────────────────────────────────────────────────────────
+        const appPreservations = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || typeof v !== "object") continue;
+          // Find the app for this room in cur, checking both key formats.
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const curEntry = cur[room] || cur[disp] || cur[fbForm];
+          const curApp = curEntry && curEntry.app && curEntry.app.name ? curEntry.app : null;
+          const modelApp = v.app && v.app.name ? v.app : null;
+
+          // If cur has an APP and the model's matches it, do nothing.
+          // If cur has an APP and the model's differs (or is null), restore from cur.
+          // If cur has no APP, leave the model's value alone (could be null, that's fine).
+          if (curApp) {
+            const same = modelApp &&
+                         modelApp.name === curApp.name &&
+                         modelApp.credential === curApp.credential;
+            if (!same) {
+              appPreservations.push({
+                room: disp,
+                modelHad: modelApp ? modelApp.name : "(null)",
+                restored: curApp.name
+              });
+              v.app = curApp;
+            }
+          }
+        }
+        if (appPreservations.length > 0) {
+          const summary = appPreservations
+            .map(p => p.room + ": " + p.modelHad + " -> " + p.restored)
+            .join(" | ");
+          flagsArr.push("Client-side APP preservation: restored APPs from prior passes (" + summary + ")");
+          console.log("[Pass 3 APP preservation]", appPreservations);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 2 — McNAIR-SIDE ROOM SCRUB
+        //
+        // Pass 3 is Main-side only. Drop any McNair-side room the model
+        // emitted. Those go to Pass 4.
+        // ─────────────────────────────────────────────────────────────
+        const mcnairSideStripped = [];
+        for (const room of Object.keys(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (isMcnairSideRoom(room)) {
+            mcnairSideStripped.push(room);
+            delete assignmentsObj[room];
+          }
+        }
+        if (mcnairSideStripped.length > 0) {
+          flagsArr.push("Client-side McNair-side room scrub: dropped " +
+            mcnairSideStripped.map(r => r.replace(/\|/, " ")).join(", ") +
+            " (out of scope for Pass 3)");
+          console.log("[Pass 3 McNair-side scrub]", mcnairSideStripped);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 3 — FLOAT ROOM SCRUB
+        //
+        // Float rooms (OTM OR|Float, Main OR|Float) are not Pass 3's
+        // concern. Pass 1 manages OTM Float APPs. Drop from
+        // assignmentsObj — does NOT touch cur (Firebase keeps the
+        // existing Float row intact).
+        // ─────────────────────────────────────────────────────────────
+        const floatStripped = [];
+        for (const room of Object.keys(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (isFloatRoom(room)) {
+            floatStripped.push(room);
+            delete assignmentsObj[room];
+          }
+        }
+        if (floatStripped.length > 0) {
+          console.log("[Pass 3 Float scrub]", floatStripped);
+          // No flag — float scrubs are routine, not interesting to surface.
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 4 — FORBIDDEN MD STRIP (Ganderson + McNair-anchored)
+        //
+        // Pass 3 must never place Ganderson (she's Jamail-only, handled
+        // by Pass 4) or any McNair-anchored MD. The model is told this
+        // but occasionally violates. Drop these MDs to null; the room
+        // stays so a real Main MD can be placed by Step 11 (room
+        // completeness audit) below.
+        //
+        // Jamail substitute MDs (Chen/Ninan/Medrano-England/Nazareth/Ani)
+        // are NOT stripped here — they may be used as Main flexibles
+        // legitimately in Pass 3, and only become Jamail-locked in Pass 4.
+        // ─────────────────────────────────────────────────────────────
+        const forbiddenMdsStripped = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          const mdName = v.md.name;
+          // Ganderson check — by name
+          if (mdName === "Lauren Ganderson") {
+            forbiddenMdsStripped.push({ md: mdName, room, reason: "Ganderson is Jamail-only (Pass 4)" });
+            v.md = null;
+            v.notes = (v.notes ? v.notes + " | " : "") +
+                      "Pass 3 forbidden MD strip: Ganderson is Jamail-only";
+            continue;
+          }
+          // McNair-anchored shift check
+          const mdInfo = staffByName_P3[mdName];
+          if (mdInfo && mdInfo.credential === "MD" &&
+              mdInfo.agency === "Baylor" &&
+              MCNAIR_ANCHORED_SHIFT_P3(mdInfo.shift)) {
+            forbiddenMdsStripped.push({
+              md: mdName, room,
+              reason: "McNair-anchored shift (\"" + (mdInfo.shift || "") + "\")"
+            });
+            v.md = null;
+            v.notes = (v.notes ? v.notes + " | " : "") +
+                      "Pass 3 forbidden MD strip: McNair-anchored MD belongs in Pass 4";
+          }
+        }
+        if (forbiddenMdsStripped.length > 0) {
+          const byMd = {};
+          forbiddenMdsStripped.forEach(x => {
+            (byMd[x.md] = byMd[x.md] || { rooms: [], reason: x.reason }).rooms.push(
+              x.room.replace(/\|/, " ")
+            );
+          });
+          const summary = Object.entries(byMd)
+            .map(([md, info]) => md + " from " + info.rooms.join(", ") + " (" + info.reason + ")")
+            .join(" | ");
+          flagsArr.push("Client-side forbidden MD strip: " + summary);
+          console.log("[Pass 3 forbidden MD strip]", forbiddenMdsStripped);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // VALIDATOR 5 — CROSS-PASS MD SCRUB
+        //
+        // If an MD already exists in cur (either from a prior Pass 3 run
+        // or rarely from another pass), preserve cur's placement. The
+        // model should not re-place already-placed MDs. Defensively, if
+        // the model placed an MD on a different room than cur has them
+        // on, preserve cur and drop the model's placement.
+        // ─────────────────────────────────────────────────────────────
+        const curMdPlacements = {}; // mdName -> [roomKeys]
+        for (const [room, v] of Object.entries(cur || {})) {
+          if (room === "__closed" || !v || typeof v !== "object") continue;
+          if (!v.md || !v.md.name) continue;
+          (curMdPlacements[v.md.name] = curMdPlacements[v.md.name] || []).push(room);
+        }
+        const crossPassMdRemovals = [];
+        for (const [room, v] of Object.entries(assignmentsObj)) {
+          if (room === "WORK" || room === "FLAGS") continue;
+          if (!v || !v.md || !v.md.name) continue;
+          const mdName = v.md.name;
+          const curRooms = curMdPlacements[mdName];
+          if (!curRooms || curRooms.length === 0) continue;
+          // This MD is already placed in cur. Is the current room one of cur's rooms?
+          const disp = room.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+          const fbForm = disp.replace(/\s(\d+)$/, "|$1");
+          const matches = curRooms.some(cr => {
+            const crDisp = cr.replace(/\|/, " ").replace(/\s+/g, " ").trim();
+            return crDisp === disp || cr === room || cr === fbForm;
+          });
+          if (matches) continue; // legitimate — cur and model agree
+          // Model placed this MD on a room cur doesn't have. Drop.
+          crossPassMdRemovals.push({ md: mdName, room: disp, curRooms });
+          v.md = null;
+          v.notes = (v.notes ? v.notes + " | " : "") +
+                    "Pass 3 cross-pass MD scrub: MD already placed by prior pass";
+        }
+        if (crossPassMdRemovals.length > 0) {
+          const summary = crossPassMdRemovals
+            .map(x => x.md + " from " + x.room + " (already on " +
+                      x.curRooms.map(r => r.replace(/\|/, " ")).join(", ") + ")")
+            .join(" | ");
+          flagsArr.push("Client-side cross-pass MD scrub: " + summary);
+          console.log("[Pass 3 cross-pass MD scrub]", crossPassMdRemovals);
+        }
+
+        // VALIDATORS 6-13 to follow in Chunk 5B.
+      }
+      // ═════════════════════════════════════════════════════════════
+      // END PASS 3 VALIDATORS (5A — scrubs only)
+      // ═════════════════════════════════════════════════════════════
       // ─────────────────────────────────────────────────────────────
       // CLIENT-SIDE IDLE-FLEXIBLE BACKFILL VALIDATOR (Main pass only)
       // If any flexible MD ended with 0 rooms AND any McNair-side
