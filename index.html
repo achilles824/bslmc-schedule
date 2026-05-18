@@ -1029,7 +1029,7 @@
         <label class="upload-label">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           Upload Epic PDF Schedule
-          <input type="file" id="scheduleUpload" accept=".pdf" onchange="handleScheduleUpload(event)" />
+          <input type="file" id="scheduleUpload" accept=".pdf,.xlsx,.xls" onchange="handleScheduleUpload(event)" />
         </label>
         <span id="uploadStatus" style="font-size:13px;color:var(--muted);"></span>
       </div>
@@ -2092,6 +2092,29 @@ async function handleScheduleUpload(event) {
   if (!file) return;
 
   const status = document.getElementById("uploadStatus");
+
+  // ── File-type router ──────────────────────────────────────────
+  // .xlsx/.xls → fast, reliable, client-side spreadsheet path.
+  // .pdf       → existing OCR path (fallback, unchanged below).
+  const lname = (file.name || "").toLowerCase();
+  const isSpreadsheet =
+    lname.endsWith(".xlsx") || lname.endsWith(".xls") ||
+    file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    file.type === "application/vnd.ms-excel";
+
+  if (isSpreadsheet) {
+    try {
+      await handleSpreadsheetSchedule(file, status);
+    } catch (e) {
+      console.error("Spreadsheet read error:", e);
+      status.textContent = "⚠️ " + e.message.slice(0, 60) + " — showing manual checklist";
+      buildChecklist(null);
+    }
+    event.target.value = "";
+    return;
+  }
+  // ── End router. PDF path continues unchanged below. ───────────
+
   status.textContent = "Loading PDF...";
 
   try {
@@ -2185,7 +2208,204 @@ function loadTesseract() {
     document.head.appendChild(script);
   });
 }
+// ── SPREADSHEET SCHEDULE PARSER (Epic OR Case Report .xlsx) ──────
+// Reads the Epic export entirely in-browser via SheetJS. Produces the
+// same { rooms:Set, window.parsedSurgeons } shape the OCR path does,
+// then hands off to buildChecklist() — identical downstream behavior.
 
+function loadSheetJs() {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Could not load spreadsheet library"));
+    document.head.appendChild(s);
+  });
+}
+
+// Map an Epic Location string + raw Room cell to a label normalizeRoomName()
+// understands. Returns null for areas not in ALL_SITES (e.g. OPSC), which the
+// caller drops — mirrors normalizeRoomName's own handling of unprefixed "OR N".
+function _xlsxRoomLabel(location, roomCell) {
+  const loc = String(location || "").toUpperCase().trim();
+  const room = String(roomCell || "").trim();
+  const numMatch = room.match(/(\d+)/);
+  const n = numMatch ? parseInt(numMatch[1], 10) : null;
+
+  if (loc.includes("MCNAIR")) {
+    return n ? "McNair OR " + n : null;
+  }
+  if (loc.includes("OTM ENDO")) {
+    return n ? "OTM Endo " + n : null;
+  }
+  if (loc.includes("OTM OR")) {
+    return n ? "OTM OR " + n : null;
+  }
+  // SLEH = St. Luke's main hospital campus
+  if (loc.includes("SLEH ENDO")) {
+    return n ? "Main Endo " + n : null;
+  }
+  if (loc.includes("SLEH OR")) {
+    return n ? "Main OR " + n : null;
+  }
+  // OPSC (outpatient surgery center) and anything else: not in ALL_SITES.
+  return null;
+}
+
+// Excel time can arrive as a fraction of a day (0.3125), a JS Date, or a
+// string. Normalize to "HH:MM" 24-hour. Returns "" if unparseable.
+function _xlsxToClock(val) {
+  if (val == null || val === "") return "";
+  if (typeof val === "number") {
+    // Fraction of a 24h day. Round to nearest minute.
+    let mins = Math.round(val * 24 * 60);
+    mins = ((mins % 1440) + 1440) % 1440;
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+  }
+  if (val instanceof Date && !isNaN(val)) {
+    return String(val.getHours()).padStart(2, "0") + ":" +
+           String(val.getMinutes()).padStart(2, "0");
+  }
+  const s = String(val).trim();
+  let m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (m) {
+    return String(parseInt(m[1], 10)).padStart(2, "0") + ":" + m[2];
+  }
+  return "";
+}
+
+// Pull a clean surgeon last name from Epic's "Firstname [M] Lastname, Md [id]".
+// Handles suffixes (Ii/Jr), particle surnames (Van Buren), and Epic's
+// "Surgeon Virtual [99999]" placeholder (returns "" so no Dr. junk shows).
+function _xlsxSurgeonLast(raw) {
+  if (!raw) return "";
+  let s = String(raw).trim();
+  s = s.split("[")[0].trim().replace(/,+$/, "").trim();   // drop [id]
+  if (!s) return "";
+  if (s.toLowerCase().includes("virtual") || s.toLowerCase() === "surgeon") return "";
+  const beforeComma = s.split(",")[0].trim();
+  let toks = beforeComma.split(/\s+/).filter(Boolean);
+  const suffixes = ["ii", "iii", "iv", "v", "jr", "sr", "md"];
+  while (toks.length > 1 &&
+         suffixes.indexOf(toks[toks.length - 1].toLowerCase().replace(/\./g, "")) > -1) {
+    toks.pop();
+  }
+  if (!toks.length) return "";
+  const particles = ["van", "von", "de", "del", "della", "di", "la", "le", "st", "st."];
+  if (toks.length >= 2 &&
+      particles.indexOf(toks[toks.length - 2].toLowerCase().replace(/\.$/, "")) > -1) {
+    return toks[toks.length - 2] + " " + toks[toks.length - 1];
+  }
+  return toks[toks.length - 1];
+}
+
+// First (shortest, lead) procedure name, codes stripped.
+function _xlsxLeadProcedure(raw) {
+  if (!raw) return "";
+  const first = String(raw).split(",")[0] || "";
+  return first.replace(/\[[^\]]*\]/g, "").replace(/\(\w+\)/g, "").trim();
+}
+
+async function handleSpreadsheetSchedule(file, status) {
+  status.textContent = "Loading spreadsheet...";
+  await loadSheetJs();
+
+  const buf = await file.arrayBuffer();
+  const wb = window.XLSX.read(buf, { type: "array", cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rowsRaw = window.XLSX.utils.sheet_to_json(sheet, {
+    header: 1, raw: true, defval: ""
+  });
+  if (!rowsRaw.length) throw new Error("Spreadsheet is empty");
+
+  // Locate the header row (first row containing "Location" and "Room").
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(5, rowsRaw.length); i++) {
+    const r = rowsRaw[i].map(c => String(c).trim().toLowerCase());
+    if (r.includes("location") && r.includes("room")) { headerIdx = i; break; }
+  }
+  if (headerIdx === -1) {
+    throw new Error("Could not find a Location/Room header row");
+  }
+
+  const header = rowsRaw[headerIdx].map(c => String(c).trim().toLowerCase());
+  const col = name => header.indexOf(name);
+  const cLoc   = col("location");
+  const cRoom  = col("room");
+  const cStart = col("proc start");
+  const cEnd   = col("proc end");
+  const cSurg  = col("lead surgeon");
+  const cProc  = col("case procedures");
+  const cAnes  = col("anes type");
+
+  const rooms = new Set();
+  const surgeons = {};   // roomLabel -> { surgeon, procedure, time, cases }
+  let dropped = 0;
+
+  for (let i = headerIdx + 1; i < rowsRaw.length; i++) {
+    const row = rowsRaw[i];
+    if (!row || !row.length) continue;
+    const locVal  = cLoc  > -1 ? row[cLoc]  : "";
+    const roomVal = cRoom > -1 ? row[cRoom] : "";
+    if (!locVal && !roomVal) continue;
+
+    const label = _xlsxRoomLabel(locVal, roomVal);
+    if (!label) { dropped++; continue; }
+
+    // Run through the SAME normalizer the OCR path uses, so room keys are
+    // identical to everything else in the app.
+    const normalized = normalizeRoomName(label) || label;
+
+    const startClock = _xlsxToClock(cStart > -1 ? row[cStart] : "");
+    const endClock   = _xlsxToClock(cEnd   > -1 ? row[cEnd]   : "");
+    const surgLast   = _xlsxSurgeonLast(cSurg > -1 ? row[cSurg] : "");
+    const procLead   = _xlsxLeadProcedure(cProc > -1 ? row[cProc] : "");
+    const anesType   = cAnes > -1 ? String(row[cAnes] || "").trim() : "";
+
+    rooms.add(normalized);
+
+    if (!surgeons[normalized]) {
+      surgeons[normalized] = {
+        surgeon: surgLast,
+        procedure: procLead,
+        time: startClock,
+        cases: []
+      };
+    }
+    // First-case time = earliest start across this room's rows.
+    const existing = surgeons[normalized];
+    if (startClock && (!existing.time || startClock < existing.time)) {
+      existing.time = startClock;
+      if (surgLast) existing.surgeon = surgLast;
+      if (procLead) existing.procedure = procLead;
+    }
+    existing.cases.push({
+      startTime: startClock,
+      endTime: endClock,
+      surgeon: surgLast,
+      procedure: procLead,
+      anesType: anesType
+    });
+  }
+
+  if (rooms.size === 0) {
+    status.textContent = "⚠️ No recognizable rooms in spreadsheet — select manually";
+    buildChecklist(null);
+    return;
+  }
+
+  console.log("Spreadsheet extracted rooms:", [...rooms]);
+  console.log("Spreadsheet surgeons:", surgeons);
+  if (dropped) console.log("Spreadsheet rows dropped (non-ALL_SITES area, e.g. OPSC):", dropped);
+
+  window.parsedSurgeons = surgeons;
+  status.textContent = "✓ Found " + rooms.size + " active rooms from spreadsheet" +
+    (dropped ? " (" + dropped + " OPSC/other rows skipped)" : "");
+  buildChecklist(rooms);
+}
+// ── END SPREADSHEET SCHEDULE PARSER ─────────────────────────────
 function loadPdfJs() {
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
