@@ -2230,6 +2230,7 @@ function loadSheetJs() {
 function _xlsxRoomLabel(location, roomCell) {
   const loc = String(location || "").toUpperCase().trim();
   const room = String(roomCell || "").trim();
+  const roomU = room.toUpperCase();
   const numMatch = room.match(/(\d+)/);
   const n = numMatch ? parseInt(numMatch[1], 10) : null;
 
@@ -2242,13 +2243,26 @@ function _xlsxRoomLabel(location, roomCell) {
   if (loc.includes("OTM OR")) {
     return n ? "OTM OR " + n : null;
   }
-  // SLEH = St. Luke's main hospital campus
   if (loc.includes("SLEH ENDO")) {
     return n ? "Main Endo " + n : null;
   }
+
+  // Radiology rides in under SLEH OR with an "RM-IR ..." room cell.
+  // Map to keys normalizeRoomName/ALL_SITES already understand.
+  // Check this BEFORE the generic SLEH OR -> Main OR rule.
+  if (roomU.includes("RM-IR") || roomU.includes("RM IR")) {
+    if (roomU.includes("NEURO")) return n ? "NIR " + n : "NIR 1";
+    if (roomU.includes("CT"))    return "CT";
+    if (roomU.includes("MRI"))   return "MRI";
+    if (roomU.includes("GENERAL") || roomU.includes("IR")) return n ? "IR " + n : "IR 1";
+    return null;
+  }
+
+  // SLEH = St. Luke's main hospital campus
   if (loc.includes("SLEH OR")) {
     return n ? "Main OR " + n : null;
   }
+
   // OPSC (outpatient surgery center) and anything else: not in ALL_SITES.
   return null;
 }
