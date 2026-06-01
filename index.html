@@ -4330,6 +4330,172 @@ let _aiAssignPlan = null;
 let _aiCurrentPass = null; // "mcnair" | "main" | "fullday" | null
   let _aiCurrentAppContext = null; // McNair APP pass context, used by completeness validator
 
+// =====================================================================
+// BSLMC assignment pipeline (deterministic, phase-based) — Phase 1: Jamail.
+// Self-contained: everything is wrapped so no internal name can collide
+// with existing code. Exposes ONE global: window.AsgnPipeline
+// Paste this whole block inside your main inline <script> in index.html.
+// It is inert until you call it — nothing runs on load.
+// =====================================================================
+(function () {
+  // ---- Stable rule constants ----
+  const TIER1      = ['Karina Kima', 'Carla Rose', 'Audra Jackson', 'Evie "Michelle" Schoene'];
+  const KIMA       = 'Karina Kima';
+  const PREFERRED2 = ['Adriana Montoya', 'Tracey Sheffield', 'Nina Castro-Koshy',
+                      'Hong Phan', 'Sagar Patel', 'Mark Doria'];
+  const MCNAIR_ONLY_LOCUMS = [
+    'Sagar Patel','Jesus Bagos','Mark Doria','Lina Eisa Everett','Audra Jackson',
+    'Lee Mabry','Tanya McGowan','Amanda Messerra','Adriana Montoya','Tammy Moore',
+    'Natty Pitera Okojie','Carla Rose','Evie "Michelle" Schoene','Tracey Sheffield',
+    'Khadijah (Lyons) Udu','Young Wright'
+  ];
+  const MAIN_ONLY_LOCUMS = ['Zamantha Seeman','Zehneel Jiwani'];
+
+  // ---- Name canonicalization ----
+  function normName(n){
+    return String(n).toLowerCase()
+      .replace(/"[^"]*"/g, ' ').replace(/\([^)]*\)/g, ' ')
+      .replace(/[^a-z\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function nameTokens(n){ return normName(n).split(' ').filter(Boolean); }
+  function sameName(a, b){
+    const A = nameTokens(a), B = nameTokens(b);
+    if (!A.length || !B.length) return false;
+    return A[0] === B[0] && A[A.length-1] === B[B.length-1];
+  }
+  function inList(name, list){ return list.some(x => sameName(x, name)); }
+
+  // ---- Eligibility ----
+  function isApp(p){ return p.credential === 'CRNA' || p.credential === 'CAA'; }
+  function mcnairSide(p){
+    if (inList(p.name, MAIN_ONLY_LOCUMS))   return false;
+    if (inList(p.name, MCNAIR_ONLY_LOCUMS)) return true;
+    if (p.agency === 'Baylor')              return /\bMN\b/.test(p.shift);
+    return true;
+  }
+
+  // ---- Seeded PRNG + shuffle ----
+  function xfnv1a(str){
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < str.length; i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  function mulberry32(a){
+    return function(){
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function seededShuffle(arr, seed){
+    const rng = mulberry32(xfnv1a(seed));
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(rng() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+
+  // ---- Tier-walk helpers ----
+  function buildWalk(tiers, seed){
+    const walk = [];
+    for (const t of tiers){
+      const ordered = (t.shuffle === false) ? t.members : seededShuffle(t.members, seed + '|' + t.label);
+      for (const m of ordered) walk.push({ person: m, tier: t.label });
+    }
+    return walk;
+  }
+  function fillSlots(walk, slots){
+    const filled = [];
+    let wi = 0;
+    for (const slot of slots){
+      if (wi >= walk.length) break;
+      const w = walk[wi++];
+      filled.push({ slot, person: w.person, tier: w.tier });
+    }
+    return { filled, unfilledSlots: slots.slice(filled.length), leftover: walk.slice(filled.length).map(w => w.person) };
+  }
+  function toMin(t){ if (!t) return -1; const [h, m] = String(t).split(':').map(Number); return h*60 + m; }
+
+  // ---- Phase runner ----
+  function createRunner(){
+    const phases = [];
+    return {
+      register(phase){ phases.push(phase); return this; },
+      run(context){
+        const assignments = Object.assign({}, context.assignments || {});
+        const flags = [], log = [];
+        for (const phase of phases){
+          const ctx = Object.assign({}, context, { assignments });
+          const res = phase.run(ctx) || {};
+          const placements = res.placements || {};
+          Object.assign(assignments, placements);
+          (res.flags || []).forEach(f => flags.push('[' + phase.name + '] ' + f));
+          log.push({ phase: phase.name, placed: Object.keys(placements).length, flags: res.flags || [] });
+        }
+        return { assignments, flags, log };
+      },
+    };
+  }
+
+  // ---- Phase 1: Jamail APP ----
+  const jamailPhase = {
+    name: 'jamail-app',
+    area: 'Jamail',
+    run(ctx){
+      const flags = [];
+      const seed = (ctx.seedBase || ctx.date) + '|jamail-app';
+
+      const rooms = (((ctx.demand || {})['Jamail']) || [])
+        .map((r, i) => Object.assign({}, r, { _i: i }))
+        .sort((a, b) => (toMin(b.start) - toMin(a.start)) || (a._i - b._i));
+      const placements = {};
+      rooms.forEach(r => { placements['Jamail|' + r.room] = { app: null, md: null }; });
+
+      if (rooms.length === 0){ flags.push('J=0, Jamail closed today.'); return { placements, flags }; }
+
+      const apps   = (ctx.roster || []).filter(isApp);
+      const capped = name => (((ctx.tracking || {}).jamail) || []).some(x => sameName(x, name));
+      const isT1   = p => inList(p.name, TIER1);
+      const isPref = p => inList(p.name, PREFERRED2);
+
+      const tierA = apps.filter(p => isT1(p)   && !capped(p.name));
+      const tierB = apps.filter(p => isPref(p) && !isT1(p) && !capped(p.name));
+      const tierC = apps.filter(p => !isT1(p)  && !isPref(p) && !capped(p.name) && mcnairSide(p));
+
+      const kima   = tierA.filter(p =>  sameName(p.name, KIMA));
+      const restA  = seededShuffle(tierA.filter(p => !sameName(p.name, KIMA)), seed + '|A');
+      const aOrder = kima.concat(restA);
+
+      const walk = buildWalk([
+        { label: 'A', members: aOrder, shuffle: false },
+        { label: 'B', members: tierB },
+        { label: 'C', members: tierC },
+      ], seed);
+
+      const slots = rooms.map(r => 'Jamail|' + r.room);
+      const out = fillSlots(walk, slots);
+
+      out.filled.forEach(f => {
+        placements[f.slot] = {
+          app: { name: f.person.name, credential: f.person.credential, agency: f.person.agency },
+          md: null, _tier: f.tier,
+        };
+      });
+      out.unfilledSlots.forEach(s => flags.push(s.replace('|', ' ') + ' — no eligible APP, manual entry'));
+      if (aOrder.length > rooms.length){
+        flags.push('Tier 1 surplus (' + (aOrder.length - rooms.length) + ') — spill to OTM Endo handled by a later phase');
+      }
+      return { placements, flags };
+    },
+  };
+
+  // ---- Expose ONE global ----
+  window.AsgnPipeline = {
+    createRunner, jamailPhase,
+    // core, for building later phases:
+    sameName, inList, isApp, mcnairSide, seededShuffle, buildWalk, fillSlots, toMin,
+  };
+})();
 // ---------------------------------------------------------------
 // Entry point — called by the "AI Assign" button
 // ---------------------------------------------------------------
