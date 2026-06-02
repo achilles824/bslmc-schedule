@@ -2234,6 +2234,13 @@ function _xlsxRoomLabel(location, roomCell) {
   const numMatch = room.match(/(\d+)/);
   const n = numMatch ? parseInt(numMatch[1], 10) : null;
 
+  // BSLMC OPSC = Jamail. OPSC is the outpatient surgery center; in this app
+  // its rooms live under "Jamail OR". Must be caught before the final
+  // return-null fall-through, or OPSC rows get silently dropped.
+  if (loc.includes("OPSC")) {
+    return n ? "Jamail OR " + n : null;
+  }
+
   if (loc.includes("MCNAIR")) {
     return n ? "McNair OR " + n : null;
   }
