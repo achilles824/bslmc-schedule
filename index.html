@@ -1799,8 +1799,10 @@ function tlBuildCaseBlock(c) {
     const fmt = (h, m) => `${h > 12 ? h - 12 : (h === 0 ? 12 : h)}:${String(m).padStart(2, "0")}`;
     return `${fmt(sh, sm)}-${fmt(eh, em)}`;
   })();
-  const titleText = [surgeon, proc, timeStr, c.anesType ? "Anes: " + c.anesType : ""].filter(Boolean).join(" — ");
-  return `<div class="timeline-case ${klass}" style="left:${left}px;width:${width}px;" title="${titleText.replace(/"/g, "&quot;")}">
+  const procLines = proc ? proc.split(" • ").map(p => "• " + p).join("\n") : "";
+  const titleText = [surgeon, timeStr, c.anesType ? "Anes: " + c.anesType : "", procLines]
+    .filter(Boolean).join("\n");
+  return `<div class="timeline-case ${klass}" style="left:${left}px;width:${width}px;" title="${titleText.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/\n/g, "&#10;")}">
     <div class="tl-case-surgeon">${surgeon}</div>
     <div class="tl-case-proc">${proc}</div>
     <div class="tl-case-time">${timeStr}</div>
@@ -2322,11 +2324,42 @@ function _xlsxSurgeonLast(raw) {
   return toks[toks.length - 1];
 }
 
-// First (shortest, lead) procedure name, codes stripped.
-function _xlsxLeadProcedure(raw) {
+// Epic's "Case Procedures" cell holds every procedure in one case, each ending
+// in a bracketed code: "NAME, WITH DETAIL [1558], NEXT NAME [2863]". The
+// separator is "]," — NOT a bare comma, because the procedure names themselves
+// contain commas. Splitting on a bare comma cut "LAPAROSCOPY, WITH HIATAL
+// HERNIORRHAPHY" down to "LAPAROSCOPY". Returns all procedures, " • " joined.
+function _xlsxCaseProcedures(raw) {
   if (!raw) return "";
-  const first = String(raw).split(",")[0] || "";
-  return first.replace(/\[[^\]]*\]/g, "").replace(/\(\w+\)/g, "").trim();
+  return String(raw)
+    .split(/\]\s*,/)
+    .map(p => p.replace(/\[[^\]]*\]?/g, "").replace(/\(\w+\)/g, "").trim().replace(/,+$/, ""))
+    .filter(Boolean)
+    .join(" • ");
+}
+
+// Full detail for a room's earliest case, formatted for a title= tooltip.
+// Prefers cases[] (has end time and anes type); falls back to the room-level
+// scalar fields for rooms that predate the cases[] write.
+function _firstCaseTip(a) {
+  if (!a) return "";
+  let c = null;
+  if (Array.isArray(a.cases) && a.cases.length) {
+    c = a.cases.slice().sort((x, y) =>
+      String(x.startTime || "99:99").localeCompare(String(y.startTime || "99:99")))[0];
+  }
+  const time = (c && c.startTime) || a.caseTime || "";
+  const end  = (c && c.endTime) || "";
+  const surg = (c && c.surgeon) || a.surgeon || "";
+  const proc = (c && c.procedure) || a.procedure || "";
+  const anes = (c && c.anesType) || "";
+  const L = [];
+  if (surg) L.push("Dr. " + surg);
+  if (time) L.push(time + (end ? " – " + end : ""));
+  if (anes) L.push("Anes: " + anes);
+  if (proc) { L.push(""); proc.split(" • ").forEach(p => L.push("• " + p)); }
+  return L.join("\n").replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+          .replace(/</g, "&lt;").replace(/\n/g, "&#10;");
 }
 
 async function handleSpreadsheetSchedule(file, status) {
@@ -3569,6 +3602,7 @@ async function renderAdminDay(dateVal) {
             onclick="event.stopPropagation()" />
           <input class="surgeon-input" placeholder="Procedure (optional)..." 
             value="${(currentAssignments[roomKey] && currentAssignments[roomKey]['procedure']) || ''}"
+            title="${_firstCaseTip(currentAssignments[roomKey])}"
             onchange="updateProcedure('${roomKey}', this.value)"
             onclick="event.stopPropagation()"
             style="color:var(--muted);font-size:9px;" />
