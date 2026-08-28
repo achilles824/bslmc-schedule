@@ -1242,7 +1242,7 @@ function isCallShift(s) {
   if (fullUpper.includes("BACK-UP") && !fullUpper.includes("OR")) return true;
   return segments.some(p => {
     const u = p.toUpperCase();
-    return u.includes("REQUIRED") || u.includes("NIGHT FLOAT");
+    return u.includes("REQUIRED") || u.replace(/\s+/g, "").includes("NIGHTFLOAT");
   });
 }
 function shiftClass(s) {
