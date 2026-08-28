@@ -249,6 +249,7 @@
   .toggle-btn.active-md { background: rgba(79,142,247,0.15); border-color: var(--accent); color: var(--accent); }
   .toggle-btn.active-crna { background: rgba(62,207,142,0.15); border-color: var(--day); color: var(--day); }
   .toggle-btn.active-caa { background: rgba(245,158,11,0.15); border-color: var(--special); color: var(--special); }
+  .toggle-btn.active-resident { background: rgba(126,87,194,0.18); border-color: #a98ae0; color: #a98ae0; }
   .toggle-btn.active-or { background: rgba(62,207,142,0.15); border-color: var(--day); color: var(--day); }
   .toggle-btn.active-icu { background: rgba(34,211,238,0.15); border-color: var(--icu); color: var(--icu); }
   .toggle-btn.active-off { background: rgba(148,163,184,0.15); border-color: var(--off); color: var(--off); }
@@ -507,6 +508,7 @@
   .sc-md { background: rgba(79,142,247,0.15); color: var(--accent); }
   .sc-crna { background: rgba(62,207,142,0.15); color: var(--day); }
   .sc-caa { background: rgba(245,158,11,0.15); color: var(--special); }
+  .sc-resident { background: rgba(126,87,194,0.18); color: #a98ae0; }
   .admin-rooms { flex: 1; }
   .location-group { margin-bottom: 28px; }
   .location-toggle {
@@ -944,6 +946,7 @@
           <button class="toggle-btn active-md" id="toggle-MD" onclick="toggleCred('MD')">MD</button>
           <button class="toggle-btn active-crna" id="toggle-CRNA" onclick="toggleCred('CRNA')">CRNA</button>
           <button class="toggle-btn active-caa" id="toggle-CAA" onclick="toggleCred('CAA')">CAA</button>
+          <button class="toggle-btn active-resident" id="toggle-Resident" onclick="toggleCred('Resident')">Resident</button>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <span class="filter-label" style="min-width:90px;">Assignment</span>
@@ -1425,14 +1428,14 @@ function renderCalendar(normalizedShifts, monthKey) {
 }
 
 // WHO'S WORKING TAB
-const activeToggles = { MD: true, CRNA: true, CAA: true };
+const activeToggles = { MD: true, CRNA: true, CAA: true, Resident: true };
 const activeAssignments = { OR: true, ICU: false, OFF: false, CALL: false };
 const activeAgencies = { "Baylor": true, "Cross Country": true, "Caliber": true };
 
 function toggleCred(cred) {
   activeToggles[cred] = !activeToggles[cred];
   const btn = document.getElementById(`toggle-${cred}`);
-  const activeClass = { MD: "active-md", CRNA: "active-crna", CAA: "active-caa" }[cred];
+  const activeClass = { MD: "active-md", CRNA: "active-crna", CAA: "active-caa", Resident: "active-resident" }[cred];
   btn.classList.toggle(activeClass, activeToggles[cred]);
   if (document.getElementById("dayResultArea").querySelector(".day-results-card")) showDayView();
 }
@@ -1489,6 +1492,7 @@ function showDayView() {
     if (p.credential === "MD") credOk = activeToggles.MD;
     else if (p.credential === "CRNA") credOk = activeToggles.CRNA;
     else if (p.credential === "CAA") credOk = activeToggles.CAA;
+    else if (p.credential === "Resident") credOk = activeToggles.Resident;
     if (!credOk) return false;
 
     // Assignment filter
@@ -1560,7 +1564,7 @@ function showDayView() {
             <div class="stat-label">MD</div>
           </div>
           <div class="day-stat">
-            <div class="stat-val app-color">${filtered.filter(p => p.credential === "CRNA" || p.credential === "CAA").length}</div>
+            <div class="stat-val app-color">${filtered.filter(p => p.credential === "CRNA" || p.credential === "CAA" || p.credential === "Resident").length}</div>
             <div class="stat-label">APP</div>
           </div>
         </div>
@@ -1596,7 +1600,7 @@ function showStaffingView() {
     if (type === "cancel" || type === "icu" || type === "off" || type === "call") return;
     if (type !== "day") return; // only OR/day shifts count
     if (p.credential === "MD") orMD++;
-    else if (p.credential === "CRNA" || p.credential === "CAA") orAPP++;
+    else if (p.credential === "CRNA" || p.credential === "CAA" || p.credential === "Resident") orAPP++;
   });
 
   if (!siteDay) {
@@ -3191,7 +3195,7 @@ function manualEntrySearch() {
   if (!q || q.length < 1) { list.style.display = "none"; return; }
 
   // Filter SCHEDULE_DATA by name and credential
-  const credFilter = slot.startsWith("float") ? ["MD", "CRNA", "CAA"] : (slot === "md" ? ["MD"] : ["CRNA", "CAA"]);
+  const credFilter = slot.startsWith("float") ? ["MD", "CRNA", "CAA", "Resident"] : (slot === "md" ? ["MD"] : ["CRNA", "CAA", "Resident"]);
   const matches = (SCHEDULE_DATA || [])
     .filter(p => p.name.toLowerCase().includes(q) && credFilter.includes(p.credential))
     .slice(0, 10);
@@ -3225,14 +3229,14 @@ function openManualEntry(roomKey, slot) {
   const parts = roomKey.split("|");
   const roomLabel = parts[1] === "" ? parts[0] : parts[0] + " " + parts[1];
   document.getElementById("manualEntryTitle").textContent = "Manually Assign to " + roomLabel;
-  document.getElementById("manualEntryDesc").textContent = "Enter any " + (slot === "md" ? "MD" : "APP (CRNA/CAA)") + " — not limited to today's OR staff.";
+  document.getElementById("manualEntryDesc").textContent = "Enter any " + (slot === "md" ? "MD" : "APP (CRNA/CAA/Resident)") + " — not limited to today's OR staff.";
   document.getElementById("manualEntryName").value = "";
   // Pre-select credential type
   document.getElementById("manualEntryCred").value = slot === "md" ? "MD" : "CRNA";
   if (slot.startsWith("float")) {
-    document.getElementById("manualEntryCred").innerHTML = '<option value="MD">MD</option><option value="CRNA">CRNA</option><option value="CAA">CAA</option>';
+    document.getElementById("manualEntryCred").innerHTML = '<option value="MD">MD</option><option value="CRNA">CRNA</option><option value="CAA">CAA</option><option value="Resident">Resident</option>';
   } else if (slot === "app") {
-    document.getElementById("manualEntryCred").innerHTML = '<option value="CRNA">CRNA</option><option value="CAA">CAA</option>';
+    document.getElementById("manualEntryCred").innerHTML = '<option value="CRNA">CRNA</option><option value="CAA">CAA</option><option value="Resident">Resident</option>';
   } else {
     document.getElementById("manualEntryCred").innerHTML = '<option value="MD">MD</option>';
   }
@@ -3399,7 +3403,7 @@ function getORStaffForDay(dateVal) {
     }
   });
   return staff.sort((a,b) => {
-    const order = { MD: 0, CRNA: 1, CAA: 2 };
+    const order = { MD: 0, CRNA: 1, CAA: 2, Resident: 3 };
     const ao = order[a.credential] ?? 3;
     const bo = order[b.credential] ?? 3;
     return ao !== bo ? ao - bo : a.name.localeCompare(b.name);
@@ -3469,7 +3473,7 @@ async function renderAdminDay(dateVal) {
 
   const filteredStaff = staff.filter(p => {
     const isMD = p.credential === "MD";
-    const isAPP = p.credential === "CRNA" || p.credential === "CAA";
+    const isAPP = p.credential === "CRNA" || p.credential === "CAA" || p.credential === "Resident";
     if (isMD && !staffFilterMD) return false;
     if (isAPP && !staffFilterAPP) return false;
     return true;
@@ -3478,7 +3482,7 @@ async function renderAdminDay(dateVal) {
   pool.innerHTML = staffFiltersHtml + (filteredStaff.length === 0
     ? '<div style="color:var(--muted);font-size:12px;padding:8px;">No OR staff found for this date.</div>'
     : filteredStaff.map(p => {
-        const credClass = { MD: "sc-md", CRNA: "sc-crna", CAA: "sc-caa" }[p.credential] || "";
+        const credClass = { MD: "sc-md", CRNA: "sc-crna", CAA: "sc-caa", Resident: "sc-resident" }[p.credential] || "";
         const count = assignCounts[p.name] || 0;
         const isMD = p.credential === "MD";
         const isAPP = !isMD;
@@ -3671,7 +3675,7 @@ function onDrop(e, roomKey, slot) {
 
   const cred = draggingPerson.credential;
   const isMD = cred === "MD";
-  const isAPP = cred === "CRNA" || cred === "CAA";
+  const isAPP = cred === "CRNA" || cred === "CAA" || cred === "Resident";
 
   // Enforce MD/APP rules for non-float slots
   if (slot === "md" && !isMD) {
@@ -3679,7 +3683,7 @@ function onDrop(e, roomKey, slot) {
     return;
   }
   if (slot === "app" && !isAPP) {
-    alert("Only APPs (CRNA/CAA) can be assigned to the APP slot.");
+    alert("Only APPs (CRNA/CAA/Resident) can be assigned to the APP slot.");
     return;
   }
 
@@ -3804,46 +3808,6 @@ if (window.firebaseReady) {
 // Storage: /weeklyEndoTracking/{weekStartYYYY-MM-DD}/{date_name}
 // Idempotent: same key overwrites, never duplicates.
 // Hooked into toggleFinalize: writes on finalize, deletes on unfinalize.
-
-  // ─────────────────────────────────────────────────────────────
-// _classifyAppCampus — given an APP staff entry, return one of:
-//   "baylorMcnair"   — Baylor APP with -MN in shift label
-//   "baylorMain"     — Baylor APP without -MN
-//   "mcnairLocum"    — locum on the McNair-only-16 list
-//   "mainLocum"      — Seeman or Jiwani (Main-only locums)
-//   "flexibleLocum"  — any other locum
-//   "unknown"        — couldn't classify (missing fields)
-// Caller is responsible for passing an enriched object that has
-// at least { name, credential, agency, shift }. shift is required
-// for Baylor classification — without it, Baylor APPs default to
-// "unknown".
-// ─────────────────────────────────────────────────────────────
-const McNAIR_ONLY_LOCUM_APPS_SET = new Set([
-  "Sagar Patel", "Jesus Bagos", "Mark Doria", "Lina Eisa Everett",
-  "Audra Jackson", "Lee Mabry", "Tanya McGowan", "Amanda Messerra",
-  "Adriana Montoya", "Tammy Moore", "Natty Pitera Okojie",
-  "Carla Rose", "Evie \"Michelle\" Schoene", "Tracey Sheffield",
-  "Khadijah (Lyons) Udu", "Young Wright"
-]);
-const MAIN_ONLY_LOCUM_APPS_SET = new Set([
-  "Zamantha Seeman", "Zehneel Jiwani"
-]);
-
-function _classifyAppCampus(appInfo) {
-  if (!appInfo || !appInfo.name) return "unknown";
-  if (appInfo.credential === "MD") return "unknown";
-  // Locum classification by name (independent of shift label)
-  if (McNAIR_ONLY_LOCUM_APPS_SET.has(appInfo.name)) return "mcnairLocum";
-  if (MAIN_ONLY_LOCUM_APPS_SET.has(appInfo.name)) return "mainLocum";
-  // Baylor classification needs the shift
-  if (appInfo.agency === "Baylor") {
-    const shift = appInfo.shift || "";
-    if (/\bMN\b/i.test(shift) || /-\s*MN\b/i.test(shift)) return "baylorMcnair";
-    return "baylorMain";
-  }
-  // Non-Baylor, not on either list — flexible locum
-  return "flexibleLocum";
-}
 
 // ─────────────────────────────────────────────────────────────
 // _extractDepartureRole — parse departure role number from a
