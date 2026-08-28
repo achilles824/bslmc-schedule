@@ -2415,7 +2415,7 @@ async function handleSpreadsheetSchedule(file, status) {
     const startClock = _xlsxToClock(cStart > -1 ? row[cStart] : "");
     const endClock   = _xlsxToClock(cEnd   > -1 ? row[cEnd]   : "");
     const surgLast   = _xlsxSurgeonLast(cSurg > -1 ? row[cSurg] : "");
-    const procLead   = _xlsxLeadProcedure(cProc > -1 ? row[cProc] : "");
+    const procLead   = _xlsxCaseProcedures(cProc > -1 ? row[cProc] : "");
     const anesType   = cAnes > -1 ? String(row[cAnes] || "").trim() : "";
 
     rooms.add(normalized);
