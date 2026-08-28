@@ -1781,8 +1781,17 @@ function tlBuildNowLine(dateVal) {
 function tlBuildCaseBlock(c) {
   const start = tlParseTime(c.startTime || c.time);
   if (start === null) return "";
-  const dur = parseInt(c.durationMinutes || c.duration || 60, 10) || 60;
-  const end = start + dur;
+  // Prefer the real end time from the spreadsheet. Fall back to an explicit
+  // duration, then to a 60-minute placeholder. Guard against an end that isn't
+  // after the start (bad row, or a case charted across midnight).
+  const parsedEnd = tlParseTime(c.endTime);
+  let end;
+  if (parsedEnd !== null && parsedEnd > start) {
+    end = parsedEnd;
+  } else {
+    const dur = parseInt(c.durationMinutes || c.duration || 60, 10) || 60;
+    end = start + dur;
+  }
   // Clip to visible window
   const visStart = Math.max(start, TIMELINE_START_MIN);
   const visEnd = Math.min(end, TIMELINE_END_MIN);
@@ -2233,6 +2242,11 @@ function _xlsxRoomLabel(location, roomCell) {
   const loc = String(location || "").toUpperCase().trim();
   const room = String(roomCell || "").trim();
   const roomU = room.toUpperCase();
+    // Epic exports non-anesthetizing placeholder rows: "OR WAITLIST N" (unscheduled
+  // holding) and the OTM "Motility N" GI motility suites. Both end in a digit, so
+  // the generic number grab below would turn them into real rooms — "Main OR 1",
+  // "OTM Endo 2". Drop them before any of that runs.
+  if (roomU.includes("WAITLIST") || roomU.includes("MOTILITY")) return null;
   const numMatch = room.match(/(\d+)/);
   const n = numMatch ? parseInt(numMatch[1], 10) : null;
 
@@ -2452,11 +2466,11 @@ async function handleSpreadsheetSchedule(file, status) {
 
   console.log("Spreadsheet extracted rooms:", [...rooms]);
   console.log("Spreadsheet surgeons:", surgeons);
-  if (dropped) console.log("Spreadsheet rows dropped (non-ALL_SITES area, e.g. OPSC):", dropped);
+  if (dropped) console.log("Spreadsheet rows dropped (waitlist/motility/unmapped location):", dropped);
 
   window.parsedSurgeons = surgeons;
   status.textContent = "✓ Found " + rooms.size + " active rooms from spreadsheet" +
-    (dropped ? " (" + dropped + " OPSC/other rows skipped)" : "");
+    (dropped ? " (" + dropped + " non-OR rows skipped)" : "");
   buildChecklist(rooms);
 }
 // ── END SPREADSHEET SCHEDULE PARSER ─────────────────────────────
