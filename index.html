@@ -4235,6 +4235,583 @@ async function deleteEndoEntry(date, safeName) {
   }
 }
 // ==== END ENDO TRACKER ====
+// ══════════════════════════════════════════════════════════════════
+// ENDO WEEK GENERATOR
+//
+// Self-contained. Paste at the END of the existing <script> block in
+// index.html, just before </script>. Adds an "Endo Week Generator"
+// panel to the Admin tab. Read-only — writes nothing to Firebase.
+//
+// To remove: delete from this banner to the END banner. Nothing else
+// in the file is modified.
+// ══════════════════════════════════════════════════════════════════
+(function () {
+
+  // ── fbGet with a timeout ──────────────────────────────────────
+  // window.fbGet never rejects on a blocked connection, it just hangs.
+  // Everything here goes through this instead.
+  function fbGetT(path, ms) {
+    ms = ms || 8000;
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (!done) { done = true; reject(new Error("Firebase timed out after " +
+          (ms/1000) + "s reading " + path + " — try a phone hotspot")); }
+      }, ms);
+      window.fbGet(path).then(v => {
+        if (!done) { done = true; clearTimeout(timer); resolve(v); }
+      }).catch(e => {
+        if (!done) { done = true; clearTimeout(timer); reject(e); }
+      });
+    });
+  }
+
+  const NEVER_ENDO   = ["Karina Kima", "Lauren Ganderson"];
+  const LAST_RESORT  = ["Carla Rose", "Audra Jackson", "Evie Michelle Schoene"];
+  const WK = ["Mon","Tue","Wed","Thu","Fri"];
+
+  // ── dates ─────────────────────────────────────────────────────
+  function ymd(d) {
+    return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") +
+           "-" + String(d.getDate()).padStart(2,"0");
+  }
+  function weekDays(monday) {
+    const [y,m,d] = monday.split("-").map(Number);
+    const out = [];
+    for (let i=0;i<5;i++) { const dt = new Date(y, m-1, d+i); out.push(ymd(dt)); }
+    return out;
+  }
+  function weeksApart(a, b) {
+    const pa = a.split("-").map(Number), pb = b.split("-").map(Number);
+    return Math.round((Date.UTC(pb[0],pb[1]-1,pb[2]) - Date.UTC(pa[0],pa[1]-1,pa[2])) / 6048e5);
+  }
+  function prevMonday(monday) {
+    const [y,m,d] = monday.split("-").map(Number);
+    return ymd(new Date(y, m-1, d-7));
+  }
+
+  // ── deterministic shuffle ─────────────────────────────────────
+  function hash(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+  function rng(s){let a=hash(s);return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+  function shuffled(arr,s){const r=rng(s),a=arr.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+
+  // ── eligibility ───────────────────────────────────────────────
+  // Which campus is this person on today?
+  //   campus Main / McNair -> settled
+  //   otherwise an MN marker in the label settles it
+  //   otherwise Baylor default to Main, locums float
+  function sideOf(shift, campus, agency) {
+    if (campus === "Main")   return "main";
+    if (campus === "McNair") return "mcnair";
+    if (/\bMN\b|\bMNC\b|MD-MNC|McNair/i.test(shift)) return "mcnair";
+    if (agency === "Baylor") return "main";
+    return "either";
+  }
+  // All-day shift; excluded from endo entirely.
+  function isMcNairCallMD(shift) {
+    return /McNair Call/i.test(shift) && !/Post-?McNair Call/i.test(shift);
+  }
+
+  function campusOf(name) {
+    const p = (SCHEDULE_DATA || []).find(x => x.name === name);
+    return p ? String(p.campus || "").trim() : "";
+  }
+
+  // Pools for one date. Leans on the portal's own getORStaffForDay,
+  // which already filters to classifyShift() === "day".
+  function poolsFor(date) {
+    const out = { "Main Endo": { MD: [], APP: [] }, "OTM Endo": { MD: [], APP: [] } };
+    const dropped = [];
+    const seen = new Set();
+
+    (getORStaffForDay(date) || []).forEach(p => {
+      if (seen.has(p.name)) { dropped.push([p.name, "duplicate record"]); return; }
+      seen.add(p.name);
+
+      const pool = p.credential === "MD" ? "MD"
+                 : (p.credential === "CRNA" || p.credential === "CAA") ? "APP" : null;
+      if (!pool) { dropped.push([p.name, "credential " + (p.credential || "(blank)")]); return; }
+      if (NEVER_ENDO.indexOf(p.name) > -1) { dropped.push([p.name, "never endo (Jamail only)"]); return; }
+      if (pool === "MD" && isMcNairCallMD(p.shift)) { dropped.push([p.name, "McNair call MD (all day)"]); return; }
+
+      const campus = campusOf(p.name);
+      const side = sideOf(p.shift, campus, p.agency);
+      const tag = {
+        name: p.name,
+        agency: p.agency === "Baylor" ? "Baylor" : "Locum",
+        campus: campus || "(blank)",
+        side: side,
+        shift: p.shift,
+        lastResort: LAST_RESORT.indexOf(p.name) > -1
+      };
+
+      if (side === "mcnair") dropped.push([p.name, "Main: McNair side"]);
+      else if (pool === "MD" && /charge/i.test(p.shift)) dropped.push([p.name, "Main: Main charge MD"]);
+      else out["Main Endo"][pool].push(tag);
+
+      if (side === "main") dropped.push([p.name, "OTM: Main side"]);
+      else out["OTM Endo"][pool].push(tag);
+    });
+    return { pools: out, dropped: dropped };
+  }
+
+  // ── history ───────────────────────────────────────────────────
+  // weeklyEndoTracking already holds exactly what's needed:
+  //   { name, date, location: "Main"|"OTM", role: "MD"|"APP" }
+  // Two reads only — last week (for the Main not-last-week rule) and
+  // this week (in case some days are already finalized).
+  // NOTE: the tracker is written on FINALIZE. A week that was never
+  // finalized leaves no history and will look clear.
+  async function loadHistory(monday) {
+    const weeks = [prevMonday(monday), monday];
+    const all = {};   // name -> [{date, area}]
+    let missing = [];
+    for (const wk of weeks) {
+      let data = null;
+      try { data = await fbGetT("weeklyEndoTracking/" + wk); }
+      catch (e) { throw e; }
+      if (!data) { missing.push(wk); continue; }
+      Object.values(data).forEach(e => {
+        if (!e || !e.name || !e.date) return;
+        const area = e.location === "Main" ? "Main Endo" : "OTM Endo";
+        (all[e.name] = all[e.name] || []).push({ date: e.date, area: area });
+      });
+    }
+    return {
+      all: all,
+      missingWeeks: missing,
+      add(name, date, area) { (all[name] = all[name] || []).push({date, area}); },
+      usedThisWeek(name) {
+        return (all[name] || []).some(e => e.date >= monday && e.date <= weekDays(monday)[4]);
+      },
+      lastAny(name) {
+        const ds = (all[name] || []).map(e => e.date).sort();
+        return ds.length ? ds[ds.length-1] : null;
+      },
+      // Main Endo must not fall in this week or the week just before.
+      mainClear(name) {
+        const prev = prevMonday(monday);
+        return !(all[name] || []).some(e =>
+          e.area === "Main Endo" && e.date >= prev);
+      }
+    };
+  }
+
+  // ── ladders ───────────────────────────────────────────────────
+  function tiersFor(area, cands, led) {
+    const free = c => !led.usedThisWeek(c.name);
+    const ok   = c => free(c) && !c.lastResort;
+    if (area === "Main Endo") {
+      const clear = c => led.mainClear(c.name);
+      return [
+        { n: "1 locum · clear",      list: cands.filter(c => ok(c) && c.agency === "Locum"  && clear(c)) },
+        { n: "2 Baylor · clear",     list: cands.filter(c => ok(c) && c.agency === "Baylor" && clear(c)) },
+        { n: "3 locum · last week",  list: cands.filter(c => ok(c) && c.agency === "Locum"  && !clear(c)) },
+        { n: "4 Baylor · last week", list: cands.filter(c => ok(c) && c.agency === "Baylor" && !clear(c)) },
+        { n: "5 last resort",        list: cands.filter(c => free(c) && c.lastResort) }
+      ];
+    }
+    return [
+      { n: "1 unused this week", list: cands.filter(ok) },
+      { n: "2 last resort",      list: cands.filter(c => free(c) && c.lastResort) }
+    ];
+  }
+
+  // Spend the scarcest person first: someone with two days left to be
+  // used loses more by being skipped than someone with five.
+  function rank(list, led, seed, chances) {
+    const scored = list.map(c => ({
+      c: c,
+      chances: chances ? chances(c.name) : 99,
+      gap: led.lastAny(c.name) ? weeksApart(led.lastAny(c.name), "2100-01-04") : 1e6
+    }));
+    const o = shuffled(scored, seed);
+    o.sort((a,b) => (a.chances - b.chances) || (b.gap - a.gap));
+    return o.map(x => x.c);
+  }
+
+  function demandFor(date, override) {
+    if (override && override[date]) return override[date];
+    const s = SITES_DATA[date];
+    if (!s) return null;
+    const mainR = s["Main Endo"], otmR = s["OTM Endo"];
+    if (mainR == null && otmR == null) return null;
+    return {
+      "Main Endo": { APP: mainR || 0, MD: mainR ? Math.ceil(mainR/3) : 0 },
+      "OTM Endo":  { APP: otmR  || 0, MD: otmR  ? Math.ceil(otmR/3)  : 0 }
+    };
+  }
+
+  // ── the weekly pass ───────────────────────────────────────────
+  async function generate(anyDate, opts) {
+    opts = opts || {};
+    const monday = mondayOfWeek(anyDate);
+    const days = weekDays(monday);
+    const led = await loadHistory(monday);
+
+    const pool = {}, need = {}, picks = {}, mnStatus = [];
+    const log = [], conflicts = [], warnings = [];
+
+    days.forEach(d => {
+      const r = poolsFor(d);
+      pool[d] = r.pools;
+      need[d] = demandFor(d, opts.demand);
+      picks[d] = { "Main Endo": {MD:[],APP:[]}, "OTM Endo": {MD:[],APP:[]} };
+      if (!need[d]) warnings.push(d + ": no Main/OTM Endo room counts in site data — day skipped");
+
+      const bay = new Set(pool[d]["Main Endo"].APP.concat(pool[d]["OTM Endo"].APP)
+                    .filter(c => c.agency === "Baylor").map(c => c.name));
+      const mn = pool[d]["OTM Endo"].APP.filter(c => c.agency === "Baylor").length;
+      const dt = new Date(d.split("-")[0], d.split("-")[1]-1, d.split("-")[2]);
+      mnStatus.push({ date: d, day: DAYS_SHORT[dt.getDay()], withMN: mn,
+                      baylorWorking: bay.size,
+                      share: bay.size ? Math.round(100*mn/bay.size) + "%" : "—" });
+    });
+
+    const LOW = 0.15;
+    const real = mnStatus.filter(x => x.baylorWorking >= 6);
+    const notDone = real.filter(x => x.withMN / x.baylorWorking < LOW);
+    if (real.length && notDone.length === real.length) {
+      warnings.push("McNair designations are not entered for any day this week. " +
+                    "OTM will have no Baylor APPs — QGenda has not been updated.");
+    } else if (notDone.length) {
+      warnings.push("McNair designations look incomplete: missing for " +
+        notDone.map(x => x.day).join(", ") + ". Those days will generate with no Baylor APPs at OTM.");
+    }
+    if (led.missingWeeks.length) {
+      warnings.push("No endo history for week" + (led.missingWeeks.length>1?"s":"") + " of " +
+        led.missingWeeks.join(", ") + ". The tracker is written on Finalize, so unfinalized " +
+        "weeks leave no record and everyone will look clear of Main Endo.");
+    }
+
+    const cells = [["Main Endo","APP"],["OTM Endo","MD"],["Main Endo","MD"],["OTM Endo","APP"]];
+
+    const open = [];
+    days.filter(d => need[d]).forEach(date => cells.forEach(([area,p]) => {
+      for (let i=0;i<need[date][area][p];i++) open.push({date, area, pool:p});
+    }));
+
+    const appears = {};
+    days.filter(d => need[d]).forEach(date => cells.forEach(([area,p]) =>
+      pool[date][area][p].forEach(c =>
+        (appears[c.name] = appears[c.name] || []).push({date, area, pool:p}))));
+
+    function supply(s) {
+      const t = tiersFor(s.area, pool[s.date][s.area][s.pool], led);
+      const taken = picks[s.date][s.area][s.pool];
+      for (const tier of t) {
+        const n = tier.list.filter(c => taken.indexOf(c.name) === -1).length;
+        if (n) return n;
+      }
+      return 0;
+    }
+
+    const blocked = {};
+    while (open.length) {
+      const remaining = {};
+      open.forEach(s => { const k = s.date+"|"+s.area+"|"+s.pool;
+                          remaining[k] = (remaining[k]||0)+1; });
+      const chances = name => {
+        const seen = {};
+        (appears[name]||[]).forEach(a => {
+          if (remaining[a.date+"|"+a.area+"|"+a.pool] > 0) seen[a.date] = 1;
+        });
+        return Object.keys(seen).length || 1;
+      };
+
+      let best = -1, bestScore = Infinity, bestSupply = 0;
+      open.forEach((s, i) => {
+        const k = s.date+"|"+s.area+"|"+s.pool;
+        if (blocked[k]) return;
+        const sup = supply(s), sc = sup / remaining[k];
+        if (sc < bestScore) { bestScore = sc; best = i; bestSupply = sup; }
+      });
+      if (best === -1) break;
+
+      const slot = open[best], key = slot.date+"|"+slot.area+"|"+slot.pool;
+      if (bestSupply === 0) {
+        const want = need[slot.date][slot.area][slot.pool];
+        const got  = picks[slot.date][slot.area][slot.pool].length;
+        conflicts.push({ date: slot.date, area: slot.area, pool: slot.pool,
+          filled: got, needed: want, short: want-got,
+          issue: "cannot fill without breaking once-per-week",
+          workingToday: pool[slot.date][slot.area][slot.pool].length });
+        blocked[key] = 1;
+        for (let i=open.length-1;i>=0;i--)
+          if (open[i].date+"|"+open[i].area+"|"+open[i].pool === key) open.splice(i,1);
+        continue;
+      }
+
+      const tiers = tiersFor(slot.area, pool[slot.date][slot.area][slot.pool], led);
+      const taken = picks[slot.date][slot.area][slot.pool];
+      let chosen = null, tierName = null;
+      for (const t of tiers) {
+        const r = rank(t.list, led, slot.date+"|"+slot.area+"|"+slot.pool+"|"+t.n, chances);
+        const pick = r.find(c => taken.indexOf(c.name) === -1);
+        if (pick) { chosen = pick; tierName = t.n; break; }
+      }
+      picks[slot.date][slot.area][slot.pool].push(chosen.name);
+      led.add(chosen.name, slot.date, slot.area);
+      log.push({ date: slot.date, area: slot.area, pool: slot.pool, name: chosen.name,
+                 agency: chosen.agency, tier: tierName, daysLeft: chances(chosen.name),
+                 lastResort: chosen.lastResort });
+      open.splice(best, 1);
+    }
+
+    // bench: who else could take each slot, judged against start-of-week history
+    const startLed = await loadHistory(monday);
+    const where = {}; log.forEach(x => where[x.name] = x.date);
+    const bench = [];
+    days.filter(d => need[d]).forEach(date => cells.forEach(([area,p]) => {
+      if (!need[date][area][p]) return;
+      const taken = picks[date][area][p], seen = {};
+      tiersFor(area, pool[date][area][p], startLed).forEach(t => t.list.forEach(c => {
+        if (taken.indexOf(c.name) > -1 || seen[c.name]) return;
+        seen[c.name] = 1;
+        bench.push({ date, area, pool:p, name:c.name, agency:c.agency, tier:t.n,
+          shift:c.shift, free: !where[c.name], usedOn: where[c.name] || null });
+      }));
+    }));
+
+    log.sort((a,b) => a.date.localeCompare(b.date) || a.area.localeCompare(b.area) ||
+                      b.pool.localeCompare(a.pool));
+    conflicts.sort((a,b) => a.date.localeCompare(b.date));
+    return { monday, days, need, picks, log, conflicts, warnings, mnStatus, bench };
+  }
+
+  // ── UI ────────────────────────────────────────────────────────
+  let lastRun = null;
+  let openCell = null;
+
+  function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");}
+
+  function mountPanel() {
+    if (document.getElementById("endoGenPanel")) return;
+    const anchor = document.getElementById("endoTrackerPanel");
+    if (!anchor || !anchor.parentNode) return;
+    const div = document.createElement("div");
+    div.className = "upload-section";
+    div.id = "endoGenPanel";
+    div.style.cssText = "flex-direction:column;align-items:stretch;gap:12px;";
+    div.innerHTML =
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+        '<h4 style="margin:0;">🗓️ Endo Week Generator</h4>' +
+        '<div class="day-input-wrap" style="flex:0 0 170px;">' +
+          '<input type="date" id="endoGenDate" />' +
+        '</div>' +
+        '<button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);padding:8px 16px;font-size:13px;" onclick="EndoGen.checkReady()">Check readiness</button>' +
+        '<button class="view-btn" style="padding:8px 20px;font-size:13px;" onclick="EndoGen.run()">Generate week</button>' +
+        '<span style="font-size:11px;color:var(--muted);margin-left:auto;">Read-only — nothing is saved</span>' +
+      '</div>' +
+      '<div id="endoGenOut"></div>';
+    anchor.parentNode.insertBefore(div, anchor.nextSibling);
+    const dp = document.getElementById("endoGenDate");
+    dp.value = document.getElementById("adminDatePicker").value ||
+               new Date().toISOString().slice(0,10);
+  }
+
+  function warnHtml(ws) {
+    if (!ws.length) return "";
+    return ws.map(w =>
+      '<div style="background:rgba(245,158,11,0.10);border:1px solid var(--special);' +
+      'border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:13px;color:var(--special);">' +
+      '⚠ ' + esc(w) + '</div>').join("");
+  }
+
+  function mnTable(rows) {
+    return '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px;">' +
+      '<tr style="color:var(--muted);text-align:left;">' +
+        '<th style="padding:4px 8px;font-weight:600;">Day</th>' +
+        '<th style="padding:4px 8px;font-weight:600;">Baylor APPs working</th>' +
+        '<th style="padding:4px 8px;font-weight:600;">With MN</th>' +
+        '<th style="padding:4px 8px;font-weight:600;">Share</th></tr>' +
+      rows.map(r => {
+        const bad = r.baylorWorking >= 6 && (r.withMN / r.baylorWorking) < 0.15;
+        return '<tr style="border-top:1px solid var(--border);' +
+          (bad ? "color:var(--cancel);" : "") + '">' +
+          '<td style="padding:4px 8px;font-weight:600;">' + r.day + '</td>' +
+          '<td style="padding:4px 8px;">' + r.baylorWorking + '</td>' +
+          '<td style="padding:4px 8px;">' + r.withMN + '</td>' +
+          '<td style="padding:4px 8px;">' + r.share + '</td></tr>';
+      }).join("") + '</table>';
+  }
+
+  function cellHtml(r, date, area, pool) {
+    const names = (r.picks[date] && r.picks[date][area][pool]) || [];
+    const want = r.need[date] ? r.need[date][area][pool] : 0;
+    const short = want - names.length;
+    const byName = {};
+    r.log.filter(x => x.date===date && x.area===area && x.pool===pool)
+         .forEach(x => byName[x.name] = x);
+    const key = date+"|"+area+"|"+pool;
+    const isOpen = openCell === key;
+    let h = '<td style="vertical-align:top;padding:6px 8px;border:1px solid var(--border);' +
+            'cursor:pointer;' + (isOpen ? "background:rgba(79,142,247,0.08);" : "") + '"' +
+            ' onclick="EndoGen.toggleCell(\'' + key + '\')">';
+    if (!names.length && !want) h += '<span style="color:var(--muted);font-size:11px;">—</span>';
+    names.forEach(n => {
+      const e = byName[n] || {};
+      const late = /^[3-5]/.test(e.tier || "");
+      h += '<div style="font-size:12px;margin-bottom:3px;' +
+           (e.lastResort ? "color:var(--special);font-weight:600;" : "") + '" title="' +
+           esc((e.tier||"") + " · " + (e.agency||"") + " · " + (e.daysLeft!=null?e.daysLeft+" day(s) left":"")) + '">' +
+           esc(n) +
+           (e.agency === "Baylor" ? ' <span style="font-size:9px;color:var(--muted);">B</span>' : '') +
+           (late ? ' <span style="font-size:9px;color:var(--special);">▲</span>' : '') +
+           (e.daysLeft === 1 ? ' <span style="font-size:9px;color:var(--accent);" title="last usable day">!</span>' : '') +
+           '</div>';
+    });
+    if (short > 0)
+      h += '<div style="font-size:11px;color:var(--cancel);font-weight:700;margin-top:4px;">' +
+           short + ' unfilled</div>';
+    return h + '</td>';
+  }
+
+  function benchHtml(r) {
+    if (!openCell) return "";
+    const [date, area, pool] = openCell.split("|");
+    const alts = r.bench.filter(b => b.date===date && b.area===area && b.pool===pool);
+    const free = alts.filter(b => b.free), used = alts.filter(b => !b.free);
+    const dt = new Date(date.split("-")[0], date.split("-")[1]-1, date.split("-")[2]);
+    let h = '<div style="border:1px solid var(--accent);border-radius:8px;padding:14px 16px;margin-top:14px;">' +
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
+      '<strong style="font-size:14px;">Alternates — ' + DAYS_SHORT[dt.getDay()] + ' · ' +
+      esc(area) + ' · ' + esc(pool) + '</strong>' +
+      '<span style="font-size:12px;color:var(--muted);">' + free.length + ' free, ' +
+      used.length + ' already used this week</span>' +
+      '<span style="margin-left:auto;font-size:12px;color:var(--accent);cursor:pointer;" ' +
+      'onclick="EndoGen.toggleCell(null)">close ✕</span></div>';
+    if (!free.length) h += '<div style="color:var(--muted);font-size:13px;">No alternates free. ' +
+      'Any change here means taking someone off another day.</div>';
+    else h += '<div style="display:flex;flex-wrap:wrap;gap:6px;">' + free.map(b =>
+      '<span title="' + esc(b.tier + " · " + b.shift) + '" style="font-size:12px;padding:4px 10px;' +
+      'background:var(--surface2);border:1px solid var(--border);border-radius:6px;">' +
+      esc(b.name) + ' <span style="color:var(--muted);font-size:10px;">' +
+      (b.agency === "Baylor" ? "B" : "L") + '</span></span>').join("") + '</div>';
+    if (used.length) h += '<div style="margin-top:10px;font-size:12px;color:var(--muted);">' +
+      'Already used: ' + used.map(b => esc(b.name) + ' <span style="opacity:0.7;">(' +
+      DAYS_SHORT[new Date(b.usedOn.split("-")[0], b.usedOn.split("-")[1]-1,
+        b.usedOn.split("-")[2]).getDay()] + ')</span>').join(", ") + '</div>';
+    return h + '</div>';
+  }
+
+  function render() {
+    const out = document.getElementById("endoGenOut");
+    const r = lastRun;
+    if (!r) { out.innerHTML = ""; return; }
+
+    let h = warnHtml(r.warnings);
+
+    h += '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">' +
+      '<tr><th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted);' +
+      'text-transform:uppercase;letter-spacing:0.5px;"></th>' +
+      r.days.map(d => {
+        const dt = new Date(d.split("-")[0], d.split("-")[1]-1, d.split("-")[2]);
+        const n = r.need[d];
+        return '<th style="padding:6px 8px;text-align:left;font-size:12px;border:1px solid var(--border);">' +
+          DAYS_SHORT[dt.getDay()] + ' <span style="color:var(--muted);font-weight:400;">' +
+          (dt.getMonth()+1) + '/' + dt.getDate() + '</span>' +
+          (n ? '<div style="font-size:10px;color:var(--muted);font-weight:400;">Main ' +
+               n["Main Endo"].MD + '+' + n["Main Endo"].APP + ' · OTM ' +
+               n["OTM Endo"].MD + '+' + n["OTM Endo"].APP + '</div>' : '') +
+          '</th>';
+      }).join("") + '</tr>';
+
+    [["Main Endo","MD"],["Main Endo","APP"],["OTM Endo","MD"],["OTM Endo","APP"]]
+      .forEach(([area,pool]) => {
+        h += '<tr><td style="padding:6px 8px;font-size:11px;font-weight:700;color:var(--muted);' +
+             'text-transform:uppercase;letter-spacing:0.5px;white-space:nowrap;border:1px solid var(--border);">' +
+             area.replace(" Endo","") + '<br>' + pool + '</td>';
+        r.days.forEach(d => { h += cellHtml(r, d, area, pool); });
+        h += '</tr>';
+      });
+    h += '</table></div>';
+
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">' +
+         'B = Baylor · ▲ reached past the preferred tier · ! last usable day · ' +
+         'amber = last-resort APP · click any cell for alternates</div>';
+
+    h += benchHtml(r);
+
+    if (r.conflicts.length) {
+      h += '<div style="border:1px solid var(--cancel);border-radius:8px;padding:14px 16px;margin-top:14px;">' +
+        '<strong style="color:var(--cancel);font-size:14px;">Your call — ' + r.conflicts.length +
+        ' slot group' + (r.conflicts.length>1?"s":"") + ' cannot be filled without breaking once-per-week</strong>' +
+        '<div style="margin-top:8px;font-size:13px;">' + r.conflicts.map(c => {
+          const dt = new Date(c.date.split("-")[0], c.date.split("-")[1]-1, c.date.split("-")[2]);
+          return '<div style="margin:4px 0;">' + DAYS_SHORT[dt.getDay()] + ' · ' + esc(c.area) +
+            ' ' + esc(c.pool) + ' — filled ' + c.filled + ' of ' + c.needed +
+            ', <strong>' + c.short + ' short</strong> <span style="color:var(--muted);">(' +
+            c.workingToday + ' eligible that day, all already used)</span></div>';
+        }).join("") + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:8px;">' +
+        'The generator will not break once-per-week on its own. Fill these by hand, ' +
+        'or click the cell above to see who is available on another day.</div></div>';
+    } else {
+      h += '<div style="color:var(--day);font-size:13px;font-weight:600;margin-top:14px;">' +
+           '✓ Every slot filled without breaking once-per-week.</div>';
+    }
+
+    const used = {}; r.log.forEach(x => used[x.name] = (used[x.name]||0)+1);
+    const twice = Object.keys(used).filter(n => used[n] > 1);
+    h += '<div style="font-size:12px;color:var(--muted);margin-top:6px;">' +
+         Object.keys(used).length + ' people used' +
+         (twice.length ? ' — <span style="color:var(--cancel);">used more than once: ' +
+           twice.map(esc).join(", ") + '</span>' : ', all exactly once') + '</div>';
+
+    out.innerHTML = h;
+  }
+
+  function busy(msg) {
+    document.getElementById("endoGenOut").innerHTML =
+      '<div class="loading-state" style="padding:24px;"><div class="spinner"></div><p>' +
+      esc(msg) + '</p></div>';
+  }
+  function fail(e) {
+    document.getElementById("endoGenOut").innerHTML =
+      '<div style="border:1px solid var(--cancel);border-radius:8px;padding:14px 16px;' +
+      'color:var(--cancel);font-size:13px;">' + esc(e.message || String(e)) + '</div>';
+    console.error("[EndoGen]", e);
+  }
+
+  window.EndoGen = {
+    mount: mountPanel,
+    generate: generate,
+    pools: poolsFor,
+    last: () => lastRun,
+
+    async run() {
+      const d = document.getElementById("endoGenDate").value;
+      if (!d) { alert("Pick a date in the week you want to generate."); return; }
+      busy("Reading endo history and building the week...");
+      try { openCell = null; lastRun = await generate(d); render(); }
+      catch (e) { fail(e); }
+    },
+
+    async checkReady() {
+      const d = document.getElementById("endoGenDate").value;
+      if (!d) { alert("Pick a date first."); return; }
+      busy("Checking whether the week's data is ready...");
+      try {
+        const r = await generate(d);
+        const out = document.getElementById("endoGenOut");
+        const mn = r.warnings.filter(w => /McNair designations/.test(w));
+        out.innerHTML = warnHtml(r.warnings) + mnTable(r.mnStatus) +
+          (mn.length ? "" : '<div style="color:var(--day);font-size:13px;font-weight:600;">' +
+            '✓ Designations look complete — safe to generate.</div>');
+      } catch (e) { fail(e); }
+    },
+
+    toggleCell(key) { openCell = (openCell === key) ? null : key; render(); }
+  };
+
+  // Mount once the admin content exists; re-check on tab switches.
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", mountPanel);
+  else mountPanel();
+  document.addEventListener("click", () => setTimeout(mountPanel, 0));
+})();
+// ══════════════════════ END ENDO WEEK GENERATOR ═══════════════════
 </script>
 
 </body>
