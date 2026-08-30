@@ -3495,12 +3495,22 @@ async function renderAdminDay(dateVal) {
         const endoBadge = endoCount > 0
           ? `<span title="Did endo ${endoCount} day${endoCount>1?"s":""} this week" style="font-size:9px;background:#7e57c2;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:600;letter-spacing:0.5px;">${endoLetters}</span>`
           : "";
+              // McNair marker: either a McNair-only locum (campus field) or a
+        // Baylor APP carrying today's MN designation in the shift label.
+        const _prov = (SCHEDULE_DATA || []).find(x => x.name === p.name);
+        const _campus = _prov ? String(_prov.campus || "").trim() : "";
+        const _mnLabel = /\bMN\b|\bMNC\b|MD-MNC|McNair/i.test(p.shift || "");
+        const isMcNair = _campus === "McNair" || _mnLabel;
+        const mcnairBadge = isMcNair
+          ? `<span title="${_campus === "McNair" ? "McNair-only (campus)" : "McNair designation today"}" style="font-size:9px;background:#14b8a6;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">MN</span>`
+          : "";
         return `<div class="staff-chip${assigned?" assigned":""}${overAssigned?" over-assigned":""}" 
           draggable="true"
           data-name="${p.name.replace(/"/g, '&quot;')}" data-cred="${p.credential||""}" data-agency="${p.agency||""}"
           ondragstart="onDragStart(event)">
           ${p.credential ? `<span class="sc-cred ${credClass}">${p.credential}</span>` : ""}
           <span style="flex:1;">${p.name}</span>
+          ${mcnairBadge}
           ${endoBadge}
           ${countBadge}
         </div>`;
