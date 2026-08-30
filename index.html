@@ -3507,7 +3507,8 @@ async function renderAdminDay(dateVal) {
           : "";
               // Late-start room: "OR L1 - APP" / "OR L2 - APP"
         const _lateRoom = /\bOR\s*L1\b/i.test(p.shift || "") ? "L1"
-                        : /\bOR\s*L2\b/i.test(p.shift || "") ? "L2" : null;
+                        : /\bOR\s*L2\b/i.test(p.shift || "") ? "L2"
+                        : /Late\s*MD-?MNC/i.test(p.shift || "") ? "LATE" : null;
         const lateBadge = _lateRoom
           ? `<span title="Late start — ${_lateRoom}" style="font-size:9px;background:#f59e0b;color:#1a1a1a;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">${_lateRoom}</span>`
           : "";
