@@ -4340,6 +4340,17 @@ async function deleteEndoEntry(date, safeName) {
     if (agency === "Baylor") return "main";
     return "either";
   }
+  // Shift length in hours. Locums carry it as D8/D10/D12; Baylor MDs as
+  // "OR 8 - MD". Baylor APP labels have no hours at all, so this returns
+  // null for most of them — callers must treat null as "unknown", not long.
+  function shiftHours(shift) {
+    let m = String(shift || "").match(/(?:^|\/\s*)D\s*(\d+(?:\.\d+)?)/i);
+    if (m) return parseFloat(m[1]);
+    m = String(shift || "").match(/\bOR\s*(\d+)\s*-\s*MD\b/i);
+    if (m) return parseFloat(m[1]);
+    return null;
+  }
+
   // All-day shift; excluded from endo entirely.
   function isMcNairCallMD(shift) {
     return /McNair Call/i.test(shift) && !/Post-?McNair Call/i.test(shift);
@@ -4375,6 +4386,7 @@ async function deleteEndoEntry(date, safeName) {
         campus: campus || "(blank)",
         side: side,
         shift: p.shift,
+        hours: shiftHours(p.shift),
         lastResort: LAST_RESORT.indexOf(p.name) > -1
       };
 
@@ -4465,14 +4477,20 @@ async function deleteEndoEntry(date, safeName) {
 
   // Spend the scarcest person first: someone with two days left to be
   // used loses more by being skipped than someone with five.
-  function rank(list, led, seed, chances) {
+  // preferShort: within a tier, break ties toward the shorter shift. Used for
+  // the Main Endo MD slot only — a 12-hour doc in a room that closes early is
+  // a poor use of them. It is a TIEBREAK, not a tier: it never overrides the
+  // locum preference or the not-last-week rule, so it cannot drain the
+  // short-shift pool the way a shift-length ladder would.
+  function rank(list, led, seed, chances, preferShort) {
     const scored = list.map(c => ({
       c: c,
       chances: chances ? chances(c.name) : 99,
+      hours: (preferShort && c.hours != null) ? c.hours : 99,
       gap: led.lastAny(c.name) ? weeksApart(led.lastAny(c.name), "2100-01-04") : 1e6
     }));
     const o = shuffled(scored, seed);
-    o.sort((a,b) => (a.chances - b.chances) || (b.gap - a.gap));
+    o.sort((a,b) => (a.chances - b.chances) || (a.hours - b.hours) || (b.gap - a.gap));
     return o.map(x => x.c);
   }
 
@@ -4620,7 +4638,9 @@ async function deleteEndoEntry(date, safeName) {
       const taken = picks[slot.date][slot.area][slot.pool];
       let chosen = null, tierName = null;
       for (const t of tiers) {
-        const r = rank(t.list, led, slot.date+"|"+slot.area+"|"+slot.pool+"|"+t.n, chances);
+        const preferShort = (slot.area === "Main Endo" && slot.pool === "MD");
+        const r = rank(t.list, led, slot.date+"|"+slot.area+"|"+slot.pool+"|"+t.n,
+                       chances, preferShort);
         const pick = r.find(c => taken.indexOf(c.name) === -1);
         if (pick) { chosen = pick; tierName = t.n; break; }
       }
@@ -4628,7 +4648,7 @@ async function deleteEndoEntry(date, safeName) {
       led.add(chosen.name, slot.date, slot.area);
       log.push({ date: slot.date, area: slot.area, pool: slot.pool, name: chosen.name,
                  agency: chosen.agency, tier: tierName, daysLeft: chances(chosen.name),
-                 lastResort: chosen.lastResort });
+                 hours: chosen.hours, lastResort: chosen.lastResort });
       open.splice(best, 1);
     }
 
@@ -4733,6 +4753,7 @@ async function deleteEndoEntry(date, safeName) {
            (e.lastResort ? "color:var(--special);font-weight:600;" : "") + '" title="' +
            esc(isLocked ? "Finalized — left as assigned"
                         : (e.tier||"") + " · " + (e.agency||"") +
+                          (e.hours!=null ? " · " + e.hours + "h" : "") +
                           (e.daysLeft!=null ? " · " + e.daysLeft + " day(s) left" : "")) + '">' +
            (isLocked ? '🔒 ' : '') + esc(n) +
            (e.agency === "Baylor" ? ' <span style="font-size:9px;color:var(--muted);">B</span>' : '') +
