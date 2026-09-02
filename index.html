@@ -4265,9 +4265,15 @@ async function deleteEndoEntry(date, safeName) {
 // ══════════════════════════════════════════════════════════════════
 // ENDO WEEK GENERATOR
 //
-// Self-contained. Paste at the END of the existing <script> block in
-// index.html, just before the closing script tag. Adds an "Endo Week Generator"
-// panel to the Admin tab. Read-only — writes nothing to Firebase.
+// Self-contained. Paste at the very END of the existing script block in
+// index.html, on the line just above its closing tag, directly below
+// "==== END ENDO TRACKER ====".  Adds an "Endo Week Generator" panel to
+// the Admin tab. Read-only — writes nothing to Firebase.
+//
+// (Note to future editors: never write the closing script tag literally
+//  anywhere in this file, not even inside a comment. The HTML parser
+//  scans raw text for it and will end the script there, dumping the rest
+//  of the code onto the page as visible text.)
 //
 // To remove: delete from this banner to the END banner. Nothing else
 // in the file is modified.
@@ -4401,11 +4407,24 @@ async function deleteEndoEntry(date, safeName) {
       Object.values(data).forEach(e => {
         if (!e || !e.name || !e.date) return;
         const area = e.location === "Main" ? "Main Endo" : "OTM Endo";
-        (all[e.name] = all[e.name] || []).push({ date: e.date, area: area });
+        (all[e.name] = all[e.name] || []).push({ date: e.date, area: area, role: e.role });
       });
     }
+    // Anything the tracker holds for THIS week is a finalized day: those
+    // assignments are settled and must not be regenerated.
+    const settled = {};   // date -> { "Main Endo": {MD:[],APP:[]}, "OTM Endo": {...} }
+    Object.keys(all).forEach(name => all[name].forEach(e => {
+      if (e.date < monday || e.date > weekDays(monday)[4]) return;
+      if (!settled[e.date]) settled[e.date] =
+        { "Main Endo": {MD:[],APP:[]}, "OTM Endo": {MD:[],APP:[]} };
+      const role = (e.role === "MD") ? "MD" : "APP";
+      if (settled[e.date][e.area][role].indexOf(name) === -1)
+        settled[e.date][e.area][role].push(name);
+    }));
+
     return {
       all: all,
+      settled: settled,
       missingWeeks: missing,
       add(name, date, area) { (all[name] = all[name] || []).push({date, area}); },
       usedThisWeek(name) {
@@ -4513,13 +4532,41 @@ async function deleteEndoEntry(date, safeName) {
 
     const cells = [["Main Endo","APP"],["OTM Endo","MD"],["Main Endo","MD"],["OTM Endo","APP"]];
 
+    // Finalized days are fixed inputs. Their people are already counted as
+    // used-this-week by the ledger, so the only thing left is to show them
+    // and to stop the generator opening slots on those days.
+    const locked = {};
+    days.forEach(d => {
+      const st = led.settled[d];
+      if (!st) return;
+      const any = ["Main Endo","OTM Endo"].some(a => st[a].MD.length || st[a].APP.length);
+      if (!any) return;
+      locked[d] = true;
+      cells.forEach(([area,p]) => {
+        st[area][p].forEach(n => {
+          picks[d][area][p].push(n);
+          log.push({ date: d, area: area, pool: p, name: n,
+                     agency: (SCHEDULE_DATA.find(x => x.name === n) || {}).agency === "Baylor"
+                             ? "Baylor" : "Locum",
+                     tier: "finalized", daysLeft: null, lastResort: false, locked: true });
+        });
+      });
+    });
+    const lockedDays = Object.keys(locked).sort();
+    if (lockedDays.length) {
+      const lbl = lockedDays.map(d => { const pt=d.split("-");
+        return DAYS_SHORT[new Date(pt[0],pt[1]-1,pt[2]).getDay()]; });
+      warnings.push("Already finalized and left untouched: " + lbl.join(", ") +
+        ". Only the remaining days were generated.");
+    }
+
     const open = [];
-    days.filter(d => need[d]).forEach(date => cells.forEach(([area,p]) => {
+    days.filter(d => need[d] && !locked[d]).forEach(date => cells.forEach(([area,p]) => {
       for (let i=0;i<need[date][area][p];i++) open.push({date, area, pool:p});
     }));
 
     const appears = {};
-    days.filter(d => need[d]).forEach(date => cells.forEach(([area,p]) =>
+    days.filter(d => need[d] && !locked[d]).forEach(date => cells.forEach(([area,p]) =>
       pool[date][area][p].forEach(c =>
         (appears[c.name] = appears[c.name] || []).push({date, area, pool:p}))));
 
@@ -4589,7 +4636,7 @@ async function deleteEndoEntry(date, safeName) {
     const startLed = await loadHistory(monday);
     const where = {}; log.forEach(x => where[x.name] = x.date);
     const bench = [];
-    days.filter(d => need[d]).forEach(date => cells.forEach(([area,p]) => {
+    days.filter(d => need[d] && !locked[d]).forEach(date => cells.forEach(([area,p]) => {
       if (!need[date][area][p]) return;
       const taken = picks[date][area][p], seen = {};
       tiersFor(area, pool[date][area][p], startLed).forEach(t => t.list.forEach(c => {
@@ -4603,7 +4650,7 @@ async function deleteEndoEntry(date, safeName) {
     log.sort((a,b) => a.date.localeCompare(b.date) || a.area.localeCompare(b.area) ||
                       b.pool.localeCompare(a.pool));
     conflicts.sort((a,b) => a.date.localeCompare(b.date));
-    return { monday, days, need, picks, log, conflicts, warnings, mnStatus, bench };
+    return { monday, days, need, picks, log, conflicts, warnings, mnStatus, bench, locked };
   }
 
   // ── UI ────────────────────────────────────────────────────────
@@ -4672,17 +4719,22 @@ async function deleteEndoEntry(date, safeName) {
          .forEach(x => byName[x.name] = x);
     const key = date+"|"+area+"|"+pool;
     const isOpen = openCell === key;
+    const isLocked = !!(r.locked && r.locked[date]);
     let h = '<td style="vertical-align:top;padding:6px 8px;border:1px solid var(--border);' +
-            'cursor:pointer;' + (isOpen ? "background:rgba(79,142,247,0.08);" : "") + '"' +
-            ' onclick="EndoGen.toggleCell(\'' + key + '\')">';
+            (isLocked ? "background:rgba(122,130,160,0.07);" :
+              "cursor:pointer;" + (isOpen ? "background:rgba(79,142,247,0.08);" : "")) + '"' +
+            (isLocked ? "" : ' onclick="EndoGen.toggleCell(\'' + key + '\')"') + '>';
     if (!names.length && !want) h += '<span style="color:var(--muted);font-size:11px;">—</span>';
     names.forEach(n => {
       const e = byName[n] || {};
       const late = /^[3-5]/.test(e.tier || "");
       h += '<div style="font-size:12px;margin-bottom:3px;' +
+           (isLocked ? "color:var(--muted);" : "") +
            (e.lastResort ? "color:var(--special);font-weight:600;" : "") + '" title="' +
-           esc((e.tier||"") + " · " + (e.agency||"") + " · " + (e.daysLeft!=null?e.daysLeft+" day(s) left":"")) + '">' +
-           esc(n) +
+           esc(isLocked ? "Finalized — left as assigned"
+                        : (e.tier||"") + " · " + (e.agency||"") +
+                          (e.daysLeft!=null ? " · " + e.daysLeft + " day(s) left" : "")) + '">' +
+           (isLocked ? '🔒 ' : '') + esc(n) +
            (e.agency === "Baylor" ? ' <span style="font-size:9px;color:var(--muted);">B</span>' : '') +
            (late ? ' <span style="font-size:9px;color:var(--special);">▲</span>' : '') +
            (e.daysLeft === 1 ? ' <span style="font-size:9px;color:var(--accent);" title="last usable day">!</span>' : '') +
@@ -4735,9 +4787,12 @@ async function deleteEndoEntry(date, safeName) {
       r.days.map(d => {
         const dt = new Date(d.split("-")[0], d.split("-")[1]-1, d.split("-")[2]);
         const n = r.need[d];
-        return '<th style="padding:6px 8px;text-align:left;font-size:12px;border:1px solid var(--border);">' +
+        const lk = r.locked && r.locked[d];
+        return '<th style="padding:6px 8px;text-align:left;font-size:12px;border:1px solid var(--border);' +
+          (lk ? "background:rgba(122,130,160,0.07);" : "") + '">' +
           DAYS_SHORT[dt.getDay()] + ' <span style="color:var(--muted);font-weight:400;">' +
           (dt.getMonth()+1) + '/' + dt.getDate() + '</span>' +
+          (lk ? ' <span title="Finalized — not regenerated" style="font-size:11px;">🔒</span>' : '') +
           (n ? '<div style="font-size:10px;color:var(--muted);font-weight:400;">Main ' +
                n["Main Endo"].MD + '+' + n["Main Endo"].APP + ' · OTM ' +
                n["OTM Endo"].MD + '+' + n["OTM Endo"].APP + '</div>' : '') +
@@ -4756,7 +4811,8 @@ async function deleteEndoEntry(date, safeName) {
 
     h += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">' +
          'B = Baylor · ▲ reached past the preferred tier · ! last usable day · ' +
-         'amber = last-resort APP · click any cell for alternates</div>';
+         'amber = last-resort APP · 🔒 finalized, left as assigned · ' +
+         'click any unlocked cell for alternates</div>';
 
     h += benchHtml(r);
 
@@ -4779,10 +4835,10 @@ async function deleteEndoEntry(date, safeName) {
            '✓ Every slot filled without breaking once-per-week.</div>';
     }
 
-    const used = {}; r.log.forEach(x => used[x.name] = (used[x.name]||0)+1);
+    const used = {}; r.log.filter(x => !x.locked).forEach(x => used[x.name] = (used[x.name]||0)+1);
     const twice = Object.keys(used).filter(n => used[n] > 1);
     h += '<div style="font-size:12px;color:var(--muted);margin-top:6px;">' +
-         Object.keys(used).length + ' people used' +
+         Object.keys(used).length + ' people newly assigned' +
          (twice.length ? ' — <span style="color:var(--cancel);">used more than once: ' +
            twice.map(esc).join(", ") + '</span>' : ', all exactly once') + '</div>';
 
