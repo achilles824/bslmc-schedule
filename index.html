@@ -4300,6 +4300,12 @@ async function deleteEndoEntry(date, safeName) {
   }
 
   const NEVER_ENDO   = ["Karina Kima", "Lauren Ganderson"];
+  // Excluded from Main Endo only — still eligible at OTM.
+  const NO_MAIN_ENDO = ["Tara Thomas", "Ayoade Joy Ademuyewo"];
+  // Main Endo takes normal-length days only: no 5-hour shifts, no 16-hour
+  // ones. Applied only when the shift length is actually known — most Baylor
+  // APP labels carry no hours at all, and those must still be eligible.
+  const MAIN_MIN_HOURS = 8, MAIN_MAX_HOURS = 12;
   const LAST_RESORT  = ["Carla Rose", "Audra Jackson", "Evie Michelle Schoene"];
   const WK = ["Mon","Tue","Wed","Thu","Fri"];
 
@@ -4390,8 +4396,13 @@ async function deleteEndoEntry(date, safeName) {
         lastResort: LAST_RESORT.indexOf(p.name) > -1
       };
 
+      const hrs = tag.hours;
+      const badHours = hrs != null && (hrs < MAIN_MIN_HOURS || hrs > MAIN_MAX_HOURS);
       if (side === "mcnair") dropped.push([p.name, "Main: McNair side"]);
       else if (pool === "MD" && /charge/i.test(p.shift)) dropped.push([p.name, "Main: Main charge MD"]);
+      else if (NO_MAIN_ENDO.indexOf(p.name) > -1) dropped.push([p.name, "Main: never Main Endo"]);
+      else if (badHours) dropped.push([p.name, "Main: " + hrs + "h shift (needs " +
+                                       MAIN_MIN_HOURS + "-" + MAIN_MAX_HOURS + "h)"]);
       else out["Main Endo"][pool].push(tag);
 
       if (side === "main") dropped.push([p.name, "OTM: Main side"]);
