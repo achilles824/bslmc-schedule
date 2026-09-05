@@ -5108,7 +5108,7 @@ async function deleteEndoEntry(date, safeName) {
     if (!iso) iso = (document.getElementById("adminDatePicker") || {}).value
                  || window.currentAdminDate
                  || new Date().toISOString().slice(0, 10);
-    if (!window.SCHEDULE_DATA || !SCHEDULE_DATA.length)
+    if (typeof SCHEDULE_DATA === "undefined" || !SCHEDULE_DATA.length)
       throw new Error("SCHEDULE_DATA not loaded yet — wait for the portal to finish loading");
 
     const notes = [];
@@ -5177,7 +5177,7 @@ async function deleteEndoEntry(date, safeName) {
 
       rooms.push({ key:k, campus, addon, holder, closed,
         start: addon ? M(7) : cs[0][0],
-        end:   addon ? M(23) : Math.max.apply(null, cs.map(c => c[1])) });
+        end:   addon ? M(19) : Math.max.apply(null, cs.map(c => c[1])) });
     }
     if (unmatched.length) notes.push("Assignment names not in the roster: " + unmatched.join("; "));
 
@@ -5646,7 +5646,7 @@ async function deleteEndoEntry(date, safeName) {
     // hour labels and slack
     H.forEach((x, i) => {
       const cx = padL + cw * i + cw / 2;
-      const hr = x.hour > 12 ? x.hour - 12 : x.hour;
+      const hr = x.hour < 12 ? x.hour + "a" : x.hour === 12 ? "12p" : (x.hour - 12) + "p";
       g += '<text x="' + cx + '" y="' + (HT - padB + 14) + '" text-anchor="middle" ' +
            'font-size="10" fill="var(--muted)">' + hr + '</text>';
       const col = x.margin < 0 ? "var(--cancel)" : x.margin === 0 ? "var(--special)" : "var(--day)";
@@ -5655,8 +5655,11 @@ async function deleteEndoEntry(date, safeName) {
            (x.margin > 0 ? "+" : "") + x.margin + '</text>';
     });
 
-    const tight = H.filter(x => x.margin <= 0);
-    const firstTight = tight.length ? tight[0] : null;
+    let worst = null;
+    H.forEach(x => { if (!worst || x.margin < worst.margin) worst = x; });
+    const wLabel = !worst ? ""
+      : worst.hour < 12 ? worst.hour + "a"
+      : worst.hour === 12 ? "12p" : (worst.hour - 12) + "p";
 
     return '<div class="day-group"><div class="day-group-title">APPs by hour</div>' +
       '<div style="overflow-x:auto;"><svg viewBox="0 0 ' + W + ' ' + HT +
@@ -5671,14 +5674,14 @@ async function deleteEndoEntry(date, safeName) {
           'background:var(--accent);"></span> APPs on campus</span>' +
         '<span style="margin-left:auto;">number under each hour is the slack</span>' +
       '</div>' +
-      (firstTight
+      (worst && worst.margin <= 0
         ? '<div style="font-size:13px;margin-top:10px;color:' +
-          (firstTight.margin < 0 ? "var(--cancel)" : "var(--special)") + ';">' +
-          'Tightest from ' + (firstTight.hour > 12 ? firstTight.hour - 12 : firstTight.hour) +
-          ':00 — slack ' + firstTight.margin +
-          '. Releasing anyone before then costs you at that hour.</div>'
+          (worst.margin < 0 ? "var(--cancel)" : "var(--special)") + ';">' +
+          'Tightest at ' + wLabel + ' — slack ' + worst.margin +
+          '. Anyone released earlier is unavailable then.</div>'
         : '<div style="font-size:13px;margin-top:10px;color:var(--day);">' +
-          'Slack all day — release decisions are low risk.</div>') +
+          'Slack all day — lowest is +' + (worst ? worst.margin + ' at ' + wLabel : '') +
+          '. Release decisions are low risk.</div>') +
       '</div>';
   }
 
