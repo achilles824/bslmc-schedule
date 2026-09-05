@@ -5381,7 +5381,22 @@ async function deleteEndoEntry(date, safeName) {
       spare: g.budget + "m"
     }));
 
-    return { campus, iso:D.iso, needs, appPlan, mdPlan, stuck, claims,
+    // one row per break, for a board-runner view organised by break
+    const roomOf = {}; needs.forEach(n => { roomOf[n.who] = n.rooms; });
+    const breaks = [];
+    all.filter(g => g.jobs.length).forEach(g => g.jobs.forEach(j => breaks.push({
+      kind: "APP", giver: g.s.name, isFloat: !!g.s.isFloat, from: g.ready,
+      recipient: j.who, room: roomOf[j.who] || "", area: j.area, travel: j.travel || 0
+    })));
+    mdPlan.forEach(m => breaks.push({
+      kind: "MD", giver: m.MD, isFloat: false, from: null,
+      recipient: m.APP, room: m.room, area: "", travel: 0
+    }));
+    breaks.sort((a, b) => (a.from == null ? 1 : 0) - (b.from == null ? 1 : 0)
+                       || (a.from - b.from)
+                       || String(a.room).localeCompare(String(b.room)));
+
+    return { campus, iso:D.iso, needs, appPlan, mdPlan, stuck, claims, breaks,
              appCapacity, notes:D.notes };
   }
 
@@ -5411,12 +5426,14 @@ async function deleteEndoEntry(date, safeName) {
     build,
     data: () => LAST,
     shiftFor,
-    async lunch(campus, iso) {
-      campus = campus || "Main";
+    async plan(campus, iso) {
       if (campus !== "Main" && campus !== "McNair")
         throw new Error('campus must be "Main" or "McNair"');
-      const D = await build(iso);
-      return show(planLunch(D, campus));
+      return planLunch(await build(iso), campus);
+    },
+    async lunch(campus, iso) {
+      campus = campus || "Main";
+      return show(await this.plan(campus, iso));
     },
     async both(iso) {
       const D = await build(iso);
@@ -5429,6 +5446,253 @@ async function deleteEndoEntry(date, safeName) {
   console.log("[BoardRunner] ready — BoardRunner.lunch('Main') / .lunch('McNair') / .both()");
 })();
 // ══════════════════════ END BOARD RUNNER ══════════════════════════
+
+// ══════════════════════════════════════════════════════════════════
+// BOARD RUNNER — LUNCH PLAN TAB
+//
+// Paste directly below "END BOARD RUNNER". Adds a top-level "Lunch Plan"
+// tab (no PIN) for the charge MD. Read-only; refuses to build a plan from
+// a day that has not been finalized.
+//
+// Injects its own tab button and content div, so no other part of
+// index.html needs editing.
+//
+// (Never write the closing script tag anywhere in this file.)
+// ══════════════════════════════════════════════════════════════════
+(function () {
+
+  let campus = "Main";
+  let detail = false;
+  let last = null;
+
+  const esc = s => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+  const fmt = v => v == null ? "" : String(Math.floor(v/60)).padStart(2,"0") +
+    ":" + String(v%60).padStart(2,"0");
+
+  // ── mount ─────────────────────────────────────────────────────
+  function mount() {
+    if (document.getElementById("tab-lunch")) return;
+
+    // tab button, just before Admin in the left-hand group
+    const bar = document.querySelector(".tab-bar > div");
+    if (!bar) return;
+    const btn = document.createElement("button");
+    btn.className = "tab-btn";
+    btn.setAttribute("onclick", "switchTab('lunch')");
+    btn.innerHTML =
+      '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2"><path d="M3 2v7c0 1.1.9 2 2 2h1a2 2 0 0 0 2-2V2"/>' +
+      '<line x1="5" y1="2" x2="5" y2="11"/><line x1="6" y1="11" x2="6" y2="22"/>' +
+      '<path d="M18 2c-1.7 0-3 2-3 5s.6 4 2 4v11"/></svg> Lunch Plan';
+    bar.appendChild(btn);
+
+    // content pane
+    const main = document.querySelector("main");
+    if (!main) return;
+    const pane = document.createElement("div");
+    pane.className = "tab-content";
+    pane.id = "tab-lunch";
+    pane.innerHTML =
+      '<div class="day-picker-section">' +
+        '<h2>Lunch Plan</h2>' +
+        '<div class="day-picker-row">' +
+          '<div class="day-input-wrap" style="max-width:200px;">' +
+            '<label for="lunchDate">Date</label>' +
+            '<input type="date" id="lunchDate" />' +
+          '</div>' +
+          '<button class="view-btn" onclick="LunchTab.run()">Build Plan</button>' +
+        '</div>' +
+        '<div class="filter-toggles">' +
+          '<span class="filter-label">Campus</span>' +
+          '<button class="toggle-btn active-md" id="lunchCampusMain" ' +
+            'onclick="LunchTab.setCampus(\'Main\')">Main</button>' +
+          '<button class="toggle-btn" id="lunchCampusMcNair" ' +
+            'onclick="LunchTab.setCampus(\'McNair\')">McNair</button>' +
+          '<span style="margin-left:auto;font-size:11px;color:var(--muted);">' +
+            'Read-only · nothing is saved</span>' +
+        '</div>' +
+      '</div>' +
+      '<div id="lunchResult"></div>';
+    main.appendChild(pane);
+
+    const dp = document.getElementById("lunchDate");
+    dp.value = (document.getElementById("adminDatePicker") || {}).value ||
+               new Date().toISOString().slice(0, 10);
+    dp.addEventListener("keydown", e => { if (e.key === "Enter") window.LunchTab.run(); });
+  }
+
+  // ── render ────────────────────────────────────────────────────
+  function card(inner) {
+    return '<div class="day-results-card">' + inner + '</div>';
+  }
+
+  function notFinalized(iso) {
+    const dt = parseDate(iso);
+    const label = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " +
+                  dt.getDate() + ", " + dt.getFullYear();
+    return card(
+      '<div class="day-results-header"><div><h3>' + label + '</h3></div></div>' +
+      '<div style="padding:32px 28px;">' +
+        '<div style="background:rgba(220,38,38,0.08);border:1px solid var(--cancel);' +
+        'border-radius:8px;padding:16px 20px;display:flex;align-items:center;gap:12px;">' +
+          '<span style="font-size:22px;">⚠️</span><div>' +
+          '<div style="font-weight:700;color:var(--cancel);font-size:14px;">' +
+            'Assignments are not finalized</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-top:4px;">' +
+            'A lunch plan built from a half-finished board would be wrong. ' +
+            'Check back once the day is finalized.</div>' +
+        '</div></div></div>');
+  }
+
+  function render() {
+    const out = document.getElementById("lunchResult");
+    const r = last;
+    if (!r) { out.innerHTML = ""; return; }
+
+    const dt = parseDate(r.iso);
+    const label = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " +
+                  dt.getDate() + ", " + dt.getFullYear();
+    const mdCount = r.breaks.filter(b => b.kind === "MD").length;
+
+    let h = '<div class="day-results-header">' +
+      '<div><h3>' + r.campus + ' — ' + label + '</h3>' +
+      '<div style="color:var(--muted);font-size:13px;margin-top:4px;">' +
+        'Lunch window 11:00 – 1:00</div></div>' +
+      '<div class="day-stats">' +
+        '<div class="day-stat"><div class="stat-val total-color">' + r.needs.length +
+          '</div><div class="stat-label">breaks</div></div>' +
+        '<div class="day-stat"><div class="stat-val app-color">' +
+          (r.breaks.length - mdCount) + '</div><div class="stat-label">by APP</div></div>' +
+        '<div class="day-stat"><div class="stat-val ' +
+          (mdCount ? "md-color" : "total-color") + '">' + mdCount +
+          '</div><div class="stat-label">by MD</div></div>' +
+      '</div></div>';
+
+    // D5 takeovers — a person moves rooms, not a 30-minute break
+    if (r.claims.length) {
+      h += '<div class="day-group"><div class="day-group-title">Room takeovers at 12:00</div>' +
+        r.claims.map(c =>
+          '<div class="provider-row" style="border-left:3px solid var(--special);">' +
+          '<div class="provider-row-name">' + esc(c.room.replace("|", " ")) +
+          ' <span style="color:var(--muted);font-size:12px;">runs to ' + fmt(c.to) + '</span></div>' +
+          '<div>' + (c.taker
+            ? '<strong>' + esc(c.taker) + '</strong> takes over'
+            : '<span style="color:var(--cancel);font-weight:700;">nobody available</span>') +
+          '</div></div>').join("") + '</div>';
+    }
+
+    // the plan, one line per break
+    h += '<div class="day-group"><div class="day-group-title">Breaks</div>';
+    if (!r.breaks.length)
+      h += '<div style="color:var(--muted);font-size:14px;">No breaks needed.</div>';
+    r.breaks.forEach(b => {
+      const isMD = b.kind === "MD";
+      h += '<div class="provider-row" style="border-left:3px solid ' +
+        (isMD ? "var(--accent)" : "var(--day)") + ';">' +
+        '<div style="min-width:150px;font-weight:600;font-size:14px;">' + esc(b.giver) +
+          (b.isFloat ? ' <span style="font-size:9px;color:var(--muted);">FLOAT</span>' : '') +
+          (isMD ? ' <span style="font-size:9px;background:rgba(79,142,247,0.15);color:var(--accent);' +
+                  'padding:1px 5px;border-radius:3px;font-weight:700;">MD</span>' : '') +
+        '</div>' +
+        '<div style="color:var(--muted);">→</div>' +
+        '<div class="provider-row-name">' + esc(b.recipient) +
+          '<span style="color:var(--muted);font-size:12px;margin-left:8px;">' +
+          esc(b.room) + '</span></div>' +
+        '<div class="provider-row-meta">' +
+          (b.from != null ? 'from ' + fmt(b.from) : 'in room') +
+          (b.travel ? ' · +' + b.travel + 'm travel' : '') +
+        '</div></div>';
+    });
+    h += '</div>';
+
+    if (r.stuck.length) {
+      h += '<div class="day-group"><div class="day-group-title" style="color:var(--cancel);">' +
+        'Not covered — needs a decision</div>' +
+        r.stuck.map(s =>
+          '<div class="provider-row" style="border-left:3px solid var(--cancel);">' +
+          '<div class="provider-row-name">' + esc(s.APP) +
+          '<span style="color:var(--muted);font-size:12px;margin-left:8px;">' +
+          esc(s.room) + '</span></div>' +
+          '<div class="provider-row-meta">' + esc(s.blocked) + '</div></div>').join("") +
+        '</div>';
+    }
+
+    // detail — the reasoning, off by default
+    h += '<div class="day-group" style="border-bottom:none;">' +
+      '<span style="font-size:12px;color:var(--accent);cursor:pointer;" ' +
+      'onclick="LunchTab.toggleDetail()">' +
+      (detail ? "▼ hide detail" : "▶ show how this was worked out") + '</span>';
+    if (detail) {
+      h += '<div style="margin-top:14px;font-size:12px;">' +
+        '<div style="color:var(--muted);margin-bottom:8px;">APP capacity this window: ' +
+        r.appCapacity + ' break' + (r.appCapacity === 1 ? '' : 's') + '. ' +
+        'Anyone with a gap of at least 45 minutes — long enough to eat and reset the room — ' +
+        'covers their own lunch and is not listed as needing one.</div>' +
+        '<table style="width:100%;border-collapse:collapse;">' +
+        '<tr style="color:var(--muted);text-align:left;">' +
+        '<th style="padding:4px 8px;font-weight:600;">Giver</th>' +
+        '<th style="padding:4px 8px;font-weight:600;">Own lunch</th>' +
+        '<th style="padding:4px 8px;font-weight:600;">Gives</th>' +
+        '<th style="padding:4px 8px;font-weight:600;">Slack left</th></tr>' +
+        r.appPlan.map(p => '<tr style="border-top:1px solid var(--border);">' +
+          '<td style="padding:4px 8px;">' + esc(p.APP) + '</td>' +
+          '<td style="padding:4px 8px;color:var(--muted);">' + esc(p.eats) + '</td>' +
+          '<td style="padding:4px 8px;">' + p.gives + '</td>' +
+          '<td style="padding:4px 8px;color:var(--muted);">' + esc(p.spare) + '</td></tr>').join("") +
+        '</table>';
+      if (r.notes.length)
+        h += '<div style="margin-top:10px;color:var(--special);">' +
+             r.notes.map(n => '⚠ ' + esc(n)).join("<br>") + '</div>';
+      h += '</div>';
+    }
+    h += '</div>';
+
+    out.innerHTML = card(h);
+  }
+
+  // ── api ───────────────────────────────────────────────────────
+  window.LunchTab = {
+    setCampus(c) {
+      campus = c;
+      document.getElementById("lunchCampusMain")
+        .classList.toggle("active-md", c === "Main");
+      document.getElementById("lunchCampusMcNair")
+        .classList.toggle("active-md", c === "McNair");
+      if (last) this.run();
+    },
+    toggleDetail() { detail = !detail; render(); },
+    async run() {
+      const iso = document.getElementById("lunchDate").value;
+      const out = document.getElementById("lunchResult");
+      if (!iso) { alert("Pick a date."); return; }
+      out.innerHTML = '<div class="loading-state"><div class="spinner"></div>' +
+                      '<p>Building the lunch plan...</p>';
+      try {
+        // only ever plan from a finalized board
+        const fin = await new Promise(resolve => {
+          let done = false, un;
+          un = window.fbListen("finalized/" + iso, v => {
+            if (!done) { done = true; if (un) un(); resolve(!!v); }
+          });
+          setTimeout(() => { if (!done) { done = true; if (un) un(); resolve(false); } }, 4000);
+        });
+        if (!fin) { last = null; out.innerHTML = notFinalized(iso); return; }
+        last = await window.BoardRunner.plan(campus, iso);
+        render();
+      } catch (e) {
+        out.innerHTML = '<div class="day-results-card"><div style="padding:24px 28px;' +
+          'color:var(--cancel);font-size:13px;">' + esc(e.message || String(e)) + '</div></div>';
+        console.error("[LunchTab]", e);
+      }
+    }
+  };
+
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", mount);
+  else mount();
+})();
+// ══════════════════ END BOARD RUNNER LUNCH PLAN TAB ═══════════════
 </script>
 
 </body>
