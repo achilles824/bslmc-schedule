@@ -5083,24 +5083,26 @@ async function deleteEndoEntry(date, safeName) {
   function parseShift(label) {
     const segs = String(label).split("/").map(s => s.trim());
     const iv = [], tag = [];
-    let outOrder = null, isD5 = false, unparsed = [];
+    let outOrder = null, isD5 = false, dayEnd = null, unparsed = [];
     for (const s of segs) {
       if (/^Off\b|PTO|Sick|Night\s*Float/i.test(s)) { tag.push("off"); continue; }
+      // back-up and the 3p-11p extra are second shifts: they add supply but
+      // must NOT decide which release block a person belongs to.
       if (/Back-?Up/i.test(s))     { iv.push([M(17), M(19)]); tag.push("backup"); continue; }
       if (/3p-11p/i.test(s))       { iv.push([M(15), M(23)]); tag.push("extra3p"); continue; }
-      if (/\bOR L1\b/i.test(s))    { iv.push([M(7),  M(19)]); continue; }
-      if (/\bOR L2\b/i.test(s))    { iv.push([M(7),  M(17)]); continue; }
-      if (/\bOR-?Res\b/i.test(s))  { iv.push([M(7),  M(17)]); continue; }
-      if (/\bOR - APP\b/i.test(s)) { iv.push([M(7),  M(15)]); continue; }
-      if (/^D5$/i.test(s))  { iv.push([M(7), M(12)]); isD5 = true; continue; }
-      if (/^D8$/i.test(s))  { iv.push([M(7), M(15)]); continue; }
-      if (/^D10$/i.test(s)) { iv.push([M(7), M(17)]); continue; }
-      if (/^D12$/i.test(s)) { iv.push([M(7), M(19)]); continue; }
+      if (/\bOR L1\b/i.test(s))    { iv.push([M(7),  M(19)]); dayEnd = M(19); continue; }
+      if (/\bOR L2\b/i.test(s))    { iv.push([M(7),  M(17)]); dayEnd = M(17); continue; }
+      if (/\bOR-?Res\b/i.test(s))  { iv.push([M(7),  M(17)]); dayEnd = M(17); continue; }
+      if (/\bOR - APP\b/i.test(s)) { iv.push([M(7),  M(15)]); dayEnd = M(15); continue; }
+      if (/^D5$/i.test(s))  { iv.push([M(7), M(12)]); dayEnd = M(12); isD5 = true; continue; }
+      if (/^D8$/i.test(s))  { iv.push([M(7), M(15)]); dayEnd = M(15); continue; }
+      if (/^D10$/i.test(s)) { iv.push([M(7), M(17)]); dayEnd = M(17); continue; }
+      if (/^D12$/i.test(s)) { iv.push([M(7), M(19)]); dayEnd = M(19); continue; }
       const o = s.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
       if (o) { outOrder = +o[1]; continue; }
       unparsed.push(s);
     }
-    return { iv, outOrder, isD5, tag: tag.join(","), unparsed };
+    return { iv, outOrder, isD5, dayEnd, tag: tag.join(","), unparsed };
   }
 
   // ── build the day ─────────────────────────────────────────────
@@ -5134,7 +5136,8 @@ async function deleteEndoEntry(date, safeName) {
       }
       staff.push({ name:p.name, agency:p.agency, cred:p.credential, campus, lockedBy,
         outOrder:r.outOrder, isD5:r.isD5, intervals:r.iv, tag:r.tag, isFloat:false,
-        label:String(label), end:Math.max.apply(null, r.iv.map(x => x[1])) });
+        label:String(label), end:Math.max.apply(null, r.iv.map(x => x[1])),
+        dayEnd: r.dayEnd });
     }
     if (unparsed.length) notes.push("Unrecognized shift segments: " + unparsed.join("; "));
 
@@ -5428,12 +5431,21 @@ async function deleteEndoEntry(date, safeName) {
     // its own block: the 3p people against the hours up to 3p, the 5p people
     // against 3p-5p, the 7p people against 5p-7p. How many can go is the
     // WORST hour in that block — not the average.
+    //
+    // Only Baylor APPs are candidates. A locum is paid to the end of their
+    // shift and stays; they are the relief that makes the slack usable, not
+    // someone to send home. Cohort membership comes from the DAY shift only —
+    // a back-up or a 3p-11p extra is a second shift and must not move someone
+    // into a later block.
     const slackAt = {};
     hourly.forEach(x => { slackAt[x.hour] = x.margin; });
     const releases = [];
     [[15, 7], [17, 15], [19, 17]].forEach(([endH, fromH]) => {
-      const cohort = D.staff.filter(s => s.campus === campus && s.end === M(endH)
-                                         && !s.isD5 && D.onAt(s, M(fromH)));
+      const cohort = D.staff.filter(s => s.campus === campus
+        && s.agency === "Baylor"
+        && s.dayEnd === M(endH)
+        && !s.isD5
+        && D.onAt(s, M(fromH)));
       if (!cohort.length) return;
       let worst = Infinity;
       for (let h = fromH; h < endH; h++)
@@ -5444,9 +5456,11 @@ async function deleteEndoEntry(date, safeName) {
         (a.outOrder == null ? 99 : a.outOrder) - (b.outOrder == null ? 99 : b.outOrder));
       releases.push({
         endH, fromH, size: cohort.length, worst, count: n,
+        capped: worst > cohort.length,
         names: ordered.slice(0, n).map(s => ({
           name: s.name,
           out: s.outOrder,
+          returns: /backup|extra3p/.test(s.tag || ""),
           holdsRoom: mine.some(r => r.holder && r.holder.name === s.name && r.end > M(fromH))
         })),
         held: ordered.slice(n).map(s => s.name)
@@ -5701,7 +5715,8 @@ async function deleteEndoEntry(date, safeName) {
         '<div style="flex:1;min-width:0;">';
       if (ok) {
         h += '<div style="font-size:14px;">Release <strong>' + b.count + '</strong> of ' +
-          b.size + (b.fromH === 7 ? ' at your convenience' : ' at ' + hlabel(b.fromH)) + '</div>' +
+          b.size + ' Baylor APP' + (b.size === 1 ? '' : 's') +
+          (b.fromH === 7 ? ' at your convenience' : ' at ' + hlabel(b.fromH)) + '</div>' +
           '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">' +
           b.names.map(n => '<span style="font-size:12px;padding:3px 10px;background:var(--surface2);' +
             'border:1px solid var(--border);border-radius:6px;">' +
@@ -5709,7 +5724,13 @@ async function deleteEndoEntry(date, safeName) {
             esc(n.name) +
             (n.holdsRoom ? ' <span title="still holds a room — needs relieving first" ' +
               'style="color:var(--special);">⇄</span>' : '') +
-            '</span>').join("") + '</div>';
+            (n.returns ? ' <span title="back later on a second shift" ' +
+              'style="color:var(--accent);">↩</span>' : '') +
+            '</span>').join("") + '</div>' +
+          (b.capped ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">' +
+            'Slack is +' + b.worst + ' but only ' + b.size + ' Baylor APP' +
+            (b.size === 1 ? ' is' : 's are') + ' in this block — the rest of the cover is ' +
+            'locums, who stay to the end of their shift.</div>' : '');
       } else {
         h += '<div style="font-size:14px;color:var(--special);">Hold all ' + b.size +
              ' — no spare cover in this block</div>';
@@ -5719,8 +5740,9 @@ async function deleteEndoEntry(date, safeName) {
         'worst hour ' + (b.worst > 0 ? "+" : "") + b.worst + '</div></div>';
     });
     h += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">' +
+      'Baylor APPs only — a locum is paid to the end of their shift and stays. ' +
       'Each block is limited by its worst hour, not its average. ' +
-      '⇄ means that person is still in a room and needs relieving before they can go.</div>';
+      '⇄ still holds a room and needs relieving first · ↩ back later on a second shift.</div>';
     return h + '</div>';
   }
 
