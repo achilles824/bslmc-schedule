@@ -46,6 +46,7 @@ self.addEventListener("activate", event => {
       .then(keys => Promise.all(
         keys.filter(k => k !== SHELL && k !== LIBS && k !== DATA)
             .map(k => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });
