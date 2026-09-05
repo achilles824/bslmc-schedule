@@ -30,14 +30,19 @@
 
   // Expose Firebase functions to global scope
   window.fbSet = (path, data) => set(ref(db, path), data);
+  const FB_TIMEOUT_MS = 10000;
   window.fbGet = (path) => new Promise((resolve, reject) => {
-    let resolved = false;
+    let done = false;
     let unsub;
+    const finish = fn => { if (done) return; done = true; clearTimeout(timer);
+                           try { if (unsub) unsub(); } catch (e) {} fn(); };
+    const timer = setTimeout(() => finish(() => reject(
+      new Error("Firebase timed out after " + (FB_TIMEOUT_MS / 1000) +
+                "s reading " + path + " — check the connection"))), FB_TIMEOUT_MS);
     unsub = onValue(ref(db, path), snap => {
-      if (!resolved) { resolved = true; if (unsub) unsub(); resolve(snap.exists() ? snap.val() : null); }
-    }, err => {
-      if (!resolved) { resolved = true; if (unsub) unsub(); reject(err); }
-    });
+      const v = snap.exists() ? snap.val() : null;
+      finish(() => resolve(v));
+    }, err => { finish(() => reject(err)); });
   });
   window.fbListen = (path, callback) => onValue(ref(db, path), snap => callback(snap.exists() ? snap.val() : null));
   window.firebaseReady = true;
