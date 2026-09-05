@@ -5108,7 +5108,7 @@ async function deleteEndoEntry(date, safeName) {
     if (!iso) iso = (document.getElementById("adminDatePicker") || {}).value
                  || window.currentAdminDate
                  || new Date().toISOString().slice(0, 10);
-    if (typeof SCHEDULE_DATA === "undefined" || !SCHEDULE_DATA.length)
+    if (!window.SCHEDULE_DATA || !SCHEDULE_DATA.length)
       throw new Error("SCHEDULE_DATA not loaded yet — wait for the portal to finish loading");
 
     const notes = [];
@@ -5396,7 +5396,33 @@ async function deleteEndoEntry(date, safeName) {
                        || (a.from - b.from)
                        || String(a.room).localeCompare(String(b.room)));
 
-    return { campus, iso:D.iso, needs, appPlan, mdPlan, stuck, claims, breaks,
+    // ── hourly supply vs demand, 7am–9pm ──────────────────────
+    // Demand per hour = rooms with any case in that hour (1 max per room),
+    // plus any lunch giver active in that hour who is NOT already counted
+    // because their own room was running. A giver whose break-giving spills
+    // past the hour mark is counted again in the next hour.
+    const hourly = [];
+    const spans = all.filter(g => g.jobs.length).map(g => ({
+      name: g.s.name,
+      from: g.from,
+      to: g.ready + g.jobs.reduce((s, j) => s + EAT + (j.travel || 0), 0)
+    }));
+    for (let hh = 7; hh <= 20; hh++) {
+      const a = M(hh), b = M(hh + 1);
+      const nRooms = mine.filter(r => r.start < b && r.end > a).length;
+      let extra = 0;
+      spans.forEach(sp => {
+        if (sp.from >= b || sp.to <= a) return;
+        const ownRunning = mine.some(r => r.holder && r.holder.name === sp.name
+                                       && r.start < b && r.end > a);
+        if (!ownRunning) extra++;
+      });
+      const supply = D.staff.filter(s => s.campus === campus && D.onAt(s, a)).length;
+      hourly.push({ hour: hh, rooms: nRooms, lunch: extra,
+                    need: nRooms + extra, supply, margin: supply - nRooms - extra });
+    }
+
+    return { campus, iso:D.iso, needs, appPlan, mdPlan, stuck, claims, breaks, hourly,
              appCapacity, notes:D.notes };
   }
 
@@ -5545,6 +5571,87 @@ async function deleteEndoEntry(date, safeName) {
         '</div></div></div>');
   }
 
+  // ── hourly chart ──────────────────────────────────────────────
+  // Stacked bars are the demand (rooms, then lunch relief on top); the
+  // stepped line is how many APPs are actually on the campus that hour.
+  // The number under each hour is the slack.
+  function hourlyChart(r) {
+    const H = r.hourly || [];
+    if (!H.length) return "";
+    const W = 880, HT = 210, padL = 34, padR = 10, padT = 14, padB = 34;
+    const cw = (W - padL - padR) / H.length;
+    const max = Math.max.apply(null, H.map(x => Math.max(x.need, x.supply)).concat([1]));
+    const plotH = HT - padT - padB;
+    const y = v => padT + plotH * (1 - v / max);
+    const bw = Math.min(cw * 0.56, 26);
+
+    let g = "";
+    // horizontal guides
+    const step = max > 20 ? 5 : max > 8 ? 2 : 1;
+    for (let v = 0; v <= max; v += step) {
+      g += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + y(v) + '" y2="' + y(v) +
+           '" stroke="var(--border)" stroke-width="1" />' +
+           '<text x="' + (padL - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end" ' +
+           'font-size="10" fill="var(--muted)">' + v + '</text>';
+    }
+
+    // demand bars
+    H.forEach((x, i) => {
+      const cx = padL + cw * i + cw / 2;
+      const bx = cx - bw / 2;
+      if (x.rooms) g += '<rect x="' + bx + '" y="' + y(x.rooms) + '" width="' + bw +
+        '" height="' + (y(0) - y(x.rooms)) + '" fill="var(--day)" opacity="0.55" rx="2" />';
+      if (x.lunch) g += '<rect x="' + bx + '" y="' + y(x.need) + '" width="' + bw +
+        '" height="' + (y(x.rooms) - y(x.need)) + '" fill="var(--special)" opacity="0.8" rx="2" />';
+    });
+
+    // supply as a stepped line
+    let d = "";
+    H.forEach((x, i) => {
+      const x0 = padL + cw * i, x1 = x0 + cw, yy = y(x.supply);
+      d += (i ? " L" : "M") + x0 + " " + yy + " L" + x1 + " " + yy;
+    });
+    g += '<path d="' + d + '" fill="none" stroke="var(--accent)" stroke-width="2.5" />';
+
+    // hour labels and slack
+    H.forEach((x, i) => {
+      const cx = padL + cw * i + cw / 2;
+      const hr = x.hour > 12 ? x.hour - 12 : x.hour;
+      g += '<text x="' + cx + '" y="' + (HT - padB + 14) + '" text-anchor="middle" ' +
+           'font-size="10" fill="var(--muted)">' + hr + '</text>';
+      const col = x.margin < 0 ? "var(--cancel)" : x.margin === 0 ? "var(--special)" : "var(--day)";
+      g += '<text x="' + cx + '" y="' + (HT - padB + 28) + '" text-anchor="middle" ' +
+           'font-size="11" font-weight="700" fill="' + col + '">' +
+           (x.margin > 0 ? "+" : "") + x.margin + '</text>';
+    });
+
+    const tight = H.filter(x => x.margin <= 0);
+    const firstTight = tight.length ? tight[0] : null;
+
+    return '<div class="day-group"><div class="day-group-title">APPs by hour</div>' +
+      '<div style="overflow-x:auto;"><svg viewBox="0 0 ' + W + ' ' + HT +
+        '" style="width:100%;min-width:620px;height:' + HT + 'px;">' + g + '</svg></div>' +
+      '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--muted);' +
+        'margin-top:4px;">' +
+        '<span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;' +
+          'background:var(--day);opacity:0.55;"></span> rooms running</span>' +
+        '<span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;' +
+          'background:var(--special);opacity:0.8;"></span> lunch relief</span>' +
+        '<span><span style="display:inline-block;width:12px;height:3px;' +
+          'background:var(--accent);"></span> APPs on campus</span>' +
+        '<span style="margin-left:auto;">number under each hour is the slack</span>' +
+      '</div>' +
+      (firstTight
+        ? '<div style="font-size:13px;margin-top:10px;color:' +
+          (firstTight.margin < 0 ? "var(--cancel)" : "var(--special)") + ';">' +
+          'Tightest from ' + (firstTight.hour > 12 ? firstTight.hour - 12 : firstTight.hour) +
+          ':00 — slack ' + firstTight.margin +
+          '. Releasing anyone before then costs you at that hour.</div>'
+        : '<div style="font-size:13px;margin-top:10px;color:var(--day);">' +
+          'Slack all day — release decisions are low risk.</div>') +
+      '</div>';
+  }
+
   function render() {
     const out = document.getElementById("lunchResult");
     const r = last;
@@ -5568,6 +5675,9 @@ async function deleteEndoEntry(date, safeName) {
           (mdCount ? "md-color" : "total-color") + '">' + mdCount +
           '</div><div class="stat-label">by MD</div></div>' +
       '</div></div>';
+
+    // hourly supply vs demand
+    h += hourlyChart(r);
 
     // D5 takeovers — a person moves rooms, not a 30-minute break
     if (r.claims.length) {
