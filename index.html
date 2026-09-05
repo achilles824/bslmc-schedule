@@ -5108,7 +5108,7 @@ async function deleteEndoEntry(date, safeName) {
     if (!iso) iso = (document.getElementById("adminDatePicker") || {}).value
                  || window.currentAdminDate
                  || new Date().toISOString().slice(0, 10);
-    if (typeof SCHEDULE_DATA === "undefined" || !SCHEDULE_DATA.length)
+    if (!window.SCHEDULE_DATA || !SCHEDULE_DATA.length)
       throw new Error("SCHEDULE_DATA not loaded yet — wait for the portal to finish loading");
 
     const notes = [];
@@ -5177,7 +5177,7 @@ async function deleteEndoEntry(date, safeName) {
 
       rooms.push({ key:k, campus, addon, holder, closed,
         start: addon ? M(7) : cs[0][0],
-        end:   addon ? M(19) : Math.max.apply(null, cs.map(c => c[1])) });
+        end:   addon ? M(23) : Math.max.apply(null, cs.map(c => c[1])) });
     }
     if (unmatched.length) notes.push("Assignment names not in the roster: " + unmatched.join("; "));
 
@@ -5422,8 +5422,39 @@ async function deleteEndoEntry(date, safeName) {
                     need: nRooms + extra, supply, margin: supply - nRooms - extra });
     }
 
+    // ── early releases, by shift cohort ───────────────────────
+    // Releasing someone only costs supply between the moment they leave and
+    // the moment their shift would have ended, so each cohort is judged on
+    // its own block: the 3p people against the hours up to 3p, the 5p people
+    // against 3p-5p, the 7p people against 5p-7p. How many can go is the
+    // WORST hour in that block — not the average.
+    const slackAt = {};
+    hourly.forEach(x => { slackAt[x.hour] = x.margin; });
+    const releases = [];
+    [[15, 7], [17, 15], [19, 17]].forEach(([endH, fromH]) => {
+      const cohort = D.staff.filter(s => s.campus === campus && s.end === M(endH)
+                                         && !s.isD5 && D.onAt(s, M(fromH)));
+      if (!cohort.length) return;
+      let worst = Infinity;
+      for (let h = fromH; h < endH; h++)
+        if (slackAt[h] != null) worst = Math.min(worst, slackAt[h]);
+      if (!isFinite(worst)) worst = 0;
+      const n = Math.max(0, Math.min(worst, cohort.length));
+      const ordered = cohort.slice().sort((a, b) =>
+        (a.outOrder == null ? 99 : a.outOrder) - (b.outOrder == null ? 99 : b.outOrder));
+      releases.push({
+        endH, fromH, size: cohort.length, worst, count: n,
+        names: ordered.slice(0, n).map(s => ({
+          name: s.name,
+          out: s.outOrder,
+          holdsRoom: mine.some(r => r.holder && r.holder.name === s.name && r.end > M(fromH))
+        })),
+        held: ordered.slice(n).map(s => s.name)
+      });
+    });
+
     return { campus, iso:D.iso, needs, appPlan, mdPlan, stuck, claims, breaks, hourly,
-             appCapacity, notes:D.notes };
+             releases, appCapacity, notes:D.notes };
   }
 
   // ── console output ────────────────────────────────────────────
@@ -5472,11 +5503,10 @@ async function deleteEndoEntry(date, safeName) {
   console.log("[BoardRunner] ready — BoardRunner.lunch('Main') / .lunch('McNair') / .both()");
 })();
 // ══════════════════════ END BOARD RUNNER ══════════════════════════
-
 // ══════════════════════════════════════════════════════════════════
 // BOARD RUNNER — LUNCH PLAN TAB
 //
-// Paste directly below "END BOARD RUNNER". Adds a top-level "Lunch Plan"
+// Paste directly below "END BOARD RUNNER". Adds a top-level "Board Runner"
 // tab (no PIN) for the charge MD. Read-only; refuses to build a plan from
 // a day that has not been finalized.
 //
@@ -5510,7 +5540,7 @@ async function deleteEndoEntry(date, safeName) {
       '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
       'stroke-width="2"><path d="M3 2v7c0 1.1.9 2 2 2h1a2 2 0 0 0 2-2V2"/>' +
       '<line x1="5" y1="2" x2="5" y2="11"/><line x1="6" y1="11" x2="6" y2="22"/>' +
-      '<path d="M18 2c-1.7 0-3 2-3 5s.6 4 2 4v11"/></svg> Lunch Plan';
+      '<path d="M18 2c-1.7 0-3 2-3 5s.6 4 2 4v11"/></svg> Board Runner';
     bar.appendChild(btn);
 
     // content pane
@@ -5521,7 +5551,7 @@ async function deleteEndoEntry(date, safeName) {
     pane.id = "tab-lunch";
     pane.innerHTML =
       '<div class="day-picker-section">' +
-        '<h2>Lunch Plan</h2>' +
+        '<h2>Board Runner Assistant</h2>' +
         '<div class="day-picker-row">' +
           '<div class="day-input-wrap" style="max-width:200px;">' +
             '<label for="lunchDate">Date</label>' +
@@ -5616,7 +5646,7 @@ async function deleteEndoEntry(date, safeName) {
     // hour labels and slack
     H.forEach((x, i) => {
       const cx = padL + cw * i + cw / 2;
-      const hr = x.hour < 12 ? x.hour + "a" : x.hour === 12 ? "12p" : (x.hour - 12) + "p";
+      const hr = x.hour > 12 ? x.hour - 12 : x.hour;
       g += '<text x="' + cx + '" y="' + (HT - padB + 14) + '" text-anchor="middle" ' +
            'font-size="10" fill="var(--muted)">' + hr + '</text>';
       const col = x.margin < 0 ? "var(--cancel)" : x.margin === 0 ? "var(--special)" : "var(--day)";
@@ -5625,11 +5655,8 @@ async function deleteEndoEntry(date, safeName) {
            (x.margin > 0 ? "+" : "") + x.margin + '</text>';
     });
 
-    let worst = null;
-    H.forEach(x => { if (!worst || x.margin < worst.margin) worst = x; });
-    const wLabel = !worst ? ""
-      : worst.hour < 12 ? worst.hour + "a"
-      : worst.hour === 12 ? "12p" : (worst.hour - 12) + "p";
+    const tight = H.filter(x => x.margin <= 0);
+    const firstTight = tight.length ? tight[0] : null;
 
     return '<div class="day-group"><div class="day-group-title">APPs by hour</div>' +
       '<div style="overflow-x:auto;"><svg viewBox="0 0 ' + W + ' ' + HT +
@@ -5644,15 +5671,54 @@ async function deleteEndoEntry(date, safeName) {
           'background:var(--accent);"></span> APPs on campus</span>' +
         '<span style="margin-left:auto;">number under each hour is the slack</span>' +
       '</div>' +
-      (worst && worst.margin <= 0
+      (firstTight
         ? '<div style="font-size:13px;margin-top:10px;color:' +
-          (worst.margin < 0 ? "var(--cancel)" : "var(--special)") + ';">' +
-          'Tightest at ' + wLabel + ' — slack ' + worst.margin +
-          '. Anyone released earlier is unavailable then.</div>'
+          (firstTight.margin < 0 ? "var(--cancel)" : "var(--special)") + ';">' +
+          'Tightest from ' + (firstTight.hour > 12 ? firstTight.hour - 12 : firstTight.hour) +
+          ':00 — slack ' + firstTight.margin +
+          '. Releasing anyone before then costs you at that hour.</div>'
         : '<div style="font-size:13px;margin-top:10px;color:var(--day);">' +
-          'Slack all day — lowest is +' + (worst ? worst.margin + ' at ' + wLabel : '') +
-          '. Release decisions are low risk.</div>') +
+          'Slack all day — release decisions are low risk.</div>') +
       '</div>';
+  }
+
+  // ── early release recommendations ─────────────────────────────
+  function releaseBlock(r) {
+    const R = r.releases || [];
+    if (!R.length) return "";
+    const hlabel = v => v < 12 ? v + "a" : v === 12 ? "12p" : (v - 12) + "p";
+
+    let h = '<div class="day-group"><div class="day-group-title">Early releases</div>';
+    R.forEach(b => {
+      const band = hlabel(b.fromH) + "–" + hlabel(b.endH);
+      const ok = b.count > 0;
+      h += '<div class="provider-row" style="align-items:flex-start;border-left:3px solid ' +
+        (ok ? "var(--day)" : "var(--special)") + ';">' +
+        '<div style="min-width:88px;font-weight:700;font-size:14px;">' + band + '</div>' +
+        '<div style="flex:1;min-width:0;">';
+      if (ok) {
+        h += '<div style="font-size:14px;">Release <strong>' + b.count + '</strong> of ' +
+          b.size + (b.fromH === 7 ? ' at your convenience' : ' at ' + hlabel(b.fromH)) + '</div>' +
+          '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">' +
+          b.names.map(n => '<span style="font-size:12px;padding:3px 10px;background:var(--surface2);' +
+            'border:1px solid var(--border);border-radius:6px;">' +
+            (n.out != null ? '<span style="color:var(--muted);">' + n.out + '. </span>' : '') +
+            esc(n.name) +
+            (n.holdsRoom ? ' <span title="still holds a room — needs relieving first" ' +
+              'style="color:var(--special);">⇄</span>' : '') +
+            '</span>').join("") + '</div>';
+      } else {
+        h += '<div style="font-size:14px;color:var(--special);">Hold all ' + b.size +
+             ' — no spare cover in this block</div>';
+      }
+      h += '</div>' +
+        '<div class="provider-row-meta" style="text-align:right;min-width:110px;">' +
+        'worst hour ' + (b.worst > 0 ? "+" : "") + b.worst + '</div></div>';
+    });
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">' +
+      'Each block is limited by its worst hour, not its average. ' +
+      '⇄ means that person is still in a room and needs relieving before they can go.</div>';
+    return h + '</div>';
   }
 
   function render() {
@@ -5681,6 +5747,7 @@ async function deleteEndoEntry(date, safeName) {
 
     // hourly supply vs demand
     h += hourlyChart(r);
+    h += releaseBlock(r);
 
     // D5 takeovers — a person moves rooms, not a 30-minute break
     if (r.claims.length) {
