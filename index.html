@@ -4357,6 +4357,10 @@ async function deleteEndoEntry(date, safeName) {
     return null;
   }
 
+  // "Late MD-MNC" — the McNair late-start doc. Poor fit for endo; OTM only,
+  // and only as a last resort.
+  function isLateMcNairMD(shift) { return /Late\s*MD-?MNC/i.test(shift || ""); }
+
   // All-day shift; excluded from endo entirely.
   function isMcNairCallMD(shift) {
     return /McNair Call/i.test(shift) && !/Post-?McNair Call/i.test(shift);
@@ -4393,6 +4397,7 @@ async function deleteEndoEntry(date, safeName) {
         side: side,
         shift: p.shift,
         hours: shiftHours(p.shift),
+        late: isLateMcNairMD(p.shift),
         lastResort: LAST_RESORT.indexOf(p.name) > -1
       };
 
@@ -4467,9 +4472,46 @@ async function deleteEndoEntry(date, safeName) {
   }
 
   // ── ladders ───────────────────────────────────────────────────
-  function tiersFor(area, cands, led) {
-    const free = c => !led.usedThisWeek(c.name);
-    const ok   = c => free(c) && !c.lastResort;
+  function tiersFor(area, pool, cands, led) {
+    const free  = c => !led.usedThisWeek(c.name);
+    const ok    = c => free(c) && !c.lastResort;
+    const short = c => c.hours != null && c.hours <= 10;   // 3pm / 5pm finish
+    const long  = c => c.hours != null && c.hours >= 12;   // 7pm finish
+
+    // ── Main Endo, MD ──────────────────────────────────────────
+    // Sort keys, most important first:
+    //   1. clear of last week  — rotation matters most. The same two or three
+    //      short-shift MDs in endo every week is worse for morale than the
+    //      occasional 7pm MD doing it.
+    //   2. short shift (3pm/5pm finish) before a 7pm finish
+    //   3. locum before Baylor
+    // So a 7pm MD who is clear outranks a short-shift MD who did Main Endo
+    // last week, and a short-shift Baylor MD outranks a 7pm locum.
+    if (area === "Main Endo" && pool === "MD") {
+      const clear = c => led.mainClear(c.name);
+      const tiers = [];
+      let n = 0;
+      [true, false].forEach(wantClear => {
+        [true, false].forEach(wantShort => {
+          ["Locum", "Baylor"].forEach(ag => {
+            n++;
+            tiers.push({
+              n: n + " " + ag.toLowerCase() + " · " + (wantShort ? "3/5pm" : "7pm") +
+                 (wantClear ? " · clear" : " · last week"),
+              list: cands.filter(c =>
+                ok(c) && c.agency === ag &&
+                (wantShort ? !long(c) : long(c)) &&
+                (wantClear ? clear(c) : !clear(c)))
+            });
+          });
+        });
+      });
+      tiers.push({ n: (n+1) + " last resort",
+                   list: cands.filter(c => free(c) && c.lastResort) });
+      return tiers;
+    }
+
+    // ── Main Endo, APP ─────────────────────────────────────────
     if (area === "Main Endo") {
       const clear = c => led.mainClear(c.name);
       return [
@@ -4480,6 +4522,22 @@ async function deleteEndoEntry(date, safeName) {
         { n: "5 last resort",        list: cands.filter(c => free(c) && c.lastResort) }
       ];
     }
+
+    // ── OTM Endo, MD ───────────────────────────────────────────
+    // Locums preferred, then Baylor — the McNair Baylor MDs are perfectly
+    // acceptable here and often land a day a week, but only after locums.
+    // 7pm and late-start MDs drop to last resort.
+    if (pool === "MD") {
+      const base = c => ok(c) && !long(c) && !c.late;
+      return [
+        { n: "1 locum",           list: cands.filter(c => base(c) && c.agency === "Locum") },
+        { n: "2 Baylor",          list: cands.filter(c => base(c) && c.agency === "Baylor") },
+        { n: "3 7pm or late MD",  list: cands.filter(c => ok(c) && (long(c) || c.late)) },
+        { n: "4 last resort",     list: cands.filter(c => free(c) && c.lastResort) }
+      ];
+    }
+
+    // ── OTM Endo, APP ──────────────────────────────────────────
     return [
       { n: "1 unused this week", list: cands.filter(ok) },
       { n: "2 last resort",      list: cands.filter(c => free(c) && c.lastResort) }
@@ -4600,7 +4658,7 @@ async function deleteEndoEntry(date, safeName) {
         (appears[c.name] = appears[c.name] || []).push({date, area, pool:p}))));
 
     function supply(s) {
-      const t = tiersFor(s.area, pool[s.date][s.area][s.pool], led);
+      const t = tiersFor(s.area, s.pool, pool[s.date][s.area][s.pool], led);
       const taken = picks[s.date][s.area][s.pool];
       for (const tier of t) {
         const n = tier.list.filter(c => taken.indexOf(c.name) === -1).length;
@@ -4645,7 +4703,7 @@ async function deleteEndoEntry(date, safeName) {
         continue;
       }
 
-      const tiers = tiersFor(slot.area, pool[slot.date][slot.area][slot.pool], led);
+      const tiers = tiersFor(slot.area, slot.pool, pool[slot.date][slot.area][slot.pool], led);
       const taken = picks[slot.date][slot.area][slot.pool];
       let chosen = null, tierName = null;
       for (const t of tiers) {
@@ -4670,7 +4728,7 @@ async function deleteEndoEntry(date, safeName) {
     days.filter(d => need[d] && !locked[d]).forEach(date => cells.forEach(([area,p]) => {
       if (!need[date][area][p]) return;
       const taken = picks[date][area][p], seen = {};
-      tiersFor(area, pool[date][area][p], startLed).forEach(t => t.list.forEach(c => {
+      tiersFor(area, p, pool[date][area][p], startLed).forEach(t => t.list.forEach(c => {
         if (taken.indexOf(c.name) > -1 || seen[c.name]) return;
         seen[c.name] = 1;
         bench.push({ date, area, pool:p, name:c.name, agency:c.agency, tier:t.n,
@@ -4758,7 +4816,7 @@ async function deleteEndoEntry(date, safeName) {
     if (!names.length && !want) h += '<span style="color:var(--muted);font-size:11px;">—</span>';
     names.forEach(n => {
       const e = byName[n] || {};
-      const late = /^[3-5]/.test(e.tier || "");
+      const late = /^[3-9]/.test(e.tier || "");
       h += '<div style="font-size:12px;margin-bottom:3px;' +
            (isLocked ? "color:var(--muted);" : "") +
            (e.lastResort ? "color:var(--special);font-weight:600;" : "") + '" title="' +
