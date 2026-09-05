@@ -5108,7 +5108,7 @@ async function deleteEndoEntry(date, safeName) {
     if (!iso) iso = (document.getElementById("adminDatePicker") || {}).value
                  || window.currentAdminDate
                  || new Date().toISOString().slice(0, 10);
-    if (!window.SCHEDULE_DATA || !SCHEDULE_DATA.length)
+    if (typeof SCHEDULE_DATA === "undefined" || !SCHEDULE_DATA.length)
       throw new Error("SCHEDULE_DATA not loaded yet — wait for the portal to finish loading");
 
     const notes = [];
