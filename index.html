@@ -5467,8 +5467,48 @@ async function deleteEndoEntry(date, safeName) {
       });
     });
 
+    // ── release / lunch conflicts ─────────────────────────────
+    // Someone who can go early may also be carrying breaks. The slack that
+    // makes the release possible means a spare body exists in that hour —
+    // this works out who, and checks they can actually absorb the work.
+    //
+    // A replacement must not itself be releasable before lunch is over: if
+    // cover is +2, both 1st and 2nd Out could go, so neither should be asked
+    // to pick up the other's breaks. Anyone releasing at 3p or 5p is fine —
+    // they are on the floor for the whole lunch window regardless.
+    const earlyBlock = releases.filter(b => b.fromH === 7)[0] || null;
+    const earlySet = new Set();
+    if (earlyBlock) earlyBlock.names.forEach(n => earlySet.add(n.name));
+
+    const costFor = (cand, jobs) => {
+      let c = jobs.length * EAT;
+      if (FAR && jobs.some(j => j.area === FAR) && cand.area !== FAR
+          && !cand.jobs.some(j => j.area === FAR)) c += TRAVEL;
+      return c;
+    };
+
+    const swaps = [];
+    all.filter(g => g.jobs.length && earlySet.has(g.s.name)).forEach(g => {
+      const jobs = g.jobs.slice();
+      const cand = all.filter(x => x.s.name !== g.s.name
+                                && !earlySet.has(x.s.name)
+                                && x.budget >= costFor(x, jobs))
+        // prefer someone already giving breaks — no extra body pulled in
+        .sort((a, b) => (b.jobs.length ? 1 : 0) - (a.jobs.length ? 1 : 0)
+                     || b.budget - a.budget)[0] || null;
+      swaps.push({
+        from: g.s.name,
+        to: cand ? cand.s.name : null,
+        toIsFloat: cand ? !!cand.s.isFloat : false,
+        covering: jobs.map(j => j.who),
+        busyUntil: g.ready + jobs.length * EAT +
+                   jobs.reduce((s, j) => s + (j.travel || 0), 0)
+      });
+      if (cand) cand.budget -= costFor(cand, jobs);   // don't spend them twice
+    });
+
     return { campus, iso:D.iso, needs, appPlan, mdPlan, stuck, claims, breaks, hourly,
-             releases, appCapacity, notes:D.notes };
+             releases, swaps, appCapacity, notes:D.notes };
   }
 
   // ── console output ────────────────────────────────────────────
@@ -5705,6 +5745,8 @@ async function deleteEndoEntry(date, safeName) {
     const R = r.releases || [];
     if (!R.length) return "";
     const hlabel = v => v < 12 ? v + "a" : v === 12 ? "12p" : (v - 12) + "p";
+    const swapOf = {};
+    (r.swaps || []).forEach(s => { swapOf[s.from] = s; });
 
     let h = '<div class="day-group"><div class="day-group-title">Early releases</div>';
     R.forEach(b => {
@@ -5730,7 +5772,22 @@ async function deleteEndoEntry(date, safeName) {
             '</span>').join("") + '</div>' +
           (b.capped ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">' +
             'Cover is +' + b.worst + ' this block, but only ' + b.size +
-            ' on the out list.</div>' : '');
+            ' on the out list.</div>' : '') +
+          b.names.filter(n => swapOf[n.name]).map(n => {
+            const s = swapOf[n.name];
+            return '<div style="font-size:12px;margin-top:6px;padding:6px 10px;border-radius:6px;' +
+              'background:' + (s.to ? 'rgba(79,142,247,0.08)' : 'rgba(245,158,11,0.10)') + ';' +
+              'border:1px solid ' + (s.to ? 'var(--accent)' : 'var(--special)') + ';">' +
+              '<strong>' + esc(s.from) + '</strong> is giving ' + s.covering.length +
+              ' break' + (s.covering.length === 1 ? '' : 's') + ' (' +
+              s.covering.map(esc).join(", ") + '). ' +
+              (s.to
+                ? 'Hand them to <strong>' + esc(s.to) + '</strong> and ' +
+                  esc(s.from.split(" ")[0]) + ' can go.'
+                : 'No one else has the capacity — ' + esc(s.from.split(" ")[0]) +
+                  ' is not free until ' + fmt(s.busyUntil) + '.') +
+              '</div>';
+          }).join("");
       } else {
         h += '<div style="font-size:14px;color:var(--special);">Hold all ' + b.size +
              ' — no spare cover in this block</div>';
@@ -5787,11 +5844,14 @@ async function deleteEndoEntry(date, safeName) {
     }
 
     // the plan, one line per break
+    const swapBy = {};
+    (r.swaps || []).forEach(s => { swapBy[s.from] = s; });
     h += '<div class="day-group"><div class="day-group-title">Breaks</div>';
     if (!r.breaks.length)
       h += '<div style="color:var(--muted);font-size:14px;">No breaks needed.</div>';
     r.breaks.forEach(b => {
       const isMD = b.kind === "MD";
+      const sw = swapBy[b.giver];
       h += '<div class="provider-row" style="border-left:3px solid ' +
         (isMD ? "var(--accent)" : "var(--day)") + ';">' +
         '<div style="min-width:150px;font-weight:600;font-size:14px;">' + esc(b.giver) +
@@ -5802,7 +5862,13 @@ async function deleteEndoEntry(date, safeName) {
         '<div style="color:var(--muted);">→</div>' +
         '<div class="provider-row-name">' + esc(b.recipient) +
           '<span style="color:var(--muted);font-size:12px;margin-left:8px;">' +
-          esc(b.room) + '</span></div>' +
+          esc(b.room) + '</span>' +
+          (sw ? '<div style="font-size:11px;margin-top:2px;color:' +
+            (sw.to ? 'var(--accent)' : 'var(--special)') + ';">' +
+            (sw.to ? '↷ ' + esc(sw.to) + ' if ' + esc(sw.from.split(" ")[0]) + ' is released'
+                   : '⚑ blocks ' + esc(sw.from.split(" ")[0]) + '\u2019s early release') +
+            '</div>' : '') +
+        '</div>' +
         '<div class="provider-row-meta">' +
           (b.from != null ? 'from ' + fmt(b.from) : 'in room') +
           (b.travel ? ' · +' + b.travel + 'm travel' : '') +
