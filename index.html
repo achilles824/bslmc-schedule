@@ -5969,6 +5969,14 @@ async function deleteEndoEntry(date, safeName) {
   else mount();
 })();
 // ══════════════════ END BOARD RUNNER LUNCH PLAN TAB ═══════════════
+
+// ── PWA service worker ──
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js")
+      .catch(e => console.warn("[SW] registration failed:", e.message));
+  });
+}
 </script>
 
 </body>
