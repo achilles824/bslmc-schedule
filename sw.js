@@ -16,9 +16,10 @@
 // Bump CACHE_VERSION to force every client to drop its caches.
 // ══════════════════════════════════════════════════════════════════
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const SHELL = "shell-" + CACHE_VERSION;
 const LIBS = "libs-" + CACHE_VERSION;
+const DATA = "data-" + CACHE_VERSION;
 
 // Cache-first hosts. Exact match, so fonts.googleapis.com is covered
 // but no other *.googleapis.com host is.
@@ -43,8 +44,8 @@ self.addEventListener("activate", event => {
   event.waitUntil(
     caches.keys()
       .then(keys => Promise.all(
-        keys.filter(k => k !== SHELL && k !== LIBS).map(k => caches.delete(k))
-      ))
+        keys.filter(k => k !== SHELL && k !== LIBS && k !== DATA)
+            .map(k => caches.delete(k))
       .then(() => self.clients.claim())
   );
 });
@@ -75,6 +76,28 @@ self.addEventListener("fetch", event => {
     return;
   }
 
+    // ── provider Gist: network-first, last-known-good fallback ──
+  // The portal appends ?t=<timestamp> as a cache-buster, so the cache key
+  // has to drop the query string or every read is a miss and the cache
+  // grows without bound.
+  if (url.hostname === "gist.githubusercontent.com") {
+    const key = url.origin + url.pathname;
+    event.respondWith(
+      fetch(req)
+        .then(res => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(DATA).then(c => c.put(key, copy)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() =>
+          caches.match(key, { cacheName: DATA })
+            .then(hit => hit || Response.error()))
+    );
+    return;
+  }
+  
   // ── CDN libraries and fonts ─────────────────────────────────
   if (CDN_HOSTS.indexOf(url.hostname) > -1) {
     event.respondWith(
