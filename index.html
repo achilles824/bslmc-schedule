@@ -5517,6 +5517,7 @@ async function deleteEndoEntry(date, safeName) {
   console.log("[BoardRunner] ready — BoardRunner.lunch('Main') / .lunch('McNair') / .both()");
 })();
 // ══════════════════════ END BOARD RUNNER ══════════════════════════
+  
 // ══════════════════════════════════════════════════════════════════
 // BOARD RUNNER — LUNCH PLAN TAB
 //
@@ -5715,7 +5716,7 @@ async function deleteEndoEntry(date, safeName) {
         '<div style="flex:1;min-width:0;">';
       if (ok) {
         h += '<div style="font-size:14px;">Release <strong>' + b.count + '</strong> of ' +
-          b.size + ' Baylor APP' + (b.size === 1 ? '' : 's') +
+          b.size + ' on the out list' +
           (b.fromH === 7 ? ' at your convenience' : ' at ' + hlabel(b.fromH)) + '</div>' +
           '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">' +
           b.names.map(n => '<span style="font-size:12px;padding:3px 10px;background:var(--surface2);' +
@@ -5728,9 +5729,8 @@ async function deleteEndoEntry(date, safeName) {
               'style="color:var(--accent);">↩</span>' : '') +
             '</span>').join("") + '</div>' +
           (b.capped ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;">' +
-            'Slack is +' + b.worst + ' but only ' + b.size + ' Baylor APP' +
-            (b.size === 1 ? ' is' : 's are') + ' in this block — the rest of the cover is ' +
-            'locums, who stay to the end of their shift.</div>' : '');
+            'Cover is +' + b.worst + ' this block, but only ' + b.size +
+            ' on the out list.</div>' : '');
       } else {
         h += '<div style="font-size:14px;color:var(--special);">Hold all ' + b.size +
              ' — no spare cover in this block</div>';
@@ -5740,7 +5740,6 @@ async function deleteEndoEntry(date, safeName) {
         'worst hour ' + (b.worst > 0 ? "+" : "") + b.worst + '</div></div>';
     });
     h += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">' +
-      'Baylor APPs only — a locum is paid to the end of their shift and stays. ' +
       'Each block is limited by its worst hour, not its average. ' +
       '⇄ still holds a room and needs relieving first · ↩ back later on a second shift.</div>';
     return h + '</div>';
