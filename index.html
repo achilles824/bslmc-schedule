@@ -4985,6 +4985,450 @@ async function deleteEndoEntry(date, safeName) {
   document.addEventListener("click", () => setTimeout(mountPanel, 0));
 })();
 // ══════════════════════ END ENDO WEEK GENERATOR ═══════════════════
+
+// ══════════════════════════════════════════════════════════════════
+// BOARD RUNNER — LUNCH PLANNER
+//
+// Self-contained. Paste at the very END of the existing script block in
+// index.html, directly below "END ENDO WEEK GENERATOR". Read-only —
+// writes nothing to Firebase. No UI yet: call from the console.
+//
+//   BoardRunner.lunch("Main")            // uses the Admin date picker
+//   BoardRunner.lunch("McNair", "2026-09-04")
+//   BoardRunner.data()                   // last build, for poking at
+//
+// (Never write the closing script tag anywhere in this file, not even in
+//  a comment — the HTML parser ends the script there.)
+// ══════════════════════════════════════════════════════════════════
+(function () {
+
+  // ── config ────────────────────────────────────────────────────
+  const CFG = {
+    L0: 11 * 60,        // lunch window opens
+    L1: 13 * 60,        // lunch window closes
+    EAT: 30,            // a break
+    TURN: 15,           // turnover back into a room
+    LAST_START: 12 * 60 + 30,
+    TRAVEL: 20,         // 10 min each way
+    FAR_AREA: { Main: null, McNair: "Jamail OR" },
+    ADDON: ["Main OR|15"],
+    MCNAIR_ONLY: ["Sagar Patel","Jesus Bagos","Mark Doria","Lina Eisa","Audra Jackson",
+      "Lee Mabry","Tanya McGowan","Amanda Messarra","Adriana Montoya","Tammy Moore",
+      "Natty Pitera Okojie","Carla Rose","Evie Schoene","Tracey Sheffield",
+      "Khadijah Udu","Young Wright"],
+    MAIN_ONLY: ["Zamantha Seeman","Zehneel Jiwani"]
+  };
+  const MIN_GAP = CFG.EAT + CFG.TURN;   // 45 — turnover plus eating
+
+  const AREA_CAMPUS = {
+    "Main OR":"Main","Main Endo":"Main","IR":"Main","NIR":"Main","CT":"Main","MRI":"Main",
+    "McNair OR":"McNair","OTM OR":"McNair","OTM Endo":"McNair","Jamail OR":"McNair"
+  };
+
+  // ── helpers ───────────────────────────────────────────────────
+  const M = (h, m) => h * 60 + (m || 0);
+  const fmt = v => v == null ? "—"
+    : String(Math.floor(v/60)).padStart(2,"0") + ":" + String(v%60).padStart(2,"0");
+
+  function fbGetT(path, ms) {
+    ms = ms || 8000;
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const t = setTimeout(() => { if (!done) { done = true;
+        reject(new Error("Firebase timed out reading " + path + " — try a phone hotspot")); } }, ms);
+      window.fbGet(path).then(v => { if (!done) { done = true; clearTimeout(t); resolve(v); } })
+                        .catch(e => { if (!done) { done = true; clearTimeout(t); reject(e); } });
+    });
+  }
+
+  // SCHEDULE_DATA mixes two date-key formats: locum records use M/D/YY,
+  // QGenda records use YYYY-MM-DD. Reading only one silently loses half
+  // the roster, so every shift lookup goes through here.
+  function shiftFor(p, iso) {
+    if (!p || !p.shifts) return undefined;
+    if (p.shifts[iso] !== undefined) return p.shifts[iso];
+    const a = iso.split("-").map(Number);
+    return p.shifts[a[1] + "/" + a[2] + "/" + String(a[0]).slice(2)];
+  }
+
+  const norm = n => String(n || "").replace(/["""]/g, "").replace(/\([^)]*\)/g, " ")
+    .replace(/[^A-Za-z\s-]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const nkey = n => { const p = norm(n).split(" ");
+    return p.length > 2 ? p[0] + " " + p[p.length-1] : norm(n); };
+
+  function toMin(t) {
+    if (t == null || t === "") return null;
+    if (typeof t === "number") return Math.round(t * 24 * 60);
+    const s = String(t).trim();
+    let m = s.match(/^(\d{1,2}):(\d{2})\s*([AaPp])/);
+    if (m) return ((+m[1] % 12) + (m[3].toLowerCase() === "p" ? 12 : 0)) * 60 + (+m[2]);
+    m = s.match(/^(\d{1,2}):(\d{2})/);
+    return m ? (+m[1]) * 60 + (+m[2]) : null;
+  }
+
+  const subtract = (ivs, a, b) => {
+    const o = [];
+    for (const [x, y] of ivs) {
+      if (b <= x || a >= y) { o.push([x, y]); continue; }
+      if (a > x) o.push([x, a]);
+      if (b < y) o.push([b, y]);
+    }
+    return o;
+  };
+
+  // ── shift label -> clock intervals ────────────────────────────
+  // Baylor APP labels are slash-delimited: out-order, room length, extras.
+  // Locums carry D5/D8/D10/D12. A person may hold several intervals at
+  // once (day shift + 3p-11p extra, or day shift + 5p back-up).
+  function parseShift(label) {
+    const segs = String(label).split("/").map(s => s.trim());
+    const iv = [], tag = [];
+    let outOrder = null, isD5 = false, unparsed = [];
+    for (const s of segs) {
+      if (/^Off\b|PTO|Sick|Night\s*Float/i.test(s)) { tag.push("off"); continue; }
+      if (/Back-?Up/i.test(s))     { iv.push([M(17), M(19)]); tag.push("backup"); continue; }
+      if (/3p-11p/i.test(s))       { iv.push([M(15), M(23)]); tag.push("extra3p"); continue; }
+      if (/\bOR L1\b/i.test(s))    { iv.push([M(7),  M(19)]); continue; }
+      if (/\bOR L2\b/i.test(s))    { iv.push([M(7),  M(17)]); continue; }
+      if (/\bOR-?Res\b/i.test(s))  { iv.push([M(7),  M(17)]); continue; }
+      if (/\bOR - APP\b/i.test(s)) { iv.push([M(7),  M(15)]); continue; }
+      if (/^D5$/i.test(s))  { iv.push([M(7), M(12)]); isD5 = true; continue; }
+      if (/^D8$/i.test(s))  { iv.push([M(7), M(15)]); continue; }
+      if (/^D10$/i.test(s)) { iv.push([M(7), M(17)]); continue; }
+      if (/^D12$/i.test(s)) { iv.push([M(7), M(19)]); continue; }
+      const o = s.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
+      if (o) { outOrder = +o[1]; continue; }
+      unparsed.push(s);
+    }
+    return { iv, outOrder, isD5, tag: tag.join(","), unparsed };
+  }
+
+  // ── build the day ─────────────────────────────────────────────
+  async function build(iso) {
+    if (!iso) iso = (document.getElementById("adminDatePicker") || {}).value
+                 || window.currentAdminDate
+                 || new Date().toISOString().slice(0, 10);
+    if (!window.SCHEDULE_DATA || !SCHEDULE_DATA.length)
+      throw new Error("SCHEDULE_DATA not loaded yet — wait for the portal to finish loading");
+
+    const notes = [];
+
+    // staff
+    const staff = [], unparsed = [];
+    for (const p of SCHEDULE_DATA) {
+      if (["CRNA","CAA","Resident"].indexOf(p.credential) === -1) continue;
+      const label = shiftFor(p, iso);
+      if (label === undefined) continue;
+      const r = parseShift(label);
+      r.unparsed.forEach(s => unparsed.push(p.name + " :: " + s));
+      if (p.credential === "Resident" && !r.iv.length) r.iv.push([M(7), M(17)]);
+      if (!r.iv.length) continue;
+
+      let campus = null, lockedBy = null;
+      if (p.agency === "Baylor") {
+        campus = /\bMN\b/.test(String(label)) ? "McNair" : "Main"; lockedBy = "MN label";
+      } else if (CFG.MCNAIR_ONLY.map(nkey).indexOf(nkey(p.name)) > -1) {
+        campus = "McNair"; lockedBy = "McNair-only";
+      } else if (CFG.MAIN_ONLY.map(nkey).indexOf(nkey(p.name)) > -1) {
+        campus = "Main"; lockedBy = "Main-only";
+      }
+      staff.push({ name:p.name, agency:p.agency, cred:p.credential, campus, lockedBy,
+        outOrder:r.outOrder, isD5:r.isD5, intervals:r.iv, tag:r.tag, isFloat:false,
+        label:String(label), end:Math.max.apply(null, r.iv.map(x => x[1])) });
+    }
+    if (unparsed.length) notes.push("Unrecognized shift segments: " + unparsed.join("; "));
+
+    const idx = new Map();
+    staff.forEach(s => { if (!idx.has(nkey(s.name))) idx.set(nkey(s.name), s); });
+    const residentRec = staff.filter(s => s.cred === "Resident")[0] || null;
+
+    // rooms
+    const fb = await fbGetT("assignments/" + iso);
+    if (!fb) throw new Error("No assignments saved for " + iso);
+    const closedFlag = fb.__closed || {};
+    const rooms = [], unmatched = [];
+
+    for (const k of Object.keys(fb)) {
+      if (k === "__closed" || k.slice(-6) === "|Float") continue;
+      const area = k.split("|")[0], campus = AREA_CAMPUS[area];
+      if (!campus) continue;
+      const rec = fb[k] || {};
+      const cs = (rec.cases || []).map(c => [toMin(c.startTime), toMin(c.endTime)])
+        .filter(p => p[0] != null && p[1] != null).sort((a, b) => a[0] - b[0]);
+      const addon = CFG.ADDON.indexOf(k) > -1;
+      if (!cs.length && !addon) continue;
+
+      // The room-holder record carries only a name — agency there is always
+      // "Manual". Everything else must be joined back to SCHEDULE_DATA.
+      let holder = null;
+      const nm = rec.app && rec.app.name;
+      if (nm === "Resident" && residentRec) holder = residentRec;
+      else if (nm) {
+        holder = idx.get(nkey(nm)) || null;
+        if (!holder) unmatched.push(nm + " @ " + k);
+      }
+
+      // A room flagged closed that still has cases AND an assigned APP is
+      // really running — the portal's close flag and the assignment can
+      // disagree, and the assignment is the better signal.
+      let closed = !!closedFlag[k];
+      if (closed && holder && cs.length) { closed = false;
+        notes.push("Running despite __closed flag: " + k.replace("|", " ") + " / " + holder.name); }
+
+      rooms.push({ key:k, campus, addon, holder, closed,
+        start: addon ? M(7) : cs[0][0],
+        end:   addon ? M(23) : Math.max.apply(null, cs.map(c => c[1])) });
+    }
+    if (unmatched.length) notes.push("Assignment names not in the roster: " + unmatched.join("; "));
+
+    // floats are campus-committed but hold no room
+    for (const k of Object.keys(fb)) {
+      if (k.slice(-6) !== "|Float") continue;
+      const campus = AREA_CAMPUS[k.split("|")[0]];
+      const arr = (fb[k] || {}).float;
+      if (!campus || !Array.isArray(arr)) continue;
+      arr.forEach(f => {
+        const nm = f && (f.name || f); if (!nm) return;
+        const s = idx.get(nkey(nm));
+        if (!s) { notes.push("Float name not in the roster: " + nm); return; }
+        s.isFloat = true;
+        if (!s.campus) { s.campus = campus; s.lockedBy = "float"; }
+      });
+    }
+
+    // a flexible locum belongs to whichever campus their room is on
+    rooms.filter(r => !r.closed && r.holder).forEach(r => {
+      if (!r.holder.campus) { r.holder.campus = r.campus; r.holder.lockedBy = "assigned " + r.key; }
+      else if (r.holder.campus !== r.campus && r.holder.lockedBy &&
+               r.holder.lockedBy.indexOf("assigned") === -1)
+        notes.push("CONFLICT: " + r.holder.name + " locked " + r.holder.campus +
+                   " (" + r.holder.lockedBy + ") but assigned " + r.key);
+    });
+    staff.filter(s => !s.campus).forEach(s => { s.campus = "Unassigned"; });
+
+    const data = { iso, staff, rooms, fb, idx, notes,
+      onAt: (s, t) => s.intervals.some(([a, b]) => t >= a && t < b) };
+    LAST = data;
+    return data;
+  }
+
+  // ── lunch ─────────────────────────────────────────────────────
+  function planLunch(D, campus) {
+    const { L0, L1, EAT, LAST_START, TRAVEL } = CFG;
+    const FAR = CFG.FAR_AREA[campus] || null;
+    const mine = D.rooms.filter(r => r.campus === campus && !r.closed);
+
+    // a person may hold more than one room; merge their cases into one timeline
+    function stretches(name) {
+      const cs = [];
+      mine.filter(r => r.holder && r.holder.name === name).forEach(r =>
+        ((D.fb[r.key] || {}).cases || []).forEach(c => {
+          const a = toMin(c.startTime), b = toMin(c.endTime);
+          if (a != null && b != null) cs.push([a, b]);
+        }));
+      if (!cs.length) return [{ from: 0, to: M(24), bounded: false, raw: Infinity }];
+      cs.sort((x, y) => x[0] - y[0]);
+      const m = [cs[0].slice()];
+      cs.slice(1).forEach(([a, b]) => { const l = m[m.length-1];
+        if (a <= l[1]) l[1] = Math.max(l[1], b); else m.push([a, b]); });
+      const out = [{ from: 0, to: m[0][0], bounded: true, raw: Infinity }];
+      for (let i = 0; i < m.length - 1; i++)
+        out.push({ from: m[i][1], to: m[i+1][0], bounded: true, raw: m[i+1][0] - m[i][1] });
+      out.push({ from: m[m.length-1][1], to: M(24), bounded: false, raw: Infinity });
+      return out;
+    }
+
+    // Two tests, both required: the raw gap must fit turnover plus eating
+    // (45 min), and the part of it inside 11-13 must be a full break (30).
+    function usable(name) {
+      for (const s of stretches(name)) {
+        const a = Math.max(s.from, L0), b = Math.min(s.to, L1);
+        if (b <= a || s.raw < MIN_GAP || b - a < EAT || a > LAST_START) continue;
+        return { from: a, to: b, bounded: s.bounded };
+      }
+      return null;
+    }
+
+    // one break need per PERSON, not per room
+    const holders = new Map();
+    mine.filter(r => r.addon || (r.start < L1 && r.end > L0)).forEach(r => {
+      const n = r.holder ? r.holder.name : "(unstaffed) " + r.key;
+      if (!holders.has(n)) holders.set(n, []);
+      holders.get(n).push(r.key);
+    });
+
+    const addonHolders = new Set(mine.filter(r => r.addon && r.holder).map(r => r.holder.name));
+    const needs = [];
+    holders.forEach((keys, name) => {
+      const areas = keys.map(k => k.split("|")[0]);
+      if (name.indexOf("(unstaffed)") === 0) {
+        needs.push({ who:"(unstaffed)", area:areas[0], keys:keys.slice(),
+                     rooms:keys.map(k => k.replace("|", " ")).join(", ") });
+        return;
+      }
+      const s = D.staff.filter(x => x.name === name)[0];
+      if (s && s.isD5) return;                       // leaves at noon, eats on own time
+      const inAddon = addonHolders.has(name);        // add-on room never has a gap
+      if (inAddon || !usable(name))
+        needs.push({ who:name, area:areas[0], keys:keys.slice(),
+          rooms: keys.map(k => k.replace("|", " ")).join(", ") + (inAddon ? "  [add-on]" : "") });
+    });
+
+    const needNames = new Set(needs.map(n => n.who));
+    const held = new Set(Array.from(holders.keys()));
+
+    function giverRec(s) {
+      if (addonHolders.has(s.name)) return null;
+      const u = held.has(s.name) ? usable(s.name) : { from:L0, to:L1, bounded:false };
+      if (!u) return null;
+      const own = u.bounded ? MIN_GAP : EAT;         // a case follows: re-set the room too
+      const ready = u.from + own;
+      const budget = Math.max(0, Math.min(u.to, L1) - ready);
+      const area = (mine.filter(r => r.holder && r.holder.name === s.name)[0] || {}).key;
+      return budget >= EAT ? { s, from:u.from, ready, budget,
+        bounded:u.bounded, area: area ? area.split("|")[0] : null, jobs:[] } : null;
+    }
+
+    // D5 room running past noon is a full-shift takeover, not a break
+    const claims = mine.filter(r => r.holder && r.holder.isD5 && r.end > M(12) && !r.addon)
+                       .map(r => ({ room:r.key, to:r.end, taker:null }));
+    const takers = new Set();
+    claims.forEach(c => {
+      const pick = D.staff.filter(s => s.campus === campus && !needNames.has(s.name)
+          && !takers.has(s.name) && D.onAt(s, c.to - 1))
+        .map(s => { const u = held.has(s.name) ? usable(s.name) : {from:L0,to:L1,bounded:false};
+          if (!u) return null;
+          const ate = u.from + (u.bounded ? MIN_GAP : EAT);
+          return ate <= M(12) ? { s, ate, f: !!s.isFloat } : null; })
+        .filter(Boolean)
+        .sort((a, b) => (a.f?1:0) - (b.f?1:0) || a.ate - b.ate)[0];
+      if (pick) { c.taker = pick.s.name; takers.add(pick.s.name); }
+    });
+
+    const elig = D.staff.filter(s => s.campus === campus && !needNames.has(s.name)
+                                     && !takers.has(s.name)
+                                     && (D.onAt(s, L0) || D.onAt(s, L1 - 1)));
+    const floats = elig.filter(s => s.isFloat).map(giverRec).filter(Boolean)
+                       .sort((a, b) => a.from - b.from);
+    const bench = elig.filter(s => !s.isFloat).map(giverRec).filter(Boolean)
+      .sort((a, b) => b.budget - a.budget
+                   || (b.s.outOrder?0:1) - (a.s.outOrder?0:1)
+                   || b.s.end - a.s.end
+                   || (b.s.outOrder||0) - (a.s.outOrder||0)
+                   || a.from - b.from);
+    const all = floats.concat(bench);   // floats exist to be spent: use them first
+
+    // MDs can only cover the room they are already in, so place them before
+    // the fungible APPs — and only when the APPs actually fall short.
+    const mdShift = {};
+    SCHEDULE_DATA.filter(p => p.credential === "MD").forEach(p => {
+      const l = shiftFor(p, D.iso); if (l !== undefined) mdShift[p.name] = String(l);
+    });
+    const mdOf = k => { const r = D.fb[k]; return (r && r.md && r.md.name) || null; };
+    const endoMDs = new Set(mine.filter(r => /Endo/i.test(r.key)).map(r => mdOf(r.key)).filter(Boolean));
+    const mdBlocked = n => !n ? "no MD on the room"
+                        : /\bcharge\b/i.test(mdShift[n] || "") ? "charge MD"
+                        : endoMDs.has(n) ? "endo MD" : null;
+
+    const appCapacity = all.reduce((a, g) => a + Math.floor(g.budget / EAT), 0);
+    const shortfall = Math.max(0, needs.length - appCapacity);
+    const mdPlan = [], usedMD = new Set(), mdCovered = new Set();
+    if (shortfall > 0) {
+      for (const n of needs) {
+        if (mdPlan.length >= shortfall) break;
+        const md = n.keys.map(mdOf).filter(Boolean)[0] || null;
+        if (mdBlocked(md) || usedMD.has(md)) continue;
+        usedMD.add(md); mdCovered.add(n);
+        mdPlan.push({ room:n.rooms, APP:n.who, MD:md, shift:mdShift[md] || "?" });
+      }
+    }
+
+    const rest = needs.filter(n => !mdCovered.has(n));
+    const ordered = rest.slice().sort((a, b) =>
+      ((b.area === FAR) ? 1 : 0) - ((a.area === FAR) ? 1 : 0));
+    const loose = [];
+    ordered.forEach(n => {
+      const cost = g => EAT + ((FAR && n.area === FAR && g.area !== FAR
+        && !g.jobs.some(j => j.area === n.area)) ? TRAVEL : 0);
+      const fit = all.filter(g => g.budget >= cost(g))
+        .sort((a, b) => (a.jobs.some(j => j.area === n.area) ? 0 : 1)
+                      - (b.jobs.some(j => j.area === n.area) ? 0 : 1)
+                     || b.budget - a.budget);
+      if (!fit.length) { loose.push(n); return; }
+      const g = fit[0], c = cost(g);
+      g.budget -= c;
+      g.jobs.push({ area:n.area, who:n.who, travel:c - EAT });
+    });
+
+    const stuck = [];
+    loose.forEach(n => {
+      const own = n.keys.map(mdOf).filter(Boolean)[0] || null;
+      let md = (!mdBlocked(own) && !usedMD.has(own)) ? own : null;
+      if (!md) md = Object.keys(mdShift).filter(x => !mdBlocked(x) && !usedMD.has(x)
+                      && mine.some(r => mdOf(r.key) === x))[0] || null;
+      if (md) { usedMD.add(md);
+        mdPlan.push({ room:n.rooms, APP:n.who,
+          MD: md + (md === own ? "" : " (from another room)"), shift:mdShift[md] || "?" }); }
+      else stuck.push({ room:n.rooms, APP:n.who, roomMD:own || "—",
+        blocked: mdBlocked(own) || "every eligible MD already giving one" });
+    });
+
+    const appPlan = all.filter(g => g.jobs.length).map(g => ({
+      APP: g.s.name + (g.s.isFloat ? " (float)" : ""),
+      eats: fmt(g.from) + "-" + fmt(g.ready) + (g.bounded ? " (+turnover)" : ""),
+      gives: g.jobs.length,
+      covers: g.jobs.map(j => j.who + (j.travel ? " (+" + j.travel + "m)" : "")).join(", "),
+      spare: g.budget + "m"
+    }));
+
+    return { campus, iso:D.iso, needs, appPlan, mdPlan, stuck, claims,
+             appCapacity, notes:D.notes };
+  }
+
+  // ── console output ────────────────────────────────────────────
+  let LAST = null;
+
+  function show(r) {
+    r.notes.forEach(n => console.warn("[BoardRunner] " + n));
+    console.log("═══ " + r.campus.toUpperCase() + " LUNCH — " + r.iso + " ═══");
+    console.log("breaks needed " + r.needs.length + "   APP capacity " + r.appCapacity +
+      (r.mdPlan.length ? "   " + r.mdPlan.length + " covered by MDs" : ""));
+    if (r.claims.length) {
+      console.log("\nD5 TAKEOVERS AT 12:00");
+      console.table(r.claims.map(c => ({ room:c.room.replace("|"," "), until:fmt(c.to),
+        taker:c.taker || "*** NOBODY AVAILABLE ***" })));
+    }
+    console.table(r.needs.map(n => ({ who:n.who, area:n.area, rooms:n.rooms })));
+    if (r.mdPlan.length) { console.log("MD-GIVEN BREAKS (one each)"); console.table(r.mdPlan); }
+    console.log("APP-GIVEN BREAKS");
+    console.table(r.appPlan);
+    if (r.stuck.length) { console.log("*** UNRESOLVED ***"); console.table(r.stuck); }
+    else console.log("✓ every break covered");
+    return r;
+  }
+
+  window.BoardRunner = {
+    build,
+    data: () => LAST,
+    shiftFor,
+    async lunch(campus, iso) {
+      campus = campus || "Main";
+      if (campus !== "Main" && campus !== "McNair")
+        throw new Error('campus must be "Main" or "McNair"');
+      const D = await build(iso);
+      return show(planLunch(D, campus));
+    },
+    async both(iso) {
+      const D = await build(iso);
+      show(planLunch(D, "Main"));
+      console.log("");
+      return show(planLunch(D, "McNair"));
+    }
+  };
+
+  console.log("[BoardRunner] ready — BoardRunner.lunch('Main') / .lunch('McNair') / .both()");
+})();
+// ══════════════════════ END BOARD RUNNER ══════════════════════════
 </script>
 
 </body>
