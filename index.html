@@ -235,7 +235,9 @@
     try {
       await persistence();
       if (verifier) { try { verifier.clear(); } catch (e) {} }
-      verifier = new RecaptchaVerifier(auth, "ctRecaptcha", { size: "invisible" });
+      const box = document.getElementById("ctRecaptcha");
+      box.innerHTML = "<div></div>";
+      verifier = new RecaptchaVerifier(auth, box.firstChild, { size: "invisible" });
       confirmation = await signInWithPhoneNumber(auth, e164(d), verifier);
       verifiedPhone = d;
       document.getElementById("ctCodeWrap").style.display = "block";
