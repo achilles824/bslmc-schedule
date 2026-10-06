@@ -157,25 +157,43 @@
       <button class="view-btn" style="margin-top:14px;" onclick="ctSignOut()">Sign out</button>`);
   }
 
-  function showList(user, all) {
+function showList(user, all, appr, admin) {
     const cred = {};
     (typeof SCHEDULE_DATA !== "undefined" ? SCHEDULE_DATA : []).forEach(p => { if (p && p.name) cred[p.name] = p.credential || ""; });
-    const rows = Object.values(all || {}).filter(c => c && c.name)
-      .sort((a, b) => a.name.localeCompare(b.name));
-    window.__ctRows = rows.map(c => {
+    const byName = (a, b) => a[1].name.localeCompare(b[1].name);
+    const entries = Object.entries(all || {}).filter(([u, c]) => c && c.name);
+    const listed = entries.filter(([u]) => appr[u] === true).sort(byName);
+    const pending = admin ? entries.filter(([u]) => appr[u] !== true).sort(byName) : [];
+    window.__ctAll = all || {};
+    const phoneLinks = c => {
       const d = digits10(c.phone);
-      return { key: (c.name + " " + (cred[c.name] || "")).toLowerCase(), html: `
-        <div class="ct-row" style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
-          <span style="flex:1;min-width:160px;font-weight:600;">${esc(c.name)}
-            ${cred[c.name] ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">${esc(cred[c.name])}</span>` : ""}</span>
-          ${d ? `<a href="tel:${e164(d)}" style="font-size:14px;">${pretty(d)}</a>
-                 <a href="sms:${e164(d)}" style="font-size:12px;color:var(--muted);">Text</a>` : ""}
+      return d ? `<a href="tel:${e164(d)}" style="font-size:14px;">${pretty(d)}</a>
+                  <a href="sms:${e164(d)}" style="font-size:12px;color:var(--muted);">Text</a>` : "";
+    };
+    const nameCell = c => `<span style="flex:1;min-width:160px;font-weight:600;">${esc(c.name)}
+        ${cred[c.name] ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">${esc(cred[c.name])}</span>` : ""}</span>`;
+    const rowStyle = "display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border);flex-wrap:wrap;";
+    window.__ctRows = listed.map(([u, c]) => ({
+      key: (c.name + " " + (cred[c.name] || "")).toLowerCase(), html: `
+        <div class="ct-row" style="${rowStyle}">
+          ${nameCell(c)}
+          ${phoneLinks(c)}
           ${c.email ? `<a href="mailto:${esc(c.email)}" style="font-size:12px;color:var(--muted);">Email</a>` : ""}
-        </div>` };
-    });
-    area().innerHTML = `<div class="search-section">
+          ${admin && u !== user.uid ? `<a href="#" onclick="ctRemove('${u}');return false;" style="font-size:12px;color:var(--cancel);">Remove</a>` : ""}
+        </div>` }));
+    const pendingHtml = pending.length ? `<div class="search-section" style="border:1px solid var(--special);">
+        <h2 style="font-size:16px;">Waiting for approval <span style="font-size:13px;color:var(--muted);font-weight:400;">${pending.length}</span></h2>
+        <p style="color:var(--muted);font-size:12px;margin:4px 0 8px;">Approve only people you recognize. Rejecting deletes their entry; they can sign up again.</p>
+        ${pending.map(([u, c]) => `<div style="${rowStyle}">
+          ${nameCell(c)}
+          ${phoneLinks(c)}
+          <button class="view-btn" style="padding:6px 12px;" onclick="ctApprove('${u}')">Approve</button>
+          <button class="view-btn" style="padding:6px 12px;background:var(--cancel);" onclick="ctReject('${u}')">Reject</button>
+        </div>`).join("")}
+      </div>` : "";
+    area().innerHTML = pendingHtml + `<div class="search-section">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <h2 style="flex:1;">Staff Contacts <span style="font-size:13px;color:var(--muted);font-weight:400;">${rows.length}</span></h2>
+          <h2 style="flex:1;">Staff Contacts <span style="font-size:13px;color:var(--muted);font-weight:400;">${listed.length}</span></h2>
           <button class="view-btn" onclick="ctSignOut()">Sign out</button>
         </div>
         <input id="ctFilter" placeholder="Search name or credential..." oninput="ctFilter()" style="${inputStyle}max-width:360px;">
@@ -196,8 +214,13 @@
         get(ref(db, "admins/" + user.uid)).then(s => s.val() === true)
       ]);
       if (!ok && !admin) { showPending(user, me); return; }
-      const all = (await get(ref(db, "contacts"))).val();
-      showList(user, all);
+      if (admin && !ok) await set(ref(db, "approved/" + user.uid), true);
+      const [all, appr] = await Promise.all([
+        get(ref(db, "contacts")).then(s => s.val() || {}),
+        get(ref(db, "approved")).then(s => s.val() || {})
+      ]);
+      if (admin) appr[user.uid] = true;
+      showList(user, all, appr, admin);
     } catch (e) {
       console.error("[Contacts]", e);
       area().innerHTML = card(`<p style="color:var(--cancel);">Could not load contacts: ${esc(authMsg(e))}</p>
@@ -287,6 +310,27 @@
       console.error("[Contacts] save", e);
       say(authMsg(e), true);
     }
+  };
+
+  // ── admin: approve / reject / remove ────────────────────────
+  const refresh = () => route(auth.currentUser);
+  const nameOf = uid => ((window.__ctAll || {})[uid] || {}).name || "this person";
+  window.ctApprove = async uid => {
+    try { await set(ref(db, "approved/" + uid), true); refresh(); }
+    catch (e) { alert("Approve failed: " + authMsg(e)); }
+  };
+  window.ctReject = async uid => {
+    if (!confirm("Reject " + nameOf(uid) + "?\n\nTheir entry is deleted. They can sign up again.")) return;
+    try { await set(ref(db, "contacts/" + uid), null); refresh(); }
+    catch (e) { alert("Reject failed: " + authMsg(e)); }
+  };
+  window.ctRemove = async uid => {
+    if (!confirm("Remove " + nameOf(uid) + " from the contact list?\n\nThey lose access until they sign up and are approved again.")) return;
+    try {
+      await set(ref(db, "approved/" + uid), null);
+      await set(ref(db, "contacts/" + uid), null);
+      refresh();
+    } catch (e) { alert("Remove failed: " + authMsg(e)); }
   };
 
   window.ctSignOut = () => signOut(auth);
