@@ -48,7 +48,6 @@
   window.firebaseReady = true;
   document.dispatchEvent(new Event("firebaseReady"));
 </script>
-<style>
 <!-- ══ CONTACTS: sign-in (phone verified once, then number + password) ══ -->
 <script type="module">
   import { getApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
@@ -301,6 +300,7 @@
     route(user);
   });
 </script>
+<style>
   :root {
     --bg: #0f1117;
     --surface: #181c27;
