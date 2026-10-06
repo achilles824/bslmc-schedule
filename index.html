@@ -3270,7 +3270,8 @@ function executeManualEntry() {
 
   // Check if person is scheduled to work that day
   const orStaff = getORStaffForDay(currentAdminDate);
-  const isWorking = orStaff.some(p => p.name.toLowerCase() === name.toLowerCase());
+  const isWorking = /^CV( MD| APP)?$/i.test(name) ||
+    orStaff.some(p => p.name.toLowerCase() === name.toLowerCase());
 
   const doAssign = () => {
     if (!currentAssignments[manualEntryRoomKey]) currentAssignments[manualEntryRoomKey] = {};
@@ -3435,7 +3436,13 @@ function isAssigned(name) {
 
 async function renderAdminDay(dateVal) {
   const dt = parseDate(dateVal);
-  const staff = getORStaffForDay(dateVal);
+  // CV team placeholders: always in the pool, never counted. Added here only,
+  // NOT in getORStaffForDay, so OR Staffing, Who's Working, and the Endo
+  // tracker/generator never see them.
+  const staff = getORStaffForDay(dateVal).concat([
+    { name: "CV MD",  credential: "MD",   agency: "CV", shift: "", isCV: true },
+    { name: "CV APP", credential: "CRNA", agency: "CV", shift: "", isCV: true }
+  ]);
   const siteDay = SITES_DATA[dateVal] || {};
 
   // ─────────────────────────────────────────────────────────────
@@ -3498,7 +3505,7 @@ async function renderAdminDay(dateVal) {
         const count = assignCounts[p.name] || 0;
         const isMD = p.credential === "MD";
         const isAPP = !isMD;
-        const overAssigned = (isMD && count > 4) || (isAPP && count > 1);
+        const overAssigned = !p.isCV && ((isMD && count > 4) || (isAPP && count > 1));
         const assigned = count > 0;
         const countBadge = count > 0 ? `<span style="font-size:9px;background:${overAssigned?"var(--cancel)":"var(--muted)"};color:white;border-radius:3px;padding:1px 4px;margin-left:2px;">${count}</span>` : "";
         // Endo-this-week badge: "E" for one day, "EE" for two, etc.
@@ -3534,7 +3541,7 @@ async function renderAdminDay(dateVal) {
           draggable="true"
           data-name="${p.name.replace(/"/g, '&quot;')}" data-cred="${p.credential||""}" data-agency="${p.agency||""}"
           ondragstart="onDragStart(event)">
-          ${p.credential ? `<span class="sc-cred ${credClass}">${p.credential}</span>` : ""}
+          ${p.isCV ? `<span class="sc-cred" style="background:#b91c1c;color:white;">CV</span>` : p.credential ? `<span class="sc-cred ${credClass}">${p.credential}</span>` : ""}
           <span style="flex:1;">${p.name}</span>
           ${mcnairBadge}
           ${lateBadge}
