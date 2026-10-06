@@ -49,6 +49,258 @@
   document.dispatchEvent(new Event("firebaseReady"));
 </script>
 <style>
+<!-- ══ CONTACTS: sign-in (phone verified once, then number + password) ══ -->
+<script type="module">
+  import { getApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import { getDatabase, ref, get, set } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+  import {
+    getAuth, RecaptchaVerifier, signInWithPhoneNumber, signInWithEmailAndPassword,
+    EmailAuthProvider, linkWithCredential, updatePassword, onAuthStateChanged, signOut,
+    setPersistence, browserLocalPersistence, browserSessionPersistence
+  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+
+  const auth = getAuth(getApp());
+  const db = getDatabase(getApp());
+  const area = () => document.getElementById("contactsArea");
+
+  let confirmation = null;   // pending SMS verification
+  let verifier = null;
+  let verifiedPhone = "";    // E.164 of the number just verified by text
+
+  // ── helpers ─────────────────────────────────────────────────
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+  // Any US format -> 10 digits, or "" if not a US number.
+  const digits10 = raw => {
+    let d = String(raw || "").replace(/\D/g, "");
+    if (d.length === 11 && d[0] === "1") d = d.slice(1);
+    return d.length === 10 ? d : "";
+  };
+  const e164 = d => "+1" + d;
+  const pretty = d => "(" + d.slice(0,3) + ") " + d.slice(3,6) + "-" + d.slice(6);
+  // Password logins need an email-shaped ID. It is never emailed.
+  const loginId = d => "p" + d + "@bslmc-schedule.firebaseapp.com";
+  const val = id => (document.getElementById(id) || {}).value || "";
+  const say = (msg, bad) => {
+    const el = document.getElementById("ctMsg");
+    if (el) { el.textContent = msg || ""; el.style.color = bad ? "var(--cancel)" : "var(--muted)"; }
+  };
+  const authMsg = e => ({
+    "auth/invalid-credential": "Wrong phone number or password.",
+    "auth/wrong-password": "Wrong phone number or password.",
+    "auth/user-not-found": "No account for that number. Use Create account.",
+    "auth/invalid-verification-code": "That code is not right. Check the text and try again.",
+    "auth/code-expired": "That code expired. Send a new one.",
+    "auth/too-many-requests": "Too many attempts. Wait a few minutes and try again.",
+    "auth/weak-password": "Password must be at least 8 characters.",
+    "auth/invalid-phone-number": "Enter a 10-digit US cell number.",
+    "auth/captcha-check-failed": "The security check failed. Reload the page and try again.",
+    "auth/network-request-failed": "Network blocked. Try your phone's hotspot."
+  }[e && e.code] || ((e && e.message) || "Something went wrong."));
+  const persistence = () => setPersistence(auth,
+    document.getElementById("ctShared") && document.getElementById("ctShared").checked
+      ? browserSessionPersistence : browserLocalPersistence);
+  const sharedBox = `<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin-top:12px;">
+      <input type="checkbox" id="ctShared"> This is a shared computer (sign out when the tab closes)</label>`;
+  const inputStyle = "width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);font-size:15px;margin-top:6px;";
+  const card = inner => `<div class="search-section" style="max-width:440px;">${inner}
+      <div id="ctMsg" style="margin-top:12px;font-size:13px;min-height:18px;"></div></div>`;
+
+  // ── screens ─────────────────────────────────────────────────
+  function showSignIn() {
+    area().innerHTML = card(`
+      <h2>Staff Contacts</h2>
+      <p style="color:var(--muted);font-size:13px;margin:6px 0 14px;">Sign in with your cell number and password.</p>
+      <label style="font-size:13px;">Cell number<input id="ctPhone" type="tel" autocomplete="tel" style="${inputStyle}"></label>
+      <label style="font-size:13px;display:block;margin-top:10px;">Password<input id="ctPw" type="password" autocomplete="current-password" style="${inputStyle}"></label>
+      ${sharedBox}
+      <button class="view-btn" style="margin-top:14px;width:100%;" onclick="ctSignIn()">Sign in</button>
+      <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:13px;">
+        <a href="#" onclick="ctShowVerify('create');return false;">Create account</a>
+        <a href="#" onclick="ctShowVerify('reset');return false;">Forgot password</a>
+      </div>`);
+  }
+
+  function showVerify(mode) {
+    confirmation = null;
+    area().innerHTML = card(`
+      <h2>${mode === "reset" ? "Reset password" : "Create account"}</h2>
+      <p style="color:var(--muted);font-size:13px;margin:6px 0 14px;">We'll text a 6-digit code to confirm the number is yours. This happens once.</p>
+      <label style="font-size:13px;">Cell number<input id="ctPhone" type="tel" autocomplete="tel" style="${inputStyle}"></label>
+      ${sharedBox}
+      <button class="view-btn" id="ctSendBtn" style="margin-top:14px;width:100%;" onclick="ctSendCode()">Text me a code</button>
+      <div id="ctCodeWrap" style="display:none;margin-top:14px;">
+        <label style="font-size:13px;">Code<input id="ctCode" inputmode="numeric" autocomplete="one-time-code" style="${inputStyle}"></label>
+        <button class="view-btn" style="margin-top:10px;width:100%;" onclick="ctConfirmCode()">Confirm</button>
+      </div>
+      <div style="margin-top:12px;font-size:13px;"><a href="#" onclick="ctShowSignIn();return false;">Back to sign in</a></div>`);
+  }
+
+  function showProfile(user, hasPassword, existing) {
+    const names = [...new Set((typeof SCHEDULE_DATA !== "undefined" ? SCHEDULE_DATA : [])
+      .map(p => p && p.name).filter(Boolean))].sort();
+    area().innerHTML = card(`
+      <h2>${hasPassword ? "Set a new password" : "Finish setting up"}</h2>
+      ${hasPassword ? "" : `
+        <label style="font-size:13px;">Your name (pick from the list)<input id="ctName" list="ctNames" value="${esc(existing && existing.name)}" style="${inputStyle}"></label>
+        <datalist id="ctNames">${names.map(n => `<option value="${esc(n)}">`).join("")}</datalist>
+        <label style="font-size:13px;display:block;margin-top:10px;">Email (optional)<input id="ctEmail" type="email" value="${esc(existing && existing.email)}" style="${inputStyle}"></label>`}
+      <label style="font-size:13px;display:block;margin-top:10px;">Password (8+ characters)<input id="ctPw" type="password" autocomplete="new-password" style="${inputStyle}"></label>
+      <label style="font-size:13px;display:block;margin-top:10px;">Confirm password<input id="ctPw2" type="password" autocomplete="new-password" style="${inputStyle}"></label>
+      <button class="view-btn" style="margin-top:14px;width:100%;" onclick="ctSaveProfile(${hasPassword ? "true" : "false"})">Save</button>`);
+  }
+
+  function showPending(user, me) {
+    area().innerHTML = card(`
+      <h2>Waiting for approval</h2>
+      <p style="font-size:14px;margin:10px 0;">Thanks${me && me.name ? ", " + esc(me.name) : ""}. An administrator has to approve your account before the contact list appears. Check back later.</p>
+      <p style="color:var(--muted);font-size:12px;margin-top:14px;">Account ID: <code style="user-select:all;">${esc(user.uid)}</code></p>
+      <button class="view-btn" style="margin-top:14px;" onclick="ctSignOut()">Sign out</button>`);
+  }
+
+  function showList(user, all) {
+    const cred = {};
+    (typeof SCHEDULE_DATA !== "undefined" ? SCHEDULE_DATA : []).forEach(p => { if (p && p.name) cred[p.name] = p.credential || ""; });
+    const rows = Object.values(all || {}).filter(c => c && c.name)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    window.__ctRows = rows.map(c => {
+      const d = digits10(c.phone);
+      return { key: (c.name + " " + (cred[c.name] || "")).toLowerCase(), html: `
+        <div class="ct-row" style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+          <span style="flex:1;min-width:160px;font-weight:600;">${esc(c.name)}
+            ${cred[c.name] ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">${esc(cred[c.name])}</span>` : ""}</span>
+          ${d ? `<a href="tel:${e164(d)}" style="font-size:14px;">${pretty(d)}</a>
+                 <a href="sms:${e164(d)}" style="font-size:12px;color:var(--muted);">Text</a>` : ""}
+          ${c.email ? `<a href="mailto:${esc(c.email)}" style="font-size:12px;color:var(--muted);">Email</a>` : ""}
+        </div>` };
+    });
+    area().innerHTML = `<div class="search-section">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <h2 style="flex:1;">Staff Contacts <span style="font-size:13px;color:var(--muted);font-weight:400;">${rows.length}</span></h2>
+          <button class="view-btn" onclick="ctSignOut()">Sign out</button>
+        </div>
+        <input id="ctFilter" placeholder="Search name or credential..." oninput="ctFilter()" style="${inputStyle}max-width:360px;">
+      </div>
+      <div id="ctList" class="search-section" style="padding-top:4px;"></div>`;
+    window.ctFilter();
+  }
+
+  async function route(user) {
+    if (!user) { showSignIn(); return; }
+    area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
+    try {
+      const hasPassword = user.providerData.some(p => p.providerId === "password");
+      const me = (await get(ref(db, "contacts/" + user.uid))).val();
+      if (!me || !hasPassword) { showProfile(user, false, me); return; }
+      const [ok, admin] = await Promise.all([
+        get(ref(db, "approved/" + user.uid)).then(s => s.val() === true),
+        get(ref(db, "admins/" + user.uid)).then(s => s.val() === true)
+      ]);
+      if (!ok && !admin) { showPending(user, me); return; }
+      const all = (await get(ref(db, "contacts"))).val();
+      showList(user, all);
+    } catch (e) {
+      console.error("[Contacts]", e);
+      area().innerHTML = card(`<p style="color:var(--cancel);">Could not load contacts: ${esc(authMsg(e))}</p>
+        <button class="view-btn" style="margin-top:12px;" onclick="ctSignOut()">Sign out</button>`);
+    }
+  }
+
+  // ── actions (global, for onclick) ───────────────────────────
+  window.ctShowSignIn = showSignIn;
+  window.ctShowVerify = showVerify;
+  window.ctFilter = () => {
+    const q = val("ctFilter").trim().toLowerCase();
+    const el = document.getElementById("ctList");
+    if (!el) return;
+    const hit = (window.__ctRows || []).filter(r => !q || r.key.includes(q));
+    el.innerHTML = hit.length ? hit.map(r => r.html).join("")
+      : `<p style="color:var(--muted);padding:12px 4px;">No matches.</p>`;
+  };
+
+  window.ctSignIn = async () => {
+    const d = digits10(val("ctPhone"));
+    if (!d) return say("Enter a 10-digit US cell number.", true);
+    if (!val("ctPw")) return say("Enter your password.", true);
+    say("Signing in…");
+    try {
+      await persistence();
+      await signInWithEmailAndPassword(auth, loginId(d), val("ctPw"));
+    } catch (e) { say(authMsg(e), true); }
+  };
+
+  window.ctSendCode = async () => {
+    const d = digits10(val("ctPhone"));
+    if (!d) return say("Enter a 10-digit US cell number.", true);
+    say("Sending code…");
+    try {
+      await persistence();
+      if (verifier) { try { verifier.clear(); } catch (e) {} }
+      verifier = new RecaptchaVerifier(auth, "ctRecaptcha", { size: "invisible" });
+      confirmation = await signInWithPhoneNumber(auth, e164(d), verifier);
+      verifiedPhone = d;
+      document.getElementById("ctCodeWrap").style.display = "block";
+      document.getElementById("ctSendBtn").textContent = "Send again";
+      say("Code sent to " + pretty(d) + ".");
+    } catch (e) {
+      console.error("[Contacts] send code", e);
+      try { verifier && verifier.clear(); } catch (x) {}
+      verifier = null;
+      say(authMsg(e), true);
+    }
+  };
+
+  window.ctConfirmCode = async () => {
+    if (!confirmation) return say("Send a code first.", true);
+    say("Checking…");
+    try { await confirmation.confirm(val("ctCode").trim()); }   // onAuthStateChanged routes from here
+    catch (e) { say(authMsg(e), true); }
+  };
+
+  window.ctSaveProfile = async (hasPassword) => {
+    const user = auth.currentUser;
+    if (!user) return showSignIn();
+    const pw = val("ctPw");
+    if (pw.length < 8) return say("Password must be at least 8 characters.", true);
+    if (pw !== val("ctPw2")) return say("Passwords don't match.", true);
+    const d = digits10(user.phoneNumber) || verifiedPhone;
+    if (!d) return say("Phone number missing. Sign out and create the account again.", true);
+    say("Saving…");
+    try {
+      if (hasPassword) {
+        await updatePassword(user, pw);
+      } else {
+        const name = val("ctName").trim();
+        if (!name) return say("Enter your name.", true);
+        const entry = { name, phone: pretty(d) };
+        const email = val("ctEmail").trim();
+        if (email) entry.email = email;
+        const linked = user.providerData.some(p => p.providerId === "password");
+        if (!linked) await linkWithCredential(user, EmailAuthProvider.credential(loginId(d), pw));
+        else await updatePassword(user, pw);
+        await set(ref(db, "contacts/" + user.uid), entry);
+      }
+      await user.reload();
+      route(auth.currentUser);
+    } catch (e) {
+      console.error("[Contacts] save", e);
+      say(authMsg(e), true);
+    }
+  };
+
+  window.ctSignOut = () => signOut(auth);
+
+  // After a phone-code sign-in, a person who already has a password is
+  // resetting it; send them to the new-password screen instead of the list.
+  onAuthStateChanged(auth, user => {
+    if (user && confirmation) {
+      confirmation = null;
+      const hasPassword = user.providerData.some(p => p.providerId === "password");
+      if (hasPassword) { showProfile(user, true, null); return; }
+    }
+    route(user);
+  });
+</script>
   :root {
     --bg: #0f1117;
     --surface: #181c27;
@@ -883,6 +1135,10 @@
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
     OR Staffing
   </button>
+  <button class="tab-btn" onclick="switchTab('contacts')">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+    Contacts
+  </button>
   </div>
   <!-- Admin + theme toggle on the right -->
   <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;padding:0 4px;">
@@ -1006,6 +1262,12 @@
       </div>
     </div>
     <div id="timelineResultArea"></div>
+  </div>
+
+  <!-- TAB: CONTACTS (sign-in required) -->
+  <div class="tab-content" id="tab-contacts">
+    <div id="contactsArea"></div>
+    <div id="ctRecaptcha"></div>
   </div>
 
   <!-- TAB 5: ADMIN -->
