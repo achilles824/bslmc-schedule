@@ -4588,7 +4588,6 @@ async function deleteEndoEntry(date, safeName) {
   }
 }
 // ==== END ENDO TRACKER ====
-  
 // ══════════════════════════════════════════════════════════════════
 // ENDO WEEK GENERATOR
 //
@@ -4911,6 +4910,11 @@ async function deleteEndoEntry(date, safeName) {
     }
 
     // ── OTM Endo, APP ──────────────────────────────────────────
+    // No special handling for MAIN_PREFER_APP here on purpose. OTM Endo APP
+    // is usually the most-constrained slot of the week, and holding people
+    // back from it to protect a Main Endo preference costs more than it
+    // gains. A preferred APP who lands here is flagged ★ in the grid
+    // instead, so the swap is a judgement call rather than an automatic one.
     return [
       { n: "1 unused this week", list: cands.filter(ok) },
       { n: "2 last resort",      list: cands.filter(c => free(c) && c.lastResort) }
@@ -5151,6 +5155,19 @@ async function deleteEndoEntry(date, safeName) {
       open.splice(best, 1);
     }
 
+    // Main-preferred APPs who ended up at OTM. Surfaced as a line so it does
+    // not depend on spotting a ★ in the grid. Not a conflict — just a swap
+    // worth considering.
+    const offPref = log.filter(x => x.area === "OTM Endo" && !x.locked &&
+                                    MAIN_PREFER_APP.indexOf(x.name) > -1);
+    if (offPref.length) {
+      warnings.push("Preferred for Main Endo but placed at OTM: " +
+        offPref.map(x => {
+          const pt = x.date.split("-");
+          return x.name + " (" + DAYS_SHORT[new Date(pt[0],pt[1]-1,pt[2]).getDay()] + ")";
+        }).join(", ") + ". Marked ★ — swap by hand if you want them at Main that day.");
+    }
+
     // bench: who else could take each slot, judged against start-of-week history
     const startLed = await loadHistory(monday);
     const where = {}; log.forEach(x => where[x.name] = x.date);
@@ -5248,14 +5265,25 @@ async function deleteEndoEntry(date, safeName) {
     names.forEach(n => {
       const e = byName[n] || {};
       const late = isSoftTier(e.tier);
+      // Preferred for Main Endo but placed at OTM. Not an error — the
+      // generator fills the scarcest slot first and OTM usually wins that
+      // race — but worth seeing, since once-per-week means this costs them
+      // their Main Endo day. Highlighted so a swap is an easy eyeball call.
+      const offPref = area === "OTM Endo" && !isLocked &&
+                      MAIN_PREFER_APP.indexOf(n) > -1;
       h += '<div style="font-size:12px;margin-bottom:3px;' +
            (isLocked ? "color:var(--muted);" : "") +
-           (e.lastResort ? "color:var(--special);font-weight:600;" : "") + '" title="' +
+           (e.lastResort ? "color:var(--special);font-weight:600;" : "") +
+           (offPref ? "background:rgba(79,142,247,0.16);border-left:3px solid var(--accent);" +
+                      "padding:1px 5px;margin-left:-3px;border-radius:3px;font-weight:600;" : "") +
+           '" title="' +
            esc(isLocked ? "Finalized — left as assigned"
-                        : (e.tier||"") + " · " + (e.agency||"") +
+                        : (offPref ? "Preferred for Main Endo — placed at OTM instead. " : "") +
+                          (e.tier||"") + " · " + (e.agency||"") +
                           (e.hours!=null ? " · " + e.hours + "h" : "") +
                           (e.daysLeft!=null ? " · " + e.daysLeft + " day(s) left" : "")) + '">' +
-           (isLocked ? '🔒 ' : '') + (e.forced ? '📌 ' : '') + esc(n) +
+           (isLocked ? '🔒 ' : '') + (e.forced ? '📌 ' : '') +
+           (offPref ? '★ ' : '') + esc(n) +
            (e.agency === "Baylor" ? ' <span style="font-size:9px;color:var(--muted);">B</span>' : '') +
            (late ? ' <span style="font-size:9px;color:var(--special);">▲</span>' : '') +
            (e.daysLeft === 1 ? ' <span style="font-size:9px;color:var(--accent);" title="last usable day">!</span>' : '') +
@@ -5351,7 +5379,8 @@ async function deleteEndoEntry(date, safeName) {
 
     h += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">' +
          'B = Baylor · ▲ reached past the preferred tier · ! last usable day · ' +
-         '📌 always-OTM, once-per-week not applied · amber = last-resort APP · ' +
+         '📌 always-OTM, once-per-week not applied · ★ preferred for Main, landed at OTM · ' +
+         'amber = last-resort APP · ' +
          '🔒 locked, left as assigned · click any unlocked cell for alternates</div>';
 
     h += benchHtml(r);
