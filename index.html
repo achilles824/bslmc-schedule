@@ -4640,6 +4640,28 @@ async function deleteEndoEntry(date, safeName) {
   // locums across anyway, which is the problem this is meant to avoid.
   const OTM_MCNAIR_MD_PER_DAY = 2;
   const LAST_RESORT  = ["Carla Rose", "Audra Jackson", "Evie Michelle Schoene"];
+
+  // ── named exceptions ──────────────────────────────────────────
+  // Parked at OTM Endo every day they work. Placed before anything else
+  // and NOT subject to once-per-week — so one of these can appear on two,
+  // three, five days in the same week. Shown with 📌 so it is obvious.
+  const OTM_ALWAYS = ["Peggy Wingard"];
+
+  // Preferred for Main Endo, ahead of other locums. Still subject to
+  // once-per-week AND to not-last-week: a preferred APP who did Main Endo
+  // last week drops to the "last week" half of the ladder like anyone else.
+  // Names must match providers[].name in the Gist EXACTLY, embedded quotes
+  // and all — a near-miss silently matches nobody.
+  const MAIN_PREFER_APP = [
+    "Eunice Martinez",
+    "Minette Silla Mbah",          // "Mimi Silla"
+    'Rapheal "Ralph" Okonye'       // "Ralph Okonye"
+  ];
+
+  // Room keys the generator writes into when sending a day to the grid.
+  const ENDO_ROOMS = { "Main Endo": [1,2,3],
+                       "OTM Endo":  [1,2,3,4,5,6,7,8,9,10] };
+
   const WK = ["Mon","Tue","Wed","Thu","Fri"];
 
   // ── dates ─────────────────────────────────────────────────────
@@ -4846,14 +4868,20 @@ async function deleteEndoEntry(date, safeName) {
     }
 
     // ── Main Endo, APP ─────────────────────────────────────────
+    // Named preferences sit above the general locum tier, but inside the
+    // clear-of-last-week half. A preferred APP who did Main Endo last week
+    // still falls to tier 4 — the rotation rule outranks the preference.
     if (area === "Main Endo") {
       const clear = c => led.mainClear(c.name);
+      const pref  = c => MAIN_PREFER_APP.indexOf(c.name) > -1;
       return [
-        { n: "1 locum · clear",      list: cands.filter(c => ok(c) && c.agency === "Locum"  && clear(c)) },
-        { n: "2 Baylor · clear",     list: cands.filter(c => ok(c) && c.agency === "Baylor" && clear(c)) },
-        { n: "3 locum · last week",  list: cands.filter(c => ok(c) && c.agency === "Locum"  && !clear(c)) },
-        { n: "4 Baylor · last week", list: cands.filter(c => ok(c) && c.agency === "Baylor" && !clear(c)) },
-        { n: "5 last resort",        list: cands.filter(c => free(c) && c.lastResort) }
+        { n: "1 preferred · clear",   list: cands.filter(c => ok(c) &&  pref(c) && clear(c)) },
+        { n: "2 locum · clear",       list: cands.filter(c => ok(c) && !pref(c) && c.agency === "Locum"  && clear(c)) },
+        { n: "3 Baylor · clear",      list: cands.filter(c => ok(c) && !pref(c) && c.agency === "Baylor" && clear(c)) },
+        { n: "4 preferred · last week",  list: cands.filter(c => ok(c) &&  pref(c) && !clear(c)) },
+        { n: "5 locum · last week",      list: cands.filter(c => ok(c) && !pref(c) && c.agency === "Locum"  && !clear(c)) },
+        { n: "6 Baylor · last week",     list: cands.filter(c => ok(c) && !pref(c) && c.agency === "Baylor" && !clear(c)) },
+        { n: "7 last resort",            list: cands.filter(c => free(c) && c.lastResort) }
       ];
     }
 
@@ -4887,6 +4915,14 @@ async function deleteEndoEntry(date, safeName) {
       { n: "1 unused this week", list: cands.filter(ok) },
       { n: "2 last resort",      list: cands.filter(c => free(c) && c.lastResort) }
     ];
+  }
+
+  // A pick is a "compromise" when the generator had to reach past the
+  // preferred half of a ladder. Marked ▲ in the grid. Derived from the tier
+  // NAME rather than its number, so inserting a tier cannot silently change
+  // what counts as a compromise.
+  function isSoftTier(n) {
+    return /last week|last resort|over daily cap|7pm or L1/i.test(n || "");
   }
 
   // Spend the scarcest person first: someone with two days left to be
@@ -4988,7 +5024,7 @@ async function deleteEndoEntry(date, safeName) {
     if (lockedDays.length) {
       const lbl = lockedDays.map(d => { const pt=d.split("-");
         return DAYS_SHORT[new Date(pt[0],pt[1]-1,pt[2]).getDay()]; });
-      warnings.push("Already finalized and left untouched: " + lbl.join(", ") +
+      warnings.push("Locked and left untouched: " + lbl.join(", ") +
         ". Only the remaining days were generated.");
     }
 
@@ -4996,6 +5032,46 @@ async function deleteEndoEntry(date, safeName) {
     days.filter(d => need[d] && !locked[d]).forEach(date => cells.forEach(([area,p]) => {
       for (let i=0;i<need[date][area][p];i++) open.push({date, area, pool:p});
     }));
+
+    // ── always-OTM pre-pass ───────────────────────────────────────
+    // OTM_ALWAYS people are parked at OTM Endo on every day they work.
+    // Placed before the main fill so the rest of the week is built around
+    // them, and NOT checked against once-per-week — that is the whole point
+    // of the list. They are still skipped on a day with no OTM MD demand,
+    // and never placed twice on the same day.
+    const forcedNames = new Set();
+    days.filter(d => need[d] && !locked[d]).forEach(date => {
+      const want = need[date]["OTM Endo"].MD;
+      if (!want) return;
+      pool[date]["OTM Endo"].MD.forEach(c => {
+        if (OTM_ALWAYS.indexOf(c.name) === -1) return;
+        const taken = picks[date]["OTM Endo"].MD;
+        if (taken.indexOf(c.name) > -1) return;
+        if (taken.length >= want) {
+          warnings.push(c.name + " is always-OTM but " + date +
+            " only needs " + want + " OTM Endo MD" + (want>1?"s":"") +
+            ", already filled — left unassigned that day.");
+          return;
+        }
+        taken.push(c.name);
+        led.add(c.name, date, "OTM Endo");
+        forcedNames.add(c.name);
+        log.push({ date: date, area: "OTM Endo", pool: "MD", name: c.name,
+                   agency: c.agency, tier: "0 always OTM", forced: true,
+                   hours: c.hours, daysLeft: null, lastResort: false });
+        const i = open.findIndex(s => s.date === date &&
+                    s.area === "OTM Endo" && s.pool === "MD");
+        if (i > -1) open.splice(i, 1);
+      });
+    });
+    if (forcedNames.size) {
+      const list = Array.from(forcedNames);
+      const dayCount = {};
+      log.filter(x => x.forced).forEach(x => dayCount[x.name] = (dayCount[x.name]||0)+1);
+      warnings.push("Always-OTM: " + list.map(n => n + " (" + dayCount[n] +
+        " day" + (dayCount[n]>1?"s":"") + ")").join(", ") +
+        " — placed on every working day, once-per-week not applied. Marked 📌.");
+    }
 
     const appears = {};
     days.filter(d => need[d] && !locked[d]).forEach(date => cells.forEach(([area,p]) =>
@@ -5119,7 +5195,7 @@ async function deleteEndoEntry(date, safeName) {
         '</div>' +
         '<button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);padding:8px 16px;font-size:13px;" onclick="EndoGen.checkReady()">Check readiness</button>' +
         '<button class="view-btn" style="padding:8px 20px;font-size:13px;" onclick="EndoGen.run()">Generate week</button>' +
-        '<span style="font-size:11px;color:var(--muted);margin-left:auto;">Read-only — nothing is saved</span>' +
+        '<span style="font-size:11px;color:var(--muted);margin-left:auto;">Generating saves nothing — only “place + lock” writes</span>' +
       '</div>' +
       '<div id="endoGenOut"></div>';
     anchor.parentNode.insertBefore(div, anchor.nextSibling);
@@ -5171,7 +5247,7 @@ async function deleteEndoEntry(date, safeName) {
     if (!names.length && !want) h += '<span style="color:var(--muted);font-size:11px;">—</span>';
     names.forEach(n => {
       const e = byName[n] || {};
-      const late = /^[3-9]/.test(e.tier || "");
+      const late = isSoftTier(e.tier);
       h += '<div style="font-size:12px;margin-bottom:3px;' +
            (isLocked ? "color:var(--muted);" : "") +
            (e.lastResort ? "color:var(--special);font-weight:600;" : "") + '" title="' +
@@ -5179,7 +5255,7 @@ async function deleteEndoEntry(date, safeName) {
                         : (e.tier||"") + " · " + (e.agency||"") +
                           (e.hours!=null ? " · " + e.hours + "h" : "") +
                           (e.daysLeft!=null ? " · " + e.daysLeft + " day(s) left" : "")) + '">' +
-           (isLocked ? '🔒 ' : '') + esc(n) +
+           (isLocked ? '🔒 ' : '') + (e.forced ? '📌 ' : '') + esc(n) +
            (e.agency === "Baylor" ? ' <span style="font-size:9px;color:var(--muted);">B</span>' : '') +
            (late ? ' <span style="font-size:9px;color:var(--special);">▲</span>' : '') +
            (e.daysLeft === 1 ? ' <span style="font-size:9px;color:var(--accent);" title="last usable day">!</span>' : '') +
@@ -5241,6 +5317,15 @@ async function deleteEndoEntry(date, safeName) {
           (n ? '<div style="font-size:10px;color:var(--muted);font-weight:400;">Main ' +
                n["Main Endo"].MD + '+' + n["Main Endo"].APP + ' · OTM ' +
                n["OTM Endo"].MD + '+' + n["OTM Endo"].APP + '</div>' : '') +
+          (n ? '<div style="margin-top:5px;">' + (lk
+              ? '<span style="font-size:10px;color:var(--muted);cursor:pointer;' +
+                'text-decoration:underline;" title="Clear this day\'s endo tracker ' +
+                'entries so it generates again" onclick="EndoGen.unlockDay(\'' + d +
+                '\')">unlock</span>'
+              : '<span style="font-size:10px;color:var(--accent);cursor:pointer;' +
+                'text-decoration:underline;" title="Write this day onto the staffing ' +
+                'grid and lock it, so a rerun leaves it alone" onclick="EndoGen.placeDay(\'' +
+                d + '\')">place + lock</span>') + '</div>' : '') +
           '</th>';
       }).join("") + '</tr>';
 
@@ -5254,10 +5339,20 @@ async function deleteEndoEntry(date, safeName) {
       });
     h += '</table></div>';
 
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px;">' +
+      '<button id="endoGenCopyBtn" class="view-btn" style="background:none;' +
+      'border:1px solid var(--border);color:var(--text);padding:6px 14px;font-size:12px;" ' +
+      'onclick="EndoGen.copyTable()">📋 Copy as table</button>' +
+      '<button class="view-btn" style="background:none;border:1px solid var(--accent);' +
+      'color:var(--accent);padding:6px 14px;font-size:12px;" ' +
+      'onclick="EndoGen.placeAll()">→ Place + lock all open days</button>' +
+      '<span style="font-size:11px;color:var(--muted);">Placing writes MD/APP onto the ' +
+      'staffing grid and records the day in the endo tracker.</span></div>';
+
     h += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">' +
          'B = Baylor · ▲ reached past the preferred tier · ! last usable day · ' +
-         'amber = last-resort APP · 🔒 finalized, left as assigned · ' +
-         'click any unlocked cell for alternates</div>';
+         '📌 always-OTM, once-per-week not applied · amber = last-resort APP · ' +
+         '🔒 locked, left as assigned · click any unlocked cell for alternates</div>';
 
     h += benchHtml(r);
 
@@ -5281,13 +5376,241 @@ async function deleteEndoEntry(date, safeName) {
     }
 
     const used = {}; r.log.filter(x => !x.locked).forEach(x => used[x.name] = (used[x.name]||0)+1);
-    const twice = Object.keys(used).filter(n => used[n] > 1);
+    // Always-OTM people are meant to repeat — not a rule break.
+    const twice = Object.keys(used).filter(n => used[n] > 1 && OTM_ALWAYS.indexOf(n) === -1);
     h += '<div style="font-size:12px;color:var(--muted);margin-top:6px;">' +
          Object.keys(used).length + ' people newly assigned' +
          (twice.length ? ' — <span style="color:var(--cancel);">used more than once: ' +
-           twice.map(esc).join(", ") + '</span>' : ', all exactly once') + '</div>';
+           twice.map(esc).join(", ") + '</span>'
+          : (r.log.some(x => x.forced) ? ', all once apart from 📌' : ', all exactly once')) +
+         '</div>';
 
     out.innerHTML = h;
+  }
+
+  // ── export: copy as a table ───────────────────────────────────
+  // Builds the same grid you see on screen in both rich-text and plain-text
+  // flavours and puts both on the clipboard, so pasting into Outlook or
+  // Gmail gives a real table and pasting into a plain-text field gives TSV.
+  function tableModel(r) {
+    const head = ["", ...r.days.map(d => {
+      const dt = new Date(d.split("-")[0], d.split("-")[1]-1, d.split("-")[2]);
+      return DAYS_SHORT[dt.getDay()] + " " + (dt.getMonth()+1) + "/" + dt.getDate();
+    })];
+    const rows = [["Main Endo","MD"],["Main Endo","APP"],
+                  ["OTM Endo","MD"],["OTM Endo","APP"]].map(([area,pool]) => {
+      return [area.replace(" Endo","") + " " + pool,
+        ...r.days.map(d => (r.picks[d] && r.picks[d][area][pool]) || [])];
+    });
+    const dt = new Date(r.monday.split("-")[0], r.monday.split("-")[1]-1, r.monday.split("-")[2]);
+    const title = "Endo assignments — week of " + DAYS_SHORT[dt.getDay()] + " " +
+                  (dt.getMonth()+1) + "/" + dt.getDate();
+    return { title, head, rows };
+  }
+
+  function tableHtml(m) {
+    const th = 'style="border:1px solid #c9ccd4;padding:5px 9px;background:#eef0f4;' +
+               'font-family:Calibri,Arial,sans-serif;font-size:11pt;text-align:left;"';
+    const td = 'style="border:1px solid #c9ccd4;padding:5px 9px;vertical-align:top;' +
+               'font-family:Calibri,Arial,sans-serif;font-size:11pt;"';
+    return '<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;">' +
+      '<p style="margin:0 0 8px 0;"><b>' + esc(m.title) + '</b></p>' +
+      '<table style="border-collapse:collapse;"><tr>' +
+      m.head.map(h => '<th ' + th + '>' + esc(h) + '</th>').join("") + '</tr>' +
+      m.rows.map(row => '<tr>' +
+        '<th ' + th + '>' + esc(row[0]) + '</th>' +
+        row.slice(1).map(cell => '<td ' + td + '>' +
+          (cell.length ? cell.map(esc).join("<br>") : "&nbsp;") + '</td>').join("") +
+        '</tr>').join("") +
+      '</table></div>';
+  }
+
+  function tableText(m) {
+    return m.title + "\n" + m.head.join("\t") + "\n" +
+      m.rows.map(row => [row[0], ...row.slice(1).map(c => c.join(", "))].join("\t")).join("\n");
+  }
+
+  async function copyTable() {
+    if (!lastRun) return;
+    const m = tableModel(lastRun);
+    const html = tableHtml(m), text = tableText(m);
+    const flash = ok => {
+      const b = document.getElementById("endoGenCopyBtn");
+      if (!b) return;
+      const orig = b.textContent;
+      b.textContent = ok ? "✓ Copied" : "⚠ Copy failed";
+      setTimeout(() => { b.textContent = orig; }, 2200);
+    };
+    // Preferred: both flavours on the clipboard at once.
+    try {
+      if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/html":  new Blob([html], {type:"text/html"}),
+          "text/plain": new Blob([text], {type:"text/plain"})
+        })]);
+        flash(true); return;
+      }
+    } catch (e) { console.warn("[EndoGen] clipboard.write failed, falling back", e); }
+    // Fallback: select a live DOM node and let the browser copy rich text.
+    try {
+      const holder = document.createElement("div");
+      holder.style.cssText = "position:fixed;left:-9999px;top:0;";
+      holder.innerHTML = html;
+      document.body.appendChild(holder);
+      const range = document.createRange();
+      range.selectNodeContents(holder);
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(range);
+      const ok = document.execCommand("copy");
+      sel.removeAllRanges();
+      document.body.removeChild(holder);
+      flash(ok);
+    } catch (e) { console.error("[EndoGen] copy failed", e); flash(false); }
+  }
+
+  // ── place a day on the staffing grid ──────────────────────────
+  // Main Endo APP -> one per room, in room order.
+  // Main Endo MD  -> rooms split into contiguous chunks, one chunk per MD
+  //                  (1 MD over 3 rooms writes the same name into all 3,
+  //                  which is the convention collectEndoEntries already
+  //                  dedupes on).
+  // Nothing is overwritten: if a slot already holds a DIFFERENT name the
+  // whole day is refused and the clashes are listed. Deciding which of the
+  // two names wins is not the generator's job.
+  function planDay(date, r, existing) {
+    const writes = [], clashes = [];
+    const provOf = n => (SCHEDULE_DATA || []).find(x => x.name === n) || {};
+    const put = (roomKey, slot, name) => {
+      const cur = existing[roomKey] && existing[roomKey][slot];
+      if (cur && cur.name && cur.name !== name) {
+        clashes.push({ room: roomKey.replace("|"," "), slot: slot.toUpperCase(),
+                       had: cur.name, wanted: name });
+        return;
+      }
+      if (cur && cur.name === name) return;          // already there
+      const p = provOf(name);
+      writes.push({ path: "assignments/" + date + "/" + roomKey + "/" + slot,
+                    roomKey, slot,
+                    value: { name: name,
+                             credential: p.credential || (slot === "md" ? "MD" : "CRNA"),
+                             agency: p.agency || "Manual" } });
+    };
+
+    ["Main Endo","OTM Endo"].forEach(area => {
+      const want = r.need[date] ? r.need[date][area].APP : 0;
+      if (!want) return;
+      const rooms = ENDO_ROOMS[area].slice(0, want);
+      const apps  = r.picks[date][area].APP, mds = r.picks[date][area].MD;
+      rooms.forEach((rm, i) => { if (apps[i]) put(area + "|" + rm, "app", apps[i]); });
+      if (mds.length) {
+        const per = Math.ceil(rooms.length / mds.length);
+        mds.forEach((nm, j) =>
+          rooms.slice(j*per, (j+1)*per).forEach(rm => put(area + "|" + rm, "md", nm)));
+      }
+    });
+    return { writes, clashes };
+  }
+
+  async function placeAndLock(date) {
+    const r = lastRun;
+    if (!r) return;
+    if (r.locked && r.locked[date]) { alert("That day is already locked."); return; }
+    if (!r.need[date]) { alert("No Main/OTM Endo room counts for that day — nothing to place."); return; }
+
+    const existing = (await fbGetT("assignments/" + date)) || {};
+    const { writes, clashes } = planDay(date, r, existing);
+
+    if (clashes.length) {
+      alert("Nothing was written. " + clashes.length + " slot" +
+        (clashes.length>1?"s":"") + " on " + date +
+        (clashes.length>1?" already hold":" already holds") + " someone else:\n\n" +
+        clashes.map(c => "  " + c.room + " " + c.slot + ": has " + c.had +
+                         ", generator wants " + c.wanted).join("\n") +
+        "\n\nClear those slots on the grid first, or change the pick here, " +
+        "then place again.");
+      return;
+    }
+    if (!writes.length && !r.picks[date]["Main Endo"].APP.length) {
+      alert("Nothing to place for " + date + "."); return;
+    }
+
+    // Field-level writes so a sibling room is never clobbered.
+    for (const w of writes) await window.fbSet(w.path, w.value);
+
+    // Keep the in-memory admin grid in step, otherwise its 30-second
+    // autosave would write the stale copy straight back over this.
+    try {
+      if (typeof currentAdminDate !== "undefined" && currentAdminDate === date &&
+          typeof currentAssignments !== "undefined" && currentAssignments) {
+        writes.forEach(w => {
+          if (!currentAssignments[w.roomKey]) currentAssignments[w.roomKey] = {};
+          currentAssignments[w.roomKey][w.slot] = w.value;
+        });
+        if (typeof renderAdminDay === "function") renderAdminDay(date);
+      }
+    } catch (e) { console.warn("[EndoGen] in-memory grid sync skipped", e); }
+
+    // Write the endo tracker from what is actually on the grid now, using
+    // the portal's own writer so the record matches a normal Finalize.
+    const after = (await fbGetT("assignments/" + date)) || {};
+    if (typeof writeEndoTrackerForDate === "function") {
+      await writeEndoTrackerForDate(date, after);
+      if (typeof renderEndoTrackerPanel === "function") renderEndoTrackerPanel();
+    } else {
+      throw new Error("writeEndoTrackerForDate not found — tracker not written");
+    }
+
+    busy("Placed " + writes.length + " slot" + (writes.length===1?"":"s") +
+         " and locked " + date + ". Rebuilding the week...");
+    openCell = null;
+    lastRun = await generate(document.getElementById("endoGenDate").value);
+    render();
+  }
+
+  async function unlockDay(date) {
+    if (!confirm("Unlock " + date + "?\n\nThis clears that day's endo tracker " +
+                 "entries so the generator will fill it again. Names already on " +
+                 "the staffing grid are left exactly as they are — remove them " +
+                 "there if you want a clean slate.")) return;
+    if (typeof clearEndoTrackerForDate !== "function") {
+      alert("clearEndoTrackerForDate not found."); return;
+    }
+    busy("Clearing endo tracker for " + date + "...");
+    await clearEndoTrackerForDate(date);
+    if (typeof renderEndoTrackerPanel === "function") renderEndoTrackerPanel();
+    openCell = null;
+    lastRun = await generate(document.getElementById("endoGenDate").value);
+    render();
+  }
+
+  async function placeAllOpen() {
+    const r = lastRun;
+    if (!r) return;
+    const todo = r.days.filter(d => r.need[d] && !(r.locked && r.locked[d]));
+    if (!todo.length) { alert("Every day in this week is already locked."); return; }
+    if (!confirm("Place and lock " + todo.length + " day" + (todo.length>1?"s":"") +
+                 " on the staffing grid?\n\nAny day with a slot already held by " +
+                 "someone else is skipped and reported.")) return;
+    const skipped = [];
+    for (const d of todo) {
+      const existing = (await fbGetT("assignments/" + d)) || {};
+      const { writes, clashes } = planDay(d, r, existing);
+      if (clashes.length) { skipped.push(d + " (" + clashes.length + " slot clash)"); continue; }
+      for (const w of writes) await window.fbSet(w.path, w.value);
+      const after = (await fbGetT("assignments/" + d)) || {};
+      if (typeof writeEndoTrackerForDate === "function")
+        await writeEndoTrackerForDate(d, after);
+    }
+    if (typeof renderEndoTrackerPanel === "function") renderEndoTrackerPanel();
+    if (typeof renderAdminDay === "function" && typeof currentAdminDate !== "undefined")
+      renderAdminDay(currentAdminDate);
+    if (skipped.length)
+      alert("Skipped, nothing written for:\n\n  " + skipped.join("\n  ") +
+            "\n\nClear those slots on the grid, then place those days one at a time.");
+    busy("Rebuilding the week...");
+    openCell = null;
+    lastRun = await generate(document.getElementById("endoGenDate").value);
+    render();
   }
 
   function busy(msg) {
@@ -5330,7 +5653,12 @@ async function deleteEndoEntry(date, safeName) {
       } catch (e) { fail(e); }
     },
 
-    toggleCell(key) { openCell = (openCell === key) ? null : key; render(); }
+    toggleCell(key) { openCell = (openCell === key) ? null : key; render(); },
+
+    copyTable: copyTable,
+    async placeDay(date) { try { await placeAndLock(date); } catch (e) { fail(e); } },
+    async unlockDay(date) { try { await unlockDay(date); } catch (e) { fail(e); } },
+    async placeAll()      { try { await placeAllOpen(); }   catch (e) { fail(e); } }
   };
 
   // Mount once the admin content exists; re-check on tab switches.
