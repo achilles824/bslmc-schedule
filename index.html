@@ -3300,7 +3300,7 @@ function exportShiftHours(label) {
   const s = String(label || "");
   let m = s.match(/(?:^|\/\s*)D\s*(\d+)/i);
   if (m) return +m[1];
-  m = s.match(/\bOR\s*(\d+)\s*-\s*MD\b/i);
+  m = s.match(/\bOR\s*(\d+)\s*-\s*(?:MD|MN)\b/i);
   if (m) return +m[1];
   if (/\bOR\s*L1\b/i.test(s)) return 12;
   if (/\bOR\s*L2\b/i.test(s)) return 10;
@@ -7034,8 +7034,8 @@ async function deleteEndoEntry(date, safeName) {
 
   // ── label parsing ─────────────────────────────────────────────
   const outOrderOf = l => { const m = String(l).match(/(\d+)(?:st|nd|rd|th)\s*Out/i); return m ? +m[1] : null; };
-  const mdHoursOf  = l => { const m = String(l).match(/\bOR\s*(\d+)\s*-\s*MD\b/i); return m ? +m[1] : null; };
-  const locumHrsOf = l => { const m = String(l).match(/(?:^|\/\s*)D\s*(\d+)/i); return m ? +m[1] : null; };
+  const mdHoursOf  = l => { const m = String(l).match(/\bOR\s*(\d+)\s*-\s*(?:MD|MN)\b/i); return m ? +m[1] : null; };
+  const locumHrsOf = l => { const m = String(l).match(/(?:^|\/\s*)D\s*(\d+)/i) || String(l).match(/\bOR\s*(\d+)\s*-\s*(?:MD|MN)\b/i); return m ? +m[1] : null; };
   const isMcNairLabel = l => /\bMN\b|\bMNC\b|McNair/i.test(String(l).replace(/Post-?\s*McNair\s*Call/ig, ""));
 
   function tagsOf(l) {
@@ -7165,7 +7165,7 @@ async function deleteEndoEntry(date, safeName) {
     const byRole = (a, b) => (ROLE_ORDER[a.cred] - ROLE_ORDER[b.cred]) || byName(a, b);
     let h = "";
     const hrs = Array.from(new Set(ppl.map(p => p.locHrs).filter(x => x != null))).sort((a, b) => a - b);
-    hrs.forEach(hr => { h += group("D" + hr + " — " + hr + " hour", ppl.filter(p => p.locHrs === hr).sort(byRole)); });
+    hrs.forEach(hr => { h += group(hr + " hour", ppl.filter(p => p.locHrs === hr).sort(byRole)); });
     // show the raw label here so an unrecognized shift format is visible
     h += group("Other shift", ppl.filter(p => p.locHrs == null).sort(byRole)
       .map(p => Object.assign({}, p, { tags: p.tags.concat(p.label ? [p.label] : []) })));
