@@ -1275,6 +1275,10 @@ function showList(user, all, appr, admin) {
           <button class="toggle-btn active-crosscountry" id="toggle-CrossCountry" onclick="toggleAgency('Cross Country')">Cross Country</button>
           <button class="toggle-btn active-caliber" id="toggle-Caliber" onclick="toggleAgency('Caliber')">Caliber</button>
         </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="filter-label" style="min-width:90px;">Order</span>
+          <button class="toggle-btn" id="nameSortDayBtn" style="color:var(--muted);border-color:var(--border);" onclick="toggleNameSort()">Sort: First name</button>
+        </div>
       </div>
     </div>
     <div id="dayResultArea"></div>
@@ -1344,6 +1348,7 @@ function showList(user, all, appr, admin) {
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearAssignments()">Clear Assignments</button>
         <button id="finalizeBtn" class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="toggleFinalize()">✓ Finalize</button>
 <button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
+<button id="exportXlsxBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentXlsx()" disabled>⬇ Export Excel</button>
         <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
       <div class="upload-section">
@@ -1781,6 +1786,7 @@ function showDayView() {
   if (!dataLoaded) { alert("Data is still loading, please wait a moment."); return; }
   const dateVal = document.getElementById("dayPicker").value;
   if (!dateVal) { alert("Please select a date."); return; }
+  syncNameSortDayBtn();
 
   const dt = parseDate(dateVal);
   const dayLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
@@ -1847,7 +1853,7 @@ function showDayView() {
     if (groups[p.credential] !== undefined) groups[p.credential].push(p);
     else groups.Other.push(p);
   });
-  Object.values(groups).forEach(g => g.sort((a,b) => a.name.localeCompare(b.name)));
+  Object.values(groups).forEach(g => g.sort(compareByNameMode));
 
   let groupsHtml = "";
   Object.entries(groups).forEach(([cred, people]) => {
@@ -1859,7 +1865,7 @@ function showDayView() {
         return `
         <div class="provider-row">
           <div class="provider-mini-avatar" style="background:${credBg};color:white;">${getInitials(p.name)}</div>
-          <div class="provider-row-name">${p.name}</div>
+          <div class="provider-row-name">${displayNameByMode(p.name)}</div>
           <div class="provider-row-meta">${p.agency || ""}</div>
           <span class="shift-chip ${shiftClass(p.shift)}">${p.shift}</span>
         </div>`;
@@ -3129,6 +3135,70 @@ let currentAssignments = {};
 let draggingPerson = null;
 let staffFilterMD = true;
 let staffFilterAPP = true;
+
+// ── NAME SORT (Who's Working + Admin roster) ──
+let nameSortMode = "first";
+try { if (localStorage.getItem("nameSortMode") === "last") nameSortMode = "last"; } catch (e) {}
+
+// Compound surnames the last-token rule gets wrong. Key = full name as in QGenda.
+// e.g. "Jane Doe Smith": { first: "Jane", last: "Doe Smith" }
+const NAME_SPLIT_OVERRIDES = {};
+
+function splitName(full) {
+  const clean = String(full || "").replace(/["\u201C\u201D][^"\u201C\u201D]*["\u201C\u201D]/g, " ")
+    .replace(/\s+/g, " ").trim();
+  if (NAME_SPLIT_OVERRIDES[full]) return NAME_SPLIT_OVERRIDES[full];
+  if (NAME_SPLIT_OVERRIDES[clean]) return NAME_SPLIT_OVERRIDES[clean];
+  const parts = clean.split(" ");
+  if (parts.length > 2 && /^(Jr\.?|Sr\.?|II|III|IV)$/i.test(parts[parts.length - 1])) {
+    const suf = parts.pop();
+    parts[parts.length - 1] += " " + suf;
+  }
+  if (parts.length < 2) return { first: clean, last: "" };
+  return { first: parts[0], last: parts[parts.length - 1] };
+}
+
+function compareByNameMode(a, b) {
+  const an = a.name || a, bn = b.name || b;
+  if (nameSortMode === "last") {
+    const x = splitName(an), y = splitName(bn);
+    return x.last.localeCompare(y.last) || x.first.localeCompare(y.first) || an.localeCompare(bn);
+  }
+  return an.localeCompare(bn);
+}
+
+function displayNameByMode(name) {
+  if (nameSortMode !== "last") return name;
+  const n = splitName(name);
+  return n.last ? n.last + ", " + n.first : name;
+}
+
+function nameSortButtonHtml(small) {
+  const label = nameSortMode === "last" ? "Sort: Last name" : "Sort: First name";
+  return `<button class="toggle-btn" style="${small ? "font-size:10px;padding:3px 8px;" : ""}color:var(--muted);border-color:var(--border);" onclick="toggleNameSort()">${label}</button>`;
+}
+
+function toggleNameSort() {
+  nameSortMode = nameSortMode === "last" ? "first" : "last";
+  try { localStorage.setItem("nameSortMode", nameSortMode); } catch (e) {}
+  syncNameSortDayBtn();
+  const dra = document.getElementById("dayResultArea");
+  if (dra && dra.innerHTML.trim() && document.getElementById("dayPicker").value) showDayView();
+  if (typeof adminUnlocked !== "undefined" && adminUnlocked && currentAdminDate) renderAdminDay(currentAdminDate);
+}
+
+function syncNameSortDayBtn() {
+  const b = document.getElementById("nameSortDayBtn");
+  if (b) b.textContent = nameSortMode === "last" ? "Sort: Last name" : "Sort: First name";
+}
+
+function syncXlsxBtn() {
+  const b = document.getElementById("exportXlsxBtn");
+  if (!b) return;
+  b.style.opacity = isFinalized ? "1" : "0.4";
+  b.style.cursor = isFinalized ? "pointer" : "not-allowed";
+  b.disabled = !isFinalized;
+}
 let autoSaveInterval = null;
 let autoLockTimeout = null;
 const AUTO_LOCK_MINUTES = 30;
@@ -3177,37 +3247,144 @@ function lockAdmin() {
   stopAutoLock();
 }
 
+// ── EXPORT HELPERS (shared by PDF + Excel) ──
+// Location bucket for each room group.
+const EXPORT_LOCATION = {
+  "Main OR": "Main", "IR": "Main", "NIR": "Main", "CT": "Main", "MRI": "Main", "Main Endo": "Main",
+  "OTM OR": "OTM", "OTM Endo": "OTM", "Jamail OR": "Jamail", "McNair OR": "McNair"
+};
+const EXPORT_LOCATION_ORDER = ["Main", "OTM", "Jamail", "McNair"];
+const EXPORT_ROLE_ORDER = { MD: 0, CRNA: 1, CAA: 2, Resident: 3 };
+
+function _escHtml(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Today's QGenda label for a person. Handles both date-key formats
+// (YYYY-MM-DD for QGenda/Baylor, M/D/YY for locums).
+function exportShiftLabel(name, iso) {
+  const p = (SCHEDULE_DATA || []).find(x => x.name === name);
+  if (!p || !p.shifts) return "";
+  if (p.shifts[iso] !== undefined) return String(p.shifts[iso]);
+  const a = iso.split("-").map(Number);
+  const alt = p.shifts[a[1] + "/" + a[2] + "/" + String(a[0]).slice(2)];
+  return alt !== undefined ? String(alt) : "";
+}
+
+function exportRole(person) {
+  const p = (SCHEDULE_DATA || []).find(x => x.name === person.name);
+  return (p && p.credential) || person.credential || "";
+}
+
+// Shift length in hours, or null when the label doesn't say.
+// Locums: D8/D10/D12. Baylor MDs: "OR 10 - MD". Baylor APPs: OR L1 = 12,
+// OR L2 = 10, OR-Res = 10, OR - APP = 8. Out-order-only labels → null.
+function exportShiftHours(label) {
+  const s = String(label || "");
+  let m = s.match(/(?:^|\/\s*)D\s*(\d+)/i);
+  if (m) return +m[1];
+  m = s.match(/\bOR\s*(\d+)\s*-\s*MD\b/i);
+  if (m) return +m[1];
+  if (/\bOR\s*L1\b/i.test(s)) return 12;
+  if (/\bOR\s*L2\b/i.test(s)) return 10;
+  if (/\bOR-?Res\b/i.test(s)) return 10;
+  if (/\bOR - APP\b/i.test(s)) return 8;
+  return null;
+}
+
+// Tag/notes: Charge, out-order (1-MN, 2-MN; N-Out at Main), L1/L2, Late, Call.
+function exportShiftNotes(label) {
+  const s = String(label || "");
+  const n = [];
+  if (/\bcharge\b/i.test(s)) n.push("Charge");
+  const o = s.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
+  if (o) n.push(o[1] + (/\bMN\b|\bMNC\b|McNair/i.test(s) ? "-MN" : "-Out"));
+  if (/\bOR\s*L1\b/i.test(s)) n.push("L1");
+  else if (/\bOR\s*L2\b/i.test(s)) n.push("L2");
+  if (/Late\s*MD-?MNC/i.test(s)) n.push("Late");
+  if (/McNair Call/i.test(s) && !/Post-?McNair Call/i.test(s)) n.push("Call");
+  return n.join(", ");
+}
+
+// Every assigned person in every open room, floats included.
+function collectAssignedPeople() {
+  const out = [];
+  for (const r of ALL_ROOMS_FLAT) {
+    if (window.closedRooms && window.closedRooms[r.key]) continue;
+    const a = currentAssignments[r.key] || {};
+    const push = (person, slot) => {
+      if (!person || !person.name) return;
+      out.push({ person, slot, room: r, location: EXPORT_LOCATION[r.group] || r.group });
+    };
+    push(a.md, "md");
+    push(a.app, "app");
+    if (Array.isArray(a.float)) a.float.forEach(f => push(f, "float"));
+  }
+  return out;
+}
+
+function _isCvPlaceholder(person) {
+  return person.isCV || person.agency === "CV" || /^CV (MD|APP)$/.test(person.name);
+}
+
 // ── EXPORT PDF ──
 function exportAssignmentPdf() {
   if (!isFinalized || !currentAdminDate) return;
 
   const dt = parseDate(currentAdminDate);
   const dateLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
+  const iso = currentAdminDate;
+  const info = name => {
+    const label = exportShiftLabel(name, iso);
+    const h = exportShiftHours(label);
+    return { shift: h ? h + " hr" : "", notes: exportShiftNotes(label) };
+  };
 
-  // Build rows from ALL_ROOMS_FLAT, skipping closed rooms
+  // One row per open room. Float rooms get one row per float person,
+  // placed in the MD or APP column by credential.
   const rows = [];
   for (const r of ALL_ROOMS_FLAT) {
     if (window.closedRooms && window.closedRooms[r.key]) continue;
     const a = currentAssignments[r.key] || {};
-    const md = a.md ? a.md.name : "";
-    const app = a.app ? a.app.name : "";
     const surgeon = a.surgeon ? ("Dr. " + a.surgeon) : "";
     const time = a.caseTime || "";
-    rows.push({ room: r.label, md, app, surgeon, time });
+    if (r.isFloat) {
+      const floats = Array.isArray(a.float) ? a.float.filter(f => f && f.name) : [];
+      if (!floats.length) { rows.push({ room: r.label, time: "", md: "", mdShift: "", app: "", appShift: "", notes: "", surgeon: "" }); continue; }
+      floats.forEach(f => {
+        const i = info(f.name);
+        const isMD = exportRole(f) === "MD";
+        rows.push({ room: r.label, time: "",
+          md: isMD ? f.name : "", mdShift: isMD ? i.shift : "",
+          app: isMD ? "" : f.name, appShift: isMD ? "" : i.shift,
+          notes: i.notes, surgeon: "" });
+      });
+      continue;
+    }
+    const md = a.md && a.md.name ? a.md.name : "";
+    const app = a.app && a.app.name ? a.app.name : "";
+    const mi = md ? info(md) : { shift: "", notes: "" };
+    const ai = app ? info(app) : { shift: "", notes: "" };
+    const notes = [mi.notes, ai.notes].filter(Boolean).join(" · ");
+    rows.push({ room: r.label, time, md, mdShift: mi.shift, app, appShift: ai.shift, notes, surgeon });
   }
 
-  // Build HTML for print
   const rowsHtml = rows.map(r => `
     <tr>
-      <td>${r.room}</td>
-      <td>${r.time}</td>
-      <td>${r.md}</td>
-      <td>${r.app}</td>
-      <td>${r.surgeon}</td>
+      <td>${_escHtml(r.room)}</td>
+      <td>${_escHtml(r.time)}</td>
+      <td>${_escHtml(r.md)}</td>
+      <td>${_escHtml(r.mdShift)}</td>
+      <td>${_escHtml(r.app)}</td>
+      <td>${_escHtml(r.appShift)}</td>
+      <td>${_escHtml(r.notes)}</td>
+      <td>${_escHtml(r.surgeon)}</td>
     </tr>`).join("");
 
   const printHtml = `<!DOCTYPE html><html><head><title>OR Assignments — ${dateLabel}</title>
   <style>
+    @page { size: landscape; }
     body { font-family: Arial, sans-serif; font-size: 11px; margin: 20px; }
     h2 { font-size: 16px; margin-bottom: 4px; }
     p { margin: 0 0 12px; color: #666; font-size: 12px; }
@@ -3221,7 +3398,7 @@ function exportAssignmentPdf() {
   <h2>OR Assignments — ${dateLabel}</h2>
   <p class="finalized">✓ Finalized</p>
   <table>
-    <thead><tr><th>Room</th><th>First Case</th><th>MD</th><th>APP</th><th>Surgeon</th></tr></thead>
+    <thead><tr><th>Room</th><th>First Case</th><th>MD</th><th>Shift</th><th>APP</th><th>Shift</th><th>Notes</th><th>Surgeon</th></tr></thead>
     <tbody>${rowsHtml}</tbody>
   </table>
   </body></html>`;
@@ -3233,6 +3410,49 @@ function exportAssignmentPdf() {
   setTimeout(() => win.print(), 500);
 }
 
+// ── EXPORT EXCEL ──
+// One row per person (an MD covering three rooms appears once).
+// A: First  B: Last  C: Role  D: Shift  E: Notes  F: Location
+async function exportAssignmentXlsx() {
+  if (!isFinalized || !currentAdminDate) return;
+  try { await loadSheetJs(); }
+  catch (e) { alert("Could not load the spreadsheet library. Try a hard refresh or phone hotspot."); return; }
+
+  const iso = currentAdminDate;
+  const byName = new Map();
+  for (const e of collectAssignedPeople()) {
+    if (_isCvPlaceholder(e.person)) continue;
+    const name = e.person.name;
+    if (!byName.has(name)) byName.set(name, { person: e.person, locs: [] });
+    const rec = byName.get(name);
+    if (rec.locs.indexOf(e.location) === -1) rec.locs.push(e.location);
+  }
+
+  const rows = [];
+  for (const [name, rec] of byName) {
+    const label = exportShiftLabel(name, iso);
+    const h = exportShiftHours(label);
+    const nm = splitName(name);
+    rec.locs.sort((x, y) => EXPORT_LOCATION_ORDER.indexOf(x) - EXPORT_LOCATION_ORDER.indexOf(y));
+    rows.push({
+      first: nm.first, last: nm.last, role: exportRole(rec.person),
+      shift: h ? h + " hour" : "", notes: exportShiftNotes(label),
+      location: rec.locs.join(" / ")
+    });
+  }
+  rows.sort((a, b) =>
+    (EXPORT_LOCATION_ORDER.indexOf(a.location.split(" / ")[0]) - EXPORT_LOCATION_ORDER.indexOf(b.location.split(" / ")[0]))
+    || ((EXPORT_ROLE_ORDER[a.role] ?? 9) - (EXPORT_ROLE_ORDER[b.role] ?? 9))
+    || a.last.localeCompare(b.last) || a.first.localeCompare(b.first));
+
+  const aoa = [["First Name", "Last Name", "Role", "Shift", "Notes", "Location"]]
+    .concat(rows.map(r => [r.first, r.last, r.role, r.shift, r.notes, r.location]));
+  const ws = window.XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [{ wch: 16 }, { wch: 20 }, { wch: 8 }, { wch: 10 }, { wch: 16 }, { wch: 14 }];
+  const wb = window.XLSX.utils.book_new();
+  window.XLSX.utils.book_append_sheet(wb, ws, "Assignments");
+  window.XLSX.writeFile(wb, "OR_Assignments_" + iso + ".xlsx");
+}
 // ── FINALIZE STATE ──
 let isFinalized = false;
 
@@ -3324,6 +3544,7 @@ function toggleFinalize() {
     exportBtn.style.cursor = "not-allowed";
     exportBtn.disabled = true;
   }
+  syncXlsxBtn();
   // Save finalized state to Firebase
   if (currentAdminDate) {
     window.fbSet("finalized/" + currentAdminDate, isFinalized);
@@ -3452,6 +3673,7 @@ function loadFinalizedState(dateStr) {
       exportBtn.style.cursor = isFinalized ? "pointer" : "not-allowed";
       exportBtn.disabled = !isFinalized;
     }
+    syncXlsxBtn();
   });
 }
 
@@ -3782,6 +4004,7 @@ async function renderAdminDay(dateVal) {
     <button class="toggle-btn"
       style="font-size:10px;padding:3px 8px;${staffFilterAPP?"background:rgba(62,207,142,0.15);border-color:var(--day);color:var(--day)":"color:var(--muted);border-color:var(--border)"}"
       onclick="toggleStaffFilter('APP')">APP</button>
+    ${nameSortButtonHtml(true)}
   </div>`;
 
   // Count assignments per person
@@ -3805,6 +4028,11 @@ async function renderAdminDay(dateVal) {
     if (isAPP && !staffFilterAPP) return false;
     return true;
   });
+  const _credOrder = { MD: 0, CRNA: 1, CAA: 2, Resident: 3 };
+  filteredStaff.sort((a, b) =>
+    ((a.isCV ? 1 : 0) - (b.isCV ? 1 : 0))
+    || ((_credOrder[a.credential] ?? 3) - (_credOrder[b.credential] ?? 3))
+    || compareByNameMode(a, b));
 
   pool.innerHTML = staffFiltersHtml + (filteredStaff.length === 0
     ? '<div style="color:var(--muted);font-size:12px;padding:8px;">No OR staff found for this date.</div>'
@@ -3850,7 +4078,7 @@ async function renderAdminDay(dateVal) {
           data-name="${p.name.replace(/"/g, '&quot;')}" data-cred="${p.credential||""}" data-agency="${p.agency||""}"
           ondragstart="onDragStart(event)">
           ${p.isCV ? `<span class="sc-cred" style="background:#b91c1c;color:white;">CV</span>` : p.credential ? `<span class="sc-cred ${credClass}">${p.credential}</span>` : ""}
-          <span style="flex:1;">${p.name}</span>
+          <span style="flex:1;">${displayNameByMode(p.name)}</span>
           ${mcnairBadge}
           ${lateBadge}
           ${callBadge}
