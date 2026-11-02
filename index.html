@@ -7177,14 +7177,7 @@ async function deleteEndoEntry(date, safeName) {
               section("Locum APPs", ppl.filter(p => p.cred !== "MD"));
     return h || '<div class="none">No locum staff</div>';
   }
-    let h = "";
-    const hrs = Array.from(new Set(ppl.map(p => p.locHrs).filter(x => x != null))).sort((a, b) => a - b);
-    hrs.forEach(hr => { h += group(hr + " hour", ppl.filter(p => p.locHrs === hr).sort(byRole)); });
-    // show the raw label here so an unrecognized shift format is visible
-    h += group("Other shift", ppl.filter(p => p.locHrs == null).sort(byRole)
-      .map(p => Object.assign({}, p, { tags: p.tags.concat(p.label ? [p.label] : []) })));
-    return h || '<div class="none">No locum staff</div>';
-  }
+
 
   function page(campus, people, dateLabel, unplaced) {
     const mine = people.filter(p => p.campus === campus);
