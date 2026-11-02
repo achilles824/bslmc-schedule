@@ -1185,6 +1185,10 @@ function showList(user, all, appr, admin) {
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
     Contacts
   </button>
+      <button class="tab-btn" onclick="switchTab('daily-ops')">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+    Daily Operations
+  </button>
   </div>
   <!-- Admin + theme toggle on the right -->
   <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;padding:0 4px;">
@@ -1318,6 +1322,15 @@ function showList(user, all, appr, admin) {
   <div class="tab-content" id="tab-contacts">
     <div id="contactsArea"></div>
     <div id="ctRecaptcha"></div>
+  </div>
+
+  
+  <!-- TAB: DAILY OPERATIONS -->
+  <div class="tab-content" id="tab-daily-ops">
+    <div class="day-picker-section">
+      <h2>Daily Operations</h2>
+      <a class="view-btn" href="https://otm-anesthesia-staffing-2026.ai.studio/" target="_blank" rel="noopener" style="display:inline-block;text-decoration:none;margin-top:12px;">Open Daily Operations ↗</a>
+    </div>
   </div>
 
   <!-- TAB 5: ADMIN -->
@@ -3328,6 +3341,87 @@ function _isCvPlaceholder(person) {
   return person.isCV || person.agency === "CV" || /^CV (MD|APP)$/.test(person.name);
 }
 
+// ── EXPORT HELPERS (shared by PDF + Excel) ──
+// Location bucket for each room group.
+const EXPORT_LOCATION = {
+  "Main OR": "Main", "IR": "Main", "NIR": "Main", "CT": "Main", "MRI": "Main", "Main Endo": "Main",
+  "OTM OR": "OTM", "OTM Endo": "OTM", "Jamail OR": "Jamail", "McNair OR": "McNair"
+};
+const EXPORT_LOCATION_ORDER = ["Main", "OTM", "Jamail", "McNair"];
+const EXPORT_ROLE_ORDER = { MD: 0, CRNA: 1, CAA: 2, Resident: 3 };
+
+function _escHtml(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Today's QGenda label for a person. Handles both date-key formats
+// (YYYY-MM-DD for QGenda/Baylor, M/D/YY for locums).
+function exportShiftLabel(name, iso) {
+  const p = (SCHEDULE_DATA || []).find(x => x.name === name);
+  if (!p || !p.shifts) return "";
+  if (p.shifts[iso] !== undefined) return String(p.shifts[iso]);
+  const a = iso.split("-").map(Number);
+  const alt = p.shifts[a[1] + "/" + a[2] + "/" + String(a[0]).slice(2)];
+  return alt !== undefined ? String(alt) : "";
+}
+
+function exportRole(person) {
+  const p = (SCHEDULE_DATA || []).find(x => x.name === person.name);
+  return (p && p.credential) || person.credential || "";
+}
+
+// Shift length in hours, or null when the label doesn't say.
+// Locums: D8/D10/D12. Baylor MDs: "OR 10 - MD". Baylor APPs: OR L1 = 12,
+// OR L2 = 10, OR-Res = 10, OR - APP = 8. Out-order-only labels → null.
+function exportShiftHours(label) {
+  const s = String(label || "");
+  let m = s.match(/(?:^|\/\s*)D\s*(\d+)/i);
+  if (m) return +m[1];
+  m = s.match(/\bOR\s*(\d+)\s*-\s*MD\b/i);
+  if (m) return +m[1];
+  if (/\bOR\s*L1\b/i.test(s)) return 12;
+  if (/\bOR\s*L2\b/i.test(s)) return 10;
+  if (/\bOR-?Res\b/i.test(s)) return 10;
+  if (/\bOR - APP\b/i.test(s)) return 8;
+  return null;
+}
+
+// Tag/notes: Charge, out-order (1-MN, 2-MN; N-Out at Main), L1/L2, Late, Call.
+function exportShiftNotes(label) {
+  const s = String(label || "");
+  const n = [];
+  if (/\bcharge\b/i.test(s)) n.push("Charge");
+  const o = s.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
+  if (o) n.push(o[1] + (/\bMN\b|\bMNC\b|McNair/i.test(s) ? "-MN" : "-Out"));
+  if (/\bOR\s*L1\b/i.test(s)) n.push("L1");
+  else if (/\bOR\s*L2\b/i.test(s)) n.push("L2");
+  if (/Late\s*MD-?MNC/i.test(s)) n.push("Late");
+  if (/McNair Call/i.test(s) && !/Post-?McNair Call/i.test(s)) n.push("Call");
+  return n.join(", ");
+}
+
+// Every assigned person in every open room, floats included.
+function collectAssignedPeople() {
+  const out = [];
+  for (const r of ALL_ROOMS_FLAT) {
+    if (window.closedRooms && window.closedRooms[r.key]) continue;
+    const a = currentAssignments[r.key] || {};
+    const push = (person, slot) => {
+      if (!person || !person.name) return;
+      out.push({ person, slot, room: r, location: EXPORT_LOCATION[r.group] || r.group });
+    };
+    push(a.md, "md");
+    push(a.app, "app");
+    if (Array.isArray(a.float)) a.float.forEach(f => push(f, "float"));
+  }
+  return out;
+}
+
+function _isCvPlaceholder(person) {
+  return person.isCV || person.agency === "CV" || /^CV (MD|APP)$/.test(person.name);
+}
+
 // ── EXPORT PDF ──
 function exportAssignmentPdf() {
   if (!isFinalized || !currentAdminDate) return;
@@ -3452,6 +3546,58 @@ async function exportAssignmentXlsx() {
   const wb = window.XLSX.utils.book_new();
   window.XLSX.utils.book_append_sheet(wb, ws, "Assignments");
   window.XLSX.writeFile(wb, "OR_Assignments_" + iso + ".xlsx");
+}
+
+// ── EXPORT CSV ──
+// One row per person (an MD covering three rooms appears once).
+// A: First  B: Last  C: Role  D: Shift  E: Notes  F: Location
+function exportAssignmentCsv() {
+  if (!isFinalized || !currentAdminDate) return;
+
+  const iso = currentAdminDate;
+  const byName = new Map();
+  for (const e of collectAssignedPeople()) {
+    if (_isCvPlaceholder(e.person)) continue;
+    const name = e.person.name;
+    if (!byName.has(name)) byName.set(name, { person: e.person, locs: [] });
+    const rec = byName.get(name);
+    if (rec.locs.indexOf(e.location) === -1) rec.locs.push(e.location);
+  }
+
+  const rows = [];
+  for (const [name, rec] of byName) {
+    const label = exportShiftLabel(name, iso);
+    const h = exportShiftHours(label);
+    const nm = splitName(name);
+    rec.locs.sort((x, y) => EXPORT_LOCATION_ORDER.indexOf(x) - EXPORT_LOCATION_ORDER.indexOf(y));
+    rows.push({
+      first: nm.first, last: nm.last, role: exportRole(rec.person),
+      shift: h ? h + " hour" : "", notes: exportShiftNotes(label),
+      location: rec.locs.join(" / ")
+    });
+  }
+  rows.sort((a, b) =>
+    (EXPORT_LOCATION_ORDER.indexOf(a.location.split(" / ")[0]) - EXPORT_LOCATION_ORDER.indexOf(b.location.split(" / ")[0]))
+    || ((EXPORT_ROLE_ORDER[a.role] ?? 9) - (EXPORT_ROLE_ORDER[b.role] ?? 9))
+    || a.last.localeCompare(b.last) || a.first.localeCompare(b.first));
+
+  const cell = v => {
+    const t = String(v == null ? "" : v);
+    return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const lines = [["First Name", "Last Name", "Role", "Shift", "Notes", "Location"]]
+    .concat(rows.map(r => [r.first, r.last, r.role, r.shift, r.notes, r.location]))
+    .map(r => r.map(cell).join(","));
+  // BOM so Excel opens it as UTF-8; CRLF line endings.
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "OR_Assignments_" + iso + ".csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 // ── FINALIZE STATE ──
 let isFinalized = false;
