@@ -6996,6 +6996,8 @@ async function deleteEndoEntry(date, safeName) {
     "McNair OR":"McNair","OTM OR":"McNair","OTM Endo":"McNair","Jamail OR":"McNair"
   };
   const ROLE_ORDER = { MD: 0, CRNA: 1, CAA: 2 };
+  // Always McNair campus, listed in their own "Jamail MD" group.
+  const JAMAIL_MDS = ["Lauren Ganderson"];
 
   const esc = s => String(s == null ? "" : s).replace(/&/g, "&amp;")
     .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -7087,7 +7089,8 @@ async function deleteEndoEntry(date, safeName) {
 
       const baylor = p.agency === "Baylor";
       let campus;
-      if (baylor) campus = isMcNairLabel(label) ? "McNair" : "Main";
+      if (JAMAIL_MDS.indexOf(p.name) > -1) campus = "McNair";
+      else if (baylor) campus = isMcNairLabel(label) ? "McNair" : "Main";
       else {
         const c = held.map(r => r.campus).filter(Boolean);
         if (c.length) campus = c.filter(x => x === "McNair").length > c.length / 2 ? "McNair" : "Main";
@@ -7143,8 +7146,15 @@ async function deleteEndoEntry(date, safeName) {
       });
       h += group("MD — other shift", mds.filter(p => [8, 10, 12].indexOf(p.mdHrs) === -1).sort(byName));
     } else {
-      h += group("MD — by out-order", mds.filter(p => p.out != null).sort(byOut), outPrefix);
-      h += group("MD — no out-order", mds.filter(p => p.out == null).sort(byName));
+      // numbered out-order first; then unnumbered; Late MD next to last; Call MD last
+      const jam = p => JAMAIL_MDS.indexOf(p.name) > -1;
+      const late = p => p.tags.indexOf("Late") > -1 || p.tags.indexOf("Late 2") > -1;
+      const call = p => p.tags.indexOf("Call") > -1;
+      const rank = p => p.out != null ? p.out
+                      : call(p) ? 3000 : late(p) ? 2000 + (p.tags.indexOf("Late 2") > -1 ? 1 : 0) : 1000;
+      const ordered = mds.filter(p => !jam(p)).sort((a, b) => (rank(a) - rank(b)) || byName(a, b));
+      h += group("MD — out-order", ordered, p => p.out != null ? String(p.out) : "–");
+      h += group("Jamail MD", mds.filter(jam).sort(byName));
     }
     h += group("APP — by out-order", apps.filter(p => p.out != null).sort(byOut), outPrefix);
     h += group("APP — no out-order", apps.filter(p => p.out == null).sort(byName));
@@ -7156,7 +7166,9 @@ async function deleteEndoEntry(date, safeName) {
     let h = "";
     const hrs = Array.from(new Set(ppl.map(p => p.locHrs).filter(x => x != null))).sort((a, b) => a - b);
     hrs.forEach(hr => { h += group("D" + hr + " — " + hr + " hour", ppl.filter(p => p.locHrs === hr).sort(byRole)); });
-    h += group("Other shift", ppl.filter(p => p.locHrs == null).sort(byRole));
+    // show the raw label here so an unrecognized shift format is visible
+    h += group("Other shift", ppl.filter(p => p.locHrs == null).sort(byRole)
+      .map(p => Object.assign({}, p, { tags: p.tags.concat(p.label ? [p.label] : []) })));
     return h || '<div class="none">No locum staff</div>';
   }
 
@@ -7171,7 +7183,10 @@ async function deleteEndoEntry(date, safeName) {
       '<div class="dt">' + esc(dateLabel) + "</div></div>" +
       '<div class="cols"><div class="col"><h2>Baylor <span class="ct">' + cnt(bay) + "</span></h2>" +
       baylorColumn(bay, campus) + '</div><div class="col"><h2>Locums <span class="ct">' + cnt(loc) +
-      "</span></h2>" + locHtml + "</div></div></section>";
+      "</span></h2>" + locHtml + "</div></div>" +
+      '<div class="tot">Total MDs: <b>' + mine.filter(p => p.cred === "MD").length + "</b>" +
+      " &nbsp;·&nbsp; Total APPs: <b>" + mine.filter(p => p.cred !== "MD").length + "</b>" +
+      " &nbsp;<span>(Baylor + locums)</span></div></section>";
   }
 
   async function exportPdf() {
@@ -7205,6 +7220,7 @@ async function deleteEndoEntry(date, safeName) {
         ".rm{width:42%}.tag{display:inline-block;margin-left:4px;padding:0 3px;border:1px solid #888;border-radius:2px;font-size:8px}" +
         ".flt{display:inline-block;padding:0 3px;background:#e0e7ff;border:1px solid #6366f1;border-radius:2px;font-size:8px;font-weight:700}" +
         ".none{color:#999;font-style:italic}" +
+        ".tot{margin-top:10px;padding:6px 8px;border-top:2px solid #1e3a5f;font-size:12px}.tot span{color:#666;font-size:10px}" +
         "</style></head><body>" +
         page("Main", people, dateLabel, unplaced) + page("McNair", people, dateLabel, null) +
         "</body></html>";
