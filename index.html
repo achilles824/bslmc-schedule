@@ -6622,6 +6622,7 @@ async function deleteEndoEntry(date, safeName) {
             '<input type="date" id="lunchDate" />' +
           '</div>' +
           '<button class="view-btn" onclick="LunchTab.run()">Build Plan</button>' +
+                '<button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--text);" onclick="CampusPdf.exportPdf()">⬇ Export PDF</button>' +
         '</div>' +
         '<div class="filter-toggles">' +
           '<span class="filter-label">Campus</span>' +
@@ -6972,6 +6973,254 @@ async function deleteEndoEntry(date, safeName) {
   else mount();
 })();
 // ══════════════════ END BOARD RUNNER LUNCH PLAN TAB ═══════════════
+
+// ══════════════════════════════════════════════════════════════════
+// BOARD RUNNER — CAMPUS STAFF PDF
+//
+// Paste directly below "END BOARD RUNNER LUNCH PLAN TAB". Two printed
+// pages (Main, McNair). Left column Baylor, right column locums.
+//   Main Baylor MDs   : grouped by shift hours (OR 8/10/12 - MD)
+//   Main Baylor APPs  : by out-order, 1 first
+//   McNair Baylor MDs : by out-order (Nth Out-MNC), then unnumbered
+//   McNair Baylor APPs: by out-order (Nth Out APP-MN)
+//   Locums (both)     : grouped by D5/D8/D10/D12
+// Each line shows assigned rooms and float status. Read-only. Refuses
+// to run on a day that has not been finalized.
+//
+// (Never write the closing script tag anywhere in this file.)
+// ══════════════════════════════════════════════════════════════════
+(function () {
+
+  const AREA_CAMPUS = {
+    "Main OR":"Main","Main Endo":"Main","IR":"Main","NIR":"Main","CT":"Main","MRI":"Main",
+    "McNair OR":"McNair","OTM OR":"McNair","OTM Endo":"McNair","Jamail OR":"McNair"
+  };
+  const ROLE_ORDER = { MD: 0, CRNA: 1, CAA: 2 };
+
+  const esc = s => String(s == null ? "" : s).replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const byName = (a, b) => (typeof compareByNameMode === "function")
+    ? compareByNameMode(a, b) : a.name.localeCompare(b.name);
+
+  // Both date-key formats: YYYY-MM-DD (QGenda/Baylor), M/D/YY (locums).
+  function shiftFor(p, iso) {
+    if (!p || !p.shifts) return undefined;
+    if (p.shifts[iso] !== undefined) return p.shifts[iso];
+    const a = iso.split("-").map(Number);
+    return p.shifts[a[1] + "/" + a[2] + "/" + String(a[0]).slice(2)];
+  }
+
+  function fbGetT(path, ms) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const t = setTimeout(() => { if (!done) { done = true;
+        reject(new Error("Firebase timed out reading " + path + " — try a phone hotspot")); } }, ms || 8000);
+      window.fbGet(path).then(v => { if (!done) { done = true; clearTimeout(t); resolve(v); } })
+                        .catch(e => { if (!done) { done = true; clearTimeout(t); reject(e); } });
+    });
+  }
+
+  function isFinalized(iso) {
+    return new Promise(resolve => {
+      let done = false, un;
+      un = window.fbListen("finalized/" + iso, v => {
+        if (!done) { done = true; if (un) un(); resolve(!!v); }
+      });
+      setTimeout(() => { if (!done) { done = true; if (un) un(); resolve(false); } }, 4000);
+    });
+  }
+
+  // ── label parsing ─────────────────────────────────────────────
+  const outOrderOf = l => { const m = String(l).match(/(\d+)(?:st|nd|rd|th)\s*Out/i); return m ? +m[1] : null; };
+  const mdHoursOf  = l => { const m = String(l).match(/\bOR\s*(\d+)\s*-\s*MD\b/i); return m ? +m[1] : null; };
+  const locumHrsOf = l => { const m = String(l).match(/(?:^|\/\s*)D\s*(\d+)/i); return m ? +m[1] : null; };
+  const isMcNairLabel = l => /\bMN\b|\bMNC\b|McNair/i.test(String(l).replace(/Post-?\s*McNair\s*Call/ig, ""));
+
+  function tagsOf(l) {
+    const s = String(l), t = [];
+    if (/\bcharge\b/i.test(s)) t.push("Charge");
+    if (/\bOR\s*L1\b/i.test(s)) t.push("L1");
+    else if (/\bOR\s*L2\b/i.test(s)) t.push("L2");
+    if (/Late\s*MD\s*2/i.test(s)) t.push("Late 2");
+    else if (/Late\s*MD/i.test(s)) t.push("Late");
+    if (/Post-?\s*McNair\s*Call/i.test(s)) t.push("Post-Call");
+    else if (/McNair\s*Call/i.test(s)) t.push("Call");
+    if (/Back-?Up/i.test(s)) t.push("Back-Up");
+    if (/3p-11p/i.test(s)) t.push("3p-11p");
+    return t;
+  }
+
+  // ── build the day ─────────────────────────────────────────────
+  async function build(iso) {
+    if (typeof SCHEDULE_DATA === "undefined" || !SCHEDULE_DATA.length)
+      throw new Error("Schedule data is still loading — try again in a moment.");
+    const fb = await fbGetT("assignments/" + iso);
+    if (!fb) throw new Error("No assignments saved for " + iso);
+    const closed = fb.__closed || {};
+
+    // name -> rooms held today
+    const rooms = new Map();
+    const add = (person, key, isFloat) => {
+      if (!person || !person.name) return;
+      if (!rooms.has(person.name)) rooms.set(person.name, []);
+      rooms.get(person.name).push({ key, label: key.replace("|", " "), isFloat,
+        campus: AREA_CAMPUS[key.split("|")[0]] || null });
+    };
+    Object.keys(fb).forEach(key => {
+      if (key.indexOf("__") === 0 || closed[key]) return;
+      const a = fb[key] || {};
+      add(a.md, key, false);
+      add(a.app, key, false);
+      const fl = Array.isArray(a.float) ? a.float : (a.float ? Object.values(a.float) : []);
+      fl.forEach(f => add(f, key, true));
+    });
+
+    const people = [];
+    for (const p of SCHEDULE_DATA) {
+      const cred = p.credential;
+      if (ROLE_ORDER[cred] === undefined) continue;          // residents, blanks
+      if (p.agency === "CV") continue;
+      const label = shiftFor(p, iso);
+      const held = rooms.get(p.name) || [];
+      if (label === undefined && !held.length) continue;
+      if (!held.length && classifyShift(String(label)) !== "day") continue;
+
+      const baylor = p.agency === "Baylor";
+      let campus;
+      if (baylor) campus = isMcNairLabel(label) ? "McNair" : "Main";
+      else {
+        const c = held.map(r => r.campus).filter(Boolean);
+        if (c.length) campus = c.filter(x => x === "McNair").length > c.length / 2 ? "McNair" : "Main";
+        else if (/mcnair/i.test(p.campus || "")) campus = "McNair";
+        else if (/main/i.test(p.campus || "")) campus = "Main";
+        else campus = null;                                    // unplaced locum
+      }
+
+      const order = { "Main OR": 0, "IR": 1, "NIR": 2, "CT": 3, "MRI": 4, "Main Endo": 5,
+                      "McNair OR": 6, "OTM OR": 7, "OTM Endo": 8, "Jamail OR": 9 };
+      held.sort((x, y) => ((order[x.key.split("|")[0]] ?? 99) - (order[y.key.split("|")[0]] ?? 99))
+                       || x.label.localeCompare(y.label, undefined, { numeric: true }));
+      people.push({
+        name: p.name, cred, baylor, campus, label: String(label == null ? "" : label),
+        rooms: held.filter(r => !r.isFloat).map(r => r.label),
+        isFloat: held.some(r => r.isFloat),
+        floatArea: (held.find(r => r.isFloat) || {}).key,
+        out: outOrderOf(label), mdHrs: mdHoursOf(label), locHrs: locumHrsOf(label),
+        tags: tagsOf(label)
+      });
+    }
+    return people;
+  }
+
+  // ── render ────────────────────────────────────────────────────
+  function line(p, prefix) {
+    const where = [];
+    if (p.rooms.length) where.push(p.rooms.join(", "));
+    if (p.isFloat) where.push('<span class="flt">FLOAT' +
+      (p.floatArea ? " · " + esc(p.floatArea.split("|")[0]) : "") + "</span>");
+    const tags = p.tags.map(t => '<span class="tag">' + esc(t) + "</span>").join("");
+    return '<tr><td class="ord">' + (prefix == null ? "" : esc(prefix)) + "</td>" +
+      '<td class="nm">' + esc(p.name) + tags + "</td>" +
+      '<td class="cr">' + esc(p.cred) + "</td>" +
+      '<td class="rm">' + (where.length ? where.join(" ") : '<span class="none">no room</span>') + "</td></tr>";
+  }
+
+  function group(title, list, prefixFn) {
+    if (!list.length) return "";
+    return '<div class="grp"><div class="gt">' + esc(title) + ' <span class="ct">(' + list.length + ")</span></div>" +
+      "<table>" + list.map(p => line(p, prefixFn ? prefixFn(p) : null)).join("") + "</table></div>";
+  }
+
+  const byOut = (a, b) => ((a.out == null ? 999 : a.out) - (b.out == null ? 999 : b.out)) || byName(a, b);
+  const outPrefix = p => p.out == null ? "–" : String(p.out);
+
+  function baylorColumn(ppl, campus) {
+    const mds = ppl.filter(p => p.cred === "MD"), apps = ppl.filter(p => p.cred !== "MD");
+    let h = "";
+    if (campus === "Main") {
+      [8, 10, 12].forEach(hr => {
+        h += group("MD — " + hr + " hour", mds.filter(p => p.mdHrs === hr).sort(byName));
+      });
+      h += group("MD — other shift", mds.filter(p => [8, 10, 12].indexOf(p.mdHrs) === -1).sort(byName));
+    } else {
+      h += group("MD — by out-order", mds.filter(p => p.out != null).sort(byOut), outPrefix);
+      h += group("MD — no out-order", mds.filter(p => p.out == null).sort(byName));
+    }
+    h += group("APP — by out-order", apps.filter(p => p.out != null).sort(byOut), outPrefix);
+    h += group("APP — no out-order", apps.filter(p => p.out == null).sort(byName));
+    return h || '<div class="none">No Baylor staff</div>';
+  }
+
+  function locumColumn(ppl) {
+    const byRole = (a, b) => (ROLE_ORDER[a.cred] - ROLE_ORDER[b.cred]) || byName(a, b);
+    let h = "";
+    const hrs = Array.from(new Set(ppl.map(p => p.locHrs).filter(x => x != null))).sort((a, b) => a - b);
+    hrs.forEach(hr => { h += group("D" + hr + " — " + hr + " hour", ppl.filter(p => p.locHrs === hr).sort(byRole)); });
+    h += group("Other shift", ppl.filter(p => p.locHrs == null).sort(byRole));
+    return h || '<div class="none">No locum staff</div>';
+  }
+
+  function page(campus, people, dateLabel, unplaced) {
+    const mine = people.filter(p => p.campus === campus);
+    const bay = mine.filter(p => p.baylor), loc = mine.filter(p => !p.baylor);
+    const cnt = l => l.filter(p => p.cred === "MD").length + " MD · " + l.filter(p => p.cred !== "MD").length + " APP";
+    let locHtml = locumColumn(loc);
+    if (unplaced && unplaced.length)
+      locHtml += group("Not placed — no room, no campus", unplaced.slice().sort(byName));
+    return '<section class="pg"><div class="hd"><h1>' + esc(campus) + " Campus</h1>" +
+      '<div class="dt">' + esc(dateLabel) + "</div></div>" +
+      '<div class="cols"><div class="col"><h2>Baylor <span class="ct">' + cnt(bay) + "</span></h2>" +
+      baylorColumn(bay, campus) + '</div><div class="col"><h2>Locums <span class="ct">' + cnt(loc) +
+      "</span></h2>" + locHtml + "</div></div></section>";
+  }
+
+  async function exportPdf() {
+    const iso = (document.getElementById("lunchDate") || {}).value;
+    if (!iso) { alert("Pick a date."); return; }
+    const win = window.open("", "_blank");   // open now so pop-up blockers allow it
+    if (!win) { alert("Allow pop-ups for this site to export the PDF."); return; }
+    win.document.write("<p style='font-family:Arial;padding:20px'>Building staff sheet…</p>");
+    try {
+      if (!(await isFinalized(iso))) {
+        win.close(); alert("This day hasn't been finalized yet — finalize it in Admin first."); return;
+      }
+      const people = await build(iso);
+      const dt = parseDate(iso);
+      const dateLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
+      const unplaced = people.filter(p => !p.campus);
+      const html = '<!DOCTYPE html><html><head><title>Staff by Campus — ' + esc(dateLabel) + "</title><style>" +
+        "@page{size:letter portrait;margin:0.4in}" +
+        "body{font-family:Arial,sans-serif;font-size:10px;color:#111;margin:0}" +
+        ".pg{page-break-after:always}.pg:last-child{page-break-after:auto}" +
+        ".hd{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid #1e3a5f;margin-bottom:8px;padding-bottom:4px}" +
+        "h1{font-size:18px;margin:0;color:#1e3a5f}.dt{font-size:12px;color:#555}" +
+        ".cols{display:flex;gap:16px}.col{flex:1;min-width:0}" +
+        "h2{font-size:13px;margin:0 0 6px;background:#1e3a5f;color:#fff;padding:4px 6px}" +
+        "h2 .ct{font-weight:400;font-size:10px;opacity:.85}" +
+        ".grp{margin-bottom:8px;break-inside:avoid}" +
+        ".gt{font-weight:700;font-size:11px;border-bottom:1px solid #999;margin-bottom:2px;padding-bottom:1px}" +
+        ".gt .ct{font-weight:400;color:#666}" +
+        "table{width:100%;border-collapse:collapse}td{padding:2px 3px;border-bottom:1px solid #eee;vertical-align:top}" +
+        ".ord{width:16px;font-weight:700;text-align:right;color:#1e3a5f}.cr{width:34px;color:#555}" +
+        ".rm{width:42%}.tag{display:inline-block;margin-left:4px;padding:0 3px;border:1px solid #888;border-radius:2px;font-size:8px}" +
+        ".flt{display:inline-block;padding:0 3px;background:#e0e7ff;border:1px solid #6366f1;border-radius:2px;font-size:8px;font-weight:700}" +
+        ".none{color:#999;font-style:italic}" +
+        "</style></head><body>" +
+        page("Main", people, dateLabel, unplaced) + page("McNair", people, dateLabel, null) +
+        "</body></html>";
+      win.document.open(); win.document.write(html); win.document.close();
+      win.focus();
+      setTimeout(() => win.print(), 500);
+    } catch (e) {
+      try { win.close(); } catch (_) {}
+      alert(e.message || String(e));
+      console.error("[CampusPdf]", e);
+    }
+  }
+
+  window.CampusPdf = { exportPdf, build };
+})();
+// ══════════════════ END BOARD RUNNER CAMPUS STAFF PDF ═════════════
 
 // ── PWA service worker ──
 if ("serviceWorker" in navigator) {
