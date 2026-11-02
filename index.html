@@ -1362,6 +1362,7 @@ function showList(user, all, appr, admin) {
         <button id="finalizeBtn" class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="toggleFinalize()">✓ Finalize</button>
 <button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
 <button id="exportXlsxBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentXlsx()" disabled>⬇ Export Excel</button>
+<button id="exportCsvBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentCsv()" disabled>⬇ Export CSV</button>
         <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
       <div class="upload-section">
@@ -3206,11 +3207,13 @@ function syncNameSortDayBtn() {
 }
 
 function syncXlsxBtn() {
-  const b = document.getElementById("exportXlsxBtn");
-  if (!b) return;
-  b.style.opacity = isFinalized ? "1" : "0.4";
-  b.style.cursor = isFinalized ? "pointer" : "not-allowed";
-  b.disabled = !isFinalized;
+  ["exportXlsxBtn", "exportCsvBtn"].forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.style.opacity = isFinalized ? "1" : "0.4";
+    b.style.cursor = isFinalized ? "pointer" : "not-allowed";
+    b.disabled = !isFinalized;
+  });
 }
 let autoSaveInterval = null;
 let autoLockTimeout = null;
@@ -3341,86 +3344,6 @@ function _isCvPlaceholder(person) {
   return person.isCV || person.agency === "CV" || /^CV (MD|APP)$/.test(person.name);
 }
 
-// ── EXPORT HELPERS (shared by PDF + Excel) ──
-// Location bucket for each room group.
-const EXPORT_LOCATION = {
-  "Main OR": "Main", "IR": "Main", "NIR": "Main", "CT": "Main", "MRI": "Main", "Main Endo": "Main",
-  "OTM OR": "OTM", "OTM Endo": "OTM", "Jamail OR": "Jamail", "McNair OR": "McNair"
-};
-const EXPORT_LOCATION_ORDER = ["Main", "OTM", "Jamail", "McNair"];
-const EXPORT_ROLE_ORDER = { MD: 0, CRNA: 1, CAA: 2, Resident: 3 };
-
-function _escHtml(s) {
-  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-// Today's QGenda label for a person. Handles both date-key formats
-// (YYYY-MM-DD for QGenda/Baylor, M/D/YY for locums).
-function exportShiftLabel(name, iso) {
-  const p = (SCHEDULE_DATA || []).find(x => x.name === name);
-  if (!p || !p.shifts) return "";
-  if (p.shifts[iso] !== undefined) return String(p.shifts[iso]);
-  const a = iso.split("-").map(Number);
-  const alt = p.shifts[a[1] + "/" + a[2] + "/" + String(a[0]).slice(2)];
-  return alt !== undefined ? String(alt) : "";
-}
-
-function exportRole(person) {
-  const p = (SCHEDULE_DATA || []).find(x => x.name === person.name);
-  return (p && p.credential) || person.credential || "";
-}
-
-// Shift length in hours, or null when the label doesn't say.
-// Locums: D8/D10/D12. Baylor MDs: "OR 10 - MD". Baylor APPs: OR L1 = 12,
-// OR L2 = 10, OR-Res = 10, OR - APP = 8. Out-order-only labels → null.
-function exportShiftHours(label) {
-  const s = String(label || "");
-  let m = s.match(/(?:^|\/\s*)D\s*(\d+)/i);
-  if (m) return +m[1];
-  m = s.match(/\bOR\s*(\d+)\s*-\s*MD\b/i);
-  if (m) return +m[1];
-  if (/\bOR\s*L1\b/i.test(s)) return 12;
-  if (/\bOR\s*L2\b/i.test(s)) return 10;
-  if (/\bOR-?Res\b/i.test(s)) return 10;
-  if (/\bOR - APP\b/i.test(s)) return 8;
-  return null;
-}
-
-// Tag/notes: Charge, out-order (1-MN, 2-MN; N-Out at Main), L1/L2, Late, Call.
-function exportShiftNotes(label) {
-  const s = String(label || "");
-  const n = [];
-  if (/\bcharge\b/i.test(s)) n.push("Charge");
-  const o = s.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
-  if (o) n.push(o[1] + (/\bMN\b|\bMNC\b|McNair/i.test(s) ? "-MN" : "-Out"));
-  if (/\bOR\s*L1\b/i.test(s)) n.push("L1");
-  else if (/\bOR\s*L2\b/i.test(s)) n.push("L2");
-  if (/Late\s*MD-?MNC/i.test(s)) n.push("Late");
-  if (/McNair Call/i.test(s) && !/Post-?McNair Call/i.test(s)) n.push("Call");
-  return n.join(", ");
-}
-
-// Every assigned person in every open room, floats included.
-function collectAssignedPeople() {
-  const out = [];
-  for (const r of ALL_ROOMS_FLAT) {
-    if (window.closedRooms && window.closedRooms[r.key]) continue;
-    const a = currentAssignments[r.key] || {};
-    const push = (person, slot) => {
-      if (!person || !person.name) return;
-      out.push({ person, slot, room: r, location: EXPORT_LOCATION[r.group] || r.group });
-    };
-    push(a.md, "md");
-    push(a.app, "app");
-    if (Array.isArray(a.float)) a.float.forEach(f => push(f, "float"));
-  }
-  return out;
-}
-
-function _isCvPlaceholder(person) {
-  return person.isCV || person.agency === "CV" || /^CV (MD|APP)$/.test(person.name);
-}
 
 // ── EXPORT PDF ──
 function exportAssignmentPdf() {
