@@ -7162,7 +7162,21 @@ async function deleteEndoEntry(date, safeName) {
   }
 
   function locumColumn(ppl) {
-    const byRole = (a, b) => (ROLE_ORDER[a.cred] - ROLE_ORDER[b.cred]) || byName(a, b);
+    // MDs and APPs in separate sections, each grouped by shift hours
+    const section = (title, list) => {
+      if (!list.length) return "";
+      let h = '<div class="sub">' + esc(title) + ' <span class="ct">(' + list.length + ")</span></div>";
+      const hrs = Array.from(new Set(list.map(p => p.locHrs).filter(x => x != null))).sort((a, b) => a - b);
+      hrs.forEach(hr => { h += group(hr + " hour", list.filter(p => p.locHrs === hr).sort(byName)); });
+      // show the raw label here so an unrecognized shift format is visible
+      h += group("Other shift", list.filter(p => p.locHrs == null).sort(byName)
+        .map(p => Object.assign({}, p, { tags: p.tags.concat(p.label ? [p.label] : []) })));
+      return h;
+    };
+    const h = section("Locum MDs", ppl.filter(p => p.cred === "MD")) +
+              section("Locum APPs", ppl.filter(p => p.cred !== "MD"));
+    return h || '<div class="none">No locum staff</div>';
+  }
     let h = "";
     const hrs = Array.from(new Set(ppl.map(p => p.locHrs).filter(x => x != null))).sort((a, b) => a - b);
     hrs.forEach(hr => { h += group(hr + " hour", ppl.filter(p => p.locHrs === hr).sort(byRole)); });
@@ -7220,6 +7234,7 @@ async function deleteEndoEntry(date, safeName) {
         ".rm{width:42%}.tag{display:inline-block;margin-left:4px;padding:0 3px;border:1px solid #888;border-radius:2px;font-size:8px}" +
         ".flt{display:inline-block;padding:0 3px;background:#e0e7ff;border:1px solid #6366f1;border-radius:2px;font-size:8px;font-weight:700}" +
         ".none{color:#999;font-style:italic}" +
+        ".sub{font-size:12px;font-weight:700;color:#1e3a5f;border-bottom:2px solid #1e3a5f;margin:10px 0 4px;padding-bottom:1px}.sub:first-child{margin-top:0}.sub .ct{font-weight:400;color:#666;font-size:10px}" +
         ".tot{margin-top:10px;padding:6px 8px;border-top:2px solid #1e3a5f;font-size:12px}.tot span{color:#666;font-size:10px}" +
         "</style></head><body>" +
         page("Main", people, dateLabel, unplaced) + page("McNair", people, dateLabel, null) +
