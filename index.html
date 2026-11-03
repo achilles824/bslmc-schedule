@@ -3440,9 +3440,10 @@ async function exportAssignmentXlsx() {
   for (const e of collectAssignedPeople()) {
     if (_isCvPlaceholder(e.person)) continue;
     const name = e.person.name;
-    if (!byName.has(name)) byName.set(name, { person: e.person, locs: [] });
+    if (!byName.has(name)) byName.set(name, { person: e.person, locs: [], rooms: [] });
     const rec = byName.get(name);
     if (rec.locs.indexOf(e.location) === -1) rec.locs.push(e.location);
+    if (rec.rooms.indexOf(e.room.label) === -1) rec.rooms.push(e.room.label);
   }
 
   const rows = [];
@@ -3454,7 +3455,8 @@ async function exportAssignmentXlsx() {
     rows.push({
       first: nm.first, last: nm.last, role: exportRole(rec.person),
       shift: h ? h + " hour" : "", notes: exportShiftNotes(label),
-      location: rec.locs.join(" / ")
+      location: rec.locs.join(" / "),
+      rooms: rec.rooms.join(", ")
     });
   }
   rows.sort((a, b) =>
@@ -3462,10 +3464,10 @@ async function exportAssignmentXlsx() {
     || ((EXPORT_ROLE_ORDER[a.role] ?? 9) - (EXPORT_ROLE_ORDER[b.role] ?? 9))
     || a.last.localeCompare(b.last) || a.first.localeCompare(b.first));
 
-  const aoa = [["First Name", "Last Name", "Role", "Shift", "Notes", "Location"]]
-    .concat(rows.map(r => [r.first, r.last, r.role, r.shift, r.notes, r.location]));
+  const aoa = [["First Name", "Last Name", "Role", "Shift", "Notes", "Location", "Rooms"]]
+    .concat(rows.map(r => [r.first, r.last, r.role, r.shift, r.notes, r.location, r.rooms]));
   const ws = window.XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 16 }, { wch: 20 }, { wch: 8 }, { wch: 10 }, { wch: 16 }, { wch: 14 }];
+  ws["!cols"] = [{ wch: 16 }, { wch: 20 }, { wch: 8 }, { wch: 10 }, { wch: 16 }, { wch: 14 }, { wch: 30 }];
   const wb = window.XLSX.utils.book_new();
   window.XLSX.utils.book_append_sheet(wb, ws, "Assignments");
   window.XLSX.writeFile(wb, "OR_Assignments_" + iso + ".xlsx");
@@ -3482,9 +3484,10 @@ function exportAssignmentCsv() {
   for (const e of collectAssignedPeople()) {
     if (_isCvPlaceholder(e.person)) continue;
     const name = e.person.name;
-    if (!byName.has(name)) byName.set(name, { person: e.person, locs: [] });
+    if (!byName.has(name)) byName.set(name, { person: e.person, locs: [], rooms: [] });
     const rec = byName.get(name);
     if (rec.locs.indexOf(e.location) === -1) rec.locs.push(e.location);
+    if (rec.rooms.indexOf(e.room.label) === -1) rec.rooms.push(e.room.label);
   }
 
   const rows = [];
@@ -3496,7 +3499,8 @@ function exportAssignmentCsv() {
     rows.push({
       first: nm.first, last: nm.last, role: exportRole(rec.person),
       shift: h ? h + " hour" : "", notes: exportShiftNotes(label),
-      location: rec.locs.join(" / ")
+      location: rec.locs.join(" / "),
+      rooms: rec.rooms.join(", ")
     });
   }
   rows.sort((a, b) =>
@@ -3508,8 +3512,8 @@ function exportAssignmentCsv() {
     const t = String(v == null ? "" : v);
     return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
   };
-  const lines = [["First Name", "Last Name", "Role", "Shift", "Notes", "Location"]]
-    .concat(rows.map(r => [r.first, r.last, r.role, r.shift, r.notes, r.location]))
+  const lines = [["First Name", "Last Name", "Role", "Shift", "Notes", "Location", "Rooms"]]
+    .concat(rows.map(r => [r.first, r.last, r.role, r.shift, r.notes, r.location, r.rooms]))
     .map(r => r.map(cell).join(","));
   // BOM so Excel opens it as UTF-8; CRLF line endings.
   const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
