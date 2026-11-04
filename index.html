@@ -1396,6 +1396,7 @@ function showList(user, all, appr, admin) {
           <button class="apply-btn" onclick="applyRoomChecklist()">Apply — Close Inactive Rooms</button>
         </div>
       </div>
+      <div id="adminRoles"></div>
       <div class="admin-grid-wrap">
         <div class="admin-staff-panel">
           <h4>Available OR Staff</h4>
@@ -3310,10 +3311,11 @@ function exportShiftHours(label) {
 }
 
 // Tag/notes: Charge, out-order (1-MN, 2-MN; N-Out at Main), L1/L2, Late, Call.
-function exportShiftNotes(label) {
+function exportShiftNotes(label, name) {
   const s = String(label || "");
   const n = [];
   if (/\bcharge\b/i.test(s)) n.push("Charge");
+  if (name) rolesFor(name).forEach(r => n.push(r));
   const o = s.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
   if (o) n.push(o[1] + (/\bMN\b|\bMNC\b|McNair/i.test(s) ? "-MN" : "-Out"));
   if (/\bOR\s*L1\b/i.test(s)) n.push("L1");
@@ -3344,7 +3346,80 @@ function _isCvPlaceholder(person) {
   return person.isCV || person.agency === "CV" || /^CV (MD|APP)$/.test(person.name);
 }
 
+// ── DAILY MD ROLES (Airway / PACU / Pain) ──
+// Set in the three boxes above the Admin room grid. Saved with the day's
+// assignments at assignments/{date}/__roles as { Airway: "Name", ... }.
+// Values are plain name strings, NOT { name } objects, so every loop that
+// walks rooms looking for .name passes over them untouched.
+const ROLE_TAGS = ["Airway", "PACU", "Pain"];
 
+function rolesFor(name, roleMap) {
+  const m = roleMap || (currentAssignments && currentAssignments.__roles) || {};
+  return ROLE_TAGS.filter(r => m[r] && m[r] === name);
+}
+
+function _roleMdNames(dateVal) {
+  return getORStaffForDay(dateVal).filter(p => p.credential === "MD")
+    .map(p => p.name).sort((a, b) => a.localeCompare(b));
+}
+
+function renderRoleBar(dateVal) {
+  const el = document.getElementById("adminRoles");
+  if (!el) return;
+  const roles = (currentAssignments && currentAssignments.__roles) || {};
+  const opts = _roleMdNames(dateVal).map(n => '<option value="' + _escHtml(n) + '"></option>').join("");
+  const boxStyle = "flex:1;min-width:180px;";
+  const labelStyle = "display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;";
+  const inputStyle = "flex:1;min-width:0;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:13px;";
+  const clearStyle = "background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer;padding:0 10px;font-size:14px;";
+  el.style.cssText = "display:flex;gap:12px;flex-wrap:wrap;margin:0 0 12px;";
+  el.innerHTML = '<datalist id="roleMdList">' + opts + "</datalist>" +
+    ROLE_TAGS.map(r => {
+      const v = roles[r] || "";
+      return '<div style="' + boxStyle + '">' +
+        '<label for="role_' + r + '" style="' + labelStyle + '">' + r + "</label>" +
+        '<div style="display:flex;gap:6px;">' +
+          '<input id="role_' + r + '" list="roleMdList" autocomplete="off" placeholder="Select MD…" ' +
+            'style="' + inputStyle + '" value="' + _escHtml(v) + '" ' +
+            'onchange="setDayRole(\'' + r + '\', this)">' +
+          (v ? '<button type="button" title="Clear" style="' + clearStyle + '" ' +
+               'onclick="saveDayRole(\'' + r + '\', null)">×</button>' : "") +
+        "</div></div>";
+    }).join("");
+}
+
+function setDayRole(role, input) {
+  if (!currentAdminDate) return;
+  const val = input.value.trim();
+  if (!val) { saveDayRole(role, null); return; }
+  const mds = _roleMdNames(currentAdminDate);
+  const low = val.toLowerCase();
+  let name = mds.find(n => n === val) || mds.find(n => n.toLowerCase() === low);
+  if (!name) {
+    const hits = mds.filter(n => n.toLowerCase().indexOf(low) > -1);
+    if (hits.length === 1) name = hits[0];
+  }
+  if (!name) {
+    alert('"' + val + '" isn\'t one of the MDs working today. Pick a name from the list.');
+    renderRoleBar(currentAdminDate);
+    return;
+  }
+  saveDayRole(role, name);
+}
+
+async function saveDayRole(role, name) {
+  if (!currentAdminDate) return;
+  if (!currentAssignments.__roles) currentAssignments.__roles = {};
+  if (name) currentAssignments.__roles[role] = name;
+  else delete currentAssignments.__roles[role];
+  if (!Object.keys(currentAssignments.__roles).length) delete currentAssignments.__roles;
+  try {
+    await window.fbSet("assignments/" + currentAdminDate + "/__roles/" + role, name || null);
+  } catch (e) {
+    alert("Couldn't save the " + role + " role: " + (e.message || e));
+  }
+  renderAdminDay(currentAdminDate);
+}
 // ── EXPORT PDF ──
 function exportAssignmentPdf() {
   if (!isFinalized || !currentAdminDate) return;
@@ -3355,7 +3430,7 @@ function exportAssignmentPdf() {
   const info = name => {
     const label = exportShiftLabel(name, iso);
     const h = exportShiftHours(label);
-    return { shift: h ? h + " hr" : "", notes: exportShiftNotes(label) };
+    return { shift: h ? h + " hr" : "", notes: exportShiftNotes(label, name) };
   };
 
   // One row per open room. Float rooms get one row per float person,
@@ -3454,7 +3529,7 @@ async function exportAssignmentXlsx() {
     rec.locs.sort((x, y) => EXPORT_LOCATION_ORDER.indexOf(x) - EXPORT_LOCATION_ORDER.indexOf(y));
     rows.push({
       first: nm.first, last: nm.last, role: exportRole(rec.person),
-      shift: h ? h + " hour" : "", notes: exportShiftNotes(label),
+      shift: h ? h + " hour" : "", notes: exportShiftNotes(label, name),
       location: rec.locs.join(" / "),
       rooms: rec.rooms.join(", ")
     });
@@ -3498,7 +3573,7 @@ function exportAssignmentCsv() {
     rec.locs.sort((x, y) => EXPORT_LOCATION_ORDER.indexOf(x) - EXPORT_LOCATION_ORDER.indexOf(y));
     rows.push({
       first: nm.first, last: nm.last, role: exportRole(rec.person),
-      shift: h ? h + " hour" : "", notes: exportShiftNotes(label),
+      shift: h ? h + " hour" : "", notes: exportShiftNotes(label, name),
       location: rec.locs.join(" / "),
       rooms: rec.rooms.join(", ")
     });
@@ -4039,6 +4114,7 @@ function isAssigned(name) {
 
 async function renderAdminDay(dateVal) {
   const dt = parseDate(dateVal);
+  renderRoleBar(dateVal);
   // CV team placeholders: always in the pool, never counted. Added here only,
   // NOT in getORStaffForDay, so OR Staffing, Who's Working, and the Endo
   // tracker/generator never see them.
@@ -4146,6 +4222,11 @@ async function renderAdminDay(dateVal) {
         const callBadge = _isCall
           ? `<span title="On call / back-up: ${(p.shift||"").replace(/"/g,"&quot;")}" style="font-size:9px;background:var(--call);color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">CALL</span>`
           : "";
+              // Charge (from QGenda) plus the day's Airway / PACU / Pain roles.
+        const _roleTags = p.isCV ? [] :
+          (/\bcharge\b/i.test(p.shift || "") ? ["Charge"] : []).concat(rolesFor(p.name));
+        const roleBadge = _roleTags.map(t =>
+          `<span title="${t}" style="font-size:9px;background:#be185d;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">${t.toUpperCase()}</span>`).join("");
         return `<div class="staff-chip${assigned?" assigned":""}${overAssigned?" over-assigned":""}" 
           draggable="true"
           data-name="${p.name.replace(/"/g, '&quot;')}" data-cred="${p.credential||""}" data-agency="${p.agency||""}"
@@ -4154,6 +4235,7 @@ async function renderAdminDay(dateVal) {
           <span style="flex:1;">${displayNameByMode(p.name)}</span>
           ${mcnairBadge}
           ${lateBadge}
+          ${roleBadge}
           ${callBadge}
           ${endoBadge}
           ${countBadge}
@@ -7113,7 +7195,7 @@ async function deleteEndoEntry(date, safeName) {
         isFloat: held.some(r => r.isFloat),
         floatArea: (held.find(r => r.isFloat) || {}).key,
         out: outOrderOf(label), mdHrs: mdHoursOf(label), locHrs: locumHrsOf(label),
-        tags: tagsOf(label)
+        tags: tagsOf(label).concat(rolesFor(p.name, fb.__roles || {}))
       });
     }
     return people;
