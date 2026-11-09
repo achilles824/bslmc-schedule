@@ -2579,61 +2579,31 @@ function loadSheetJs() {
   });
 }
 
-// Map an Epic Location string + raw Room cell to a label normalizeRoomName()
-// understands. Returns null for areas not in ALL_SITES (e.g. OPSC), which the
-// caller drops — mirrors normalizeRoomName's own handling of unprefixed "OR N".
+// Map an Epic Location + Room cell to a label normalizeRoomName() understands.
+// Returns null for anything unrecognized; the caller counts and reports it.
+// Epic (Nov 2026) locations: BSLMC = main campus, BSLMN = McNair campus.
 function _xlsxRoomLabel(location, roomCell) {
   const loc = String(location || "").toUpperCase().trim();
   const room = String(roomCell || "").trim();
   const roomU = room.toUpperCase();
-    // Epic exports non-anesthetizing placeholder rows: "OR WAITLIST N" (unscheduled
-  // holding) and the OTM "Motility N" GI motility suites. Both end in a digit, so
-  // the generic number grab below would turn them into real rooms — "Main OR 1",
-  // "OTM Endo 2". Drop them before any of that runs.
+  // Non-anesthetizing placeholder rows end in a digit and would otherwise
+  // become real rooms. Drop them first.
   if (roomU.includes("WAITLIST") || roomU.includes("MOTILITY")) return null;
   const numMatch = room.match(/(\d+)/);
   const n = numMatch ? parseInt(numMatch[1], 10) : null;
+  if (!n) return null;
 
-  // BSLMC OPSC = Jamail. OPSC is the outpatient surgery center; in this app
-  // its rooms live under "Jamail OR". Must be caught before the final
-  // return-null fall-through, or OPSC rows get silently dropped.
-  if (loc.includes("OPSC")) {
-    return n ? "Jamail OR " + n : null;
-  }
+  if (loc.includes("JAMAIL")) return "Jamail OR " + n;   // TXBSLMN JAMAIL OSC OR
+  if (loc.includes("OQMT"))   return "OTM OR " + n;      // TXBSLMN OQMT OR
+  if (/BSLMN\s+OR\b/.test(loc)) return "McNair OR " + n; // TXBSLMN OR
+  if (/BSLMC\s+OR\b/.test(loc)) return "Main OR " + n;   // TXBSLMC OR
 
-  if (loc.includes("MCNAIR")) {
-    return n ? "McNair OR " + n : null;
-  }
-  if (loc.includes("OTM ENDO")) {
-    return n ? "OTM Endo " + n : null;
-  }
-  if (loc.includes("OTM OR")) {
-    return n ? "OTM OR " + n : null;
-  }
-  if (loc.includes("SLEH ENDO")) {
-    return n ? "Main Endo " + n : null;
-  }
-
-  // Radiology rides in under SLEH OR with an "RM-IR ..." room cell.
-  // Map to keys normalizeRoomName/ALL_SITES already understand.
-  // Check this BEFORE the generic SLEH OR -> Main OR rule.
-  if (roomU.includes("RM-IR") || roomU.includes("RM IR")) {
-    if (roomU.includes("NEURO")) return n ? "NIR " + n : "NIR 1";
-    if (roomU.includes("CT"))    return "CT";
-    if (roomU.includes("MRI"))   return "MRI";
-    if (roomU.includes("GENERAL") || roomU.includes("IR")) return n ? "IR " + n : "IR 1";
-    return null;
-  }
-
-  // SLEH = St. Luke's main hospital campus
-  if (loc.includes("SLEH OR")) {
-    return n ? "Main OR " + n : null;
-  }
-
-  // OPSC (outpatient surgery center) and anything else: not in ALL_SITES.
+  // Endo, IR, NIR, CT, MRI: new Epic names not yet seen. Unrecognized rows
+  // are reported in the upload status so rules can be added.
   return null;
 }
 
+  
 // Excel time can arrive as a fraction of a day (0.3125), a JS Date, or a
 // string. Normalize to "HH:MM" 24-hour. Returns "" if unparseable.
 function _xlsxToClock(val) {
@@ -2690,7 +2660,7 @@ function _xlsxSurgeonLast(raw) {
 function _xlsxCaseProcedures(raw) {
   if (!raw) return "";
   return String(raw)
-    .split(/\]\s*,/)
+    .split(/\r?\n/)
     .map(p => p.replace(/\[[^\]]*\]?/g, "").replace(/\(\w+\)/g, "").trim().replace(/,+$/, ""))
     .filter(Boolean)
     .join(" • ");
@@ -2746,15 +2716,16 @@ async function handleSpreadsheetSchedule(file, status) {
   const col = name => header.indexOf(name);
   const cLoc   = col("location");
   const cRoom  = col("room");
-  const cStart = col("proc start");
-  const cEnd   = col("proc end");
+  const cStart = col("proj start");
+  const cEnd   = col("proj end");
   const cSurg  = col("lead surgeon");
-  const cProc  = col("case procedures");
+  const cProc  = col("procedure/visit type");
   const cAnes  = col("anes type");
 
   const rooms = new Set();
   const surgeons = {};   // roomLabel -> { surgeon, procedure, time, cases }
   let dropped = 0;
+  const unknownLocs = new Set();
 
   for (let i = headerIdx + 1; i < rowsRaw.length; i++) {
     const row = rowsRaw[i];
@@ -2764,7 +2735,11 @@ async function handleSpreadsheetSchedule(file, status) {
     if (!locVal && !roomVal) continue;
 
     const label = _xlsxRoomLabel(locVal, roomVal);
-    if (!label) { dropped++; continue; }
+    if (!label) {
+      dropped++;
+      if (!/WAITLIST|MOTILITY/i.test(String(roomVal))) unknownLocs.add(String(locVal).trim() + " / " + String(roomVal).trim());
+      continue;
+    }
 
     // Run through the SAME normalizer the OCR path uses, so room keys are
     // identical to everything else in the app.
@@ -2814,7 +2789,8 @@ async function handleSpreadsheetSchedule(file, status) {
 
   window.parsedSurgeons = surgeons;
   status.textContent = "✓ Found " + rooms.size + " active rooms from spreadsheet" +
-    (dropped ? " (" + dropped + " non-OR rows skipped)" : "");
+    (dropped ? " (" + dropped + " non-OR rows skipped)" : "") +
+    (unknownLocs.size ? " ⚠️ Unrecognized: " + [...unknownLocs].join(", ") : "");
   buildChecklist(rooms);
 }
 // ── END SPREADSHEET SCHEDULE PARSER ─────────────────────────────
