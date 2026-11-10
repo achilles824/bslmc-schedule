@@ -3024,10 +3024,20 @@ async function lookupAssignment() {
     return aNum - bNum;
   });
 
+  // Charge (from QGenda label) plus the day's Airway / PACU / Pain roles.
+  const _prov = (SCHEDULE_DATA || []).find(x => String(x.name || "").toLowerCase() === nameLower);
+  const _fullName = _prov ? _prov.name : name;
+  const dutyTags = (/\bcharge\b/i.test(exportShiftLabel(_fullName, dateVal)) ? ["Charge"] : [])
+    .concat(rolesFor(_fullName, assignments.__roles || {}));
+  const dutyHtml = dutyTags.length
+    ? `<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">${dutyTags.map(t =>
+        `<span style="font-size:11px;background:#be185d;color:white;border-radius:4px;padding:2px 8px;font-weight:700;letter-spacing:0.5px;">${t.toUpperCase()}</span>`).join("")}</div>`
+    : "";
+
   const dt = parseDate(dateVal);
   const dayLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
 
-  if (foundRooms.length > 0) {
+  if (foundRooms.length > 0 || dutyTags.length > 0) {
     const roomsHtml = foundRooms.map((r, i) => `
       <div style="border:1px solid var(--border);border-radius:10px;padding:20px 24px;text-align:center;${i > 0 ? "margin-top:12px;" : ""}">
         ${foundRooms.length > 1 ? `<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:6px;">Assignment ${i+1}</div>` : `<div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Assignment</div>`}
@@ -3077,11 +3087,12 @@ async function lookupAssignment() {
         <div style="background:linear-gradient(135deg,var(--surface2),var(--surface));border-bottom:1px solid var(--border);padding:16px 24px;">
           <div style="font-size:13px;color:var(--muted);">${dayLabel}</div>
           <div style="font-family:'DM Serif Display',serif;font-size:20px;margin-top:4px;">${name}</div>
+          ${dutyHtml}
           ${foundRooms.length > 1 ? `<div style="font-size:12px;color:var(--special);margin-top:4px;">${foundRooms.length} assignments today</div>` : ""}
         </div>
         <div class="assignment-result" style="text-align:left;padding:20px 24px;">
           ${warningHtml}
-          ${roomsHtml}
+          ${roomsHtml || '<div style="color:var(--muted);font-size:13px;text-align:center;">No room assignment today</div>'}
         </div>
         <div class="refresh-indicator">Auto-refreshes every 60 seconds</div>
       </div>`;
@@ -4184,12 +4195,21 @@ async function renderAdminDay(dateVal) {
         const mcnairBadge = isMcNair
           ? `<span title="${_campus === "McNair" ? "McNair-only (campus)" : "McNair designation today"}" style="font-size:9px;background:#14b8a6;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">MN</span>`
           : "";
-              // Late-start room: "OR L1 - APP" / "OR L2 - APP"
-        const _lateRoom = /\bOR\s*L1\b/i.test(p.shift || "") ? "L1"
-                        : /\bOR\s*L2\b/i.test(p.shift || "") ? "L2"
-                        : /Late\s*MD-?MNC/i.test(p.shift || "") ? "LATE" : null;
-        const lateBadge = _lateRoom
-          ? `<span title="Late start — ${_lateRoom}" style="font-size:9px;background:#f59e0b;color:#1a1a1a;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">${_lateRoom}</span>`
+        // Shift length badge, color-coded: 8 = blue, 10/L2 = amber, 12/L1 = red.
+        const _sh = p.shift || "";
+        const _hrs = p.isCV ? null : exportShiftHours(_sh);
+        const _shTxt = /\bOR\s*L1\b/i.test(_sh) ? "L1" : /\bOR\s*L2\b/i.test(_sh) ? "L2" : (_hrs ? String(_hrs) : "");
+        const _shCol = { 8: ["#0ea5e9", "white"], 10: ["#f59e0b", "#1a1a1a"], 12: ["#dc2626", "white"] }[_hrs] || ["var(--muted)", "white"];
+        const shiftBadge = _shTxt
+          ? `<span title="${_hrs ? _hrs + "-hour shift" : "Shift"}" style="font-size:9px;background:${_shCol[0]};color:${_shCol[1]};border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">${_shTxt}</span>`
+          : "";
+        const lateBadge = /Late\s*MD-?MNC/i.test(_sh)
+          ? `<span title="Late start" style="font-size:9px;background:#f59e0b;color:#1a1a1a;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">LATE</span>`
+          : "";
+        // Baylor McNair out-order ("1st Out-MNC", "2nd Out APP-MN").
+        const _out = _sh.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
+        const outBadge = (_out && _mnLabel)
+          ? `<span title="McNair out order" style="font-size:9px;background:#334155;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">OUT ${_out[1]}</span>`
           : "";
 
         // Carrying call or back-up on top of a day shift.
@@ -4210,6 +4230,8 @@ async function renderAdminDay(dateVal) {
           ${p.isCV ? `<span class="sc-cred" style="background:#b91c1c;color:white;">CV</span>` : p.credential ? `<span class="sc-cred ${credClass}">${p.credential}</span>` : ""}
           <span style="flex:1;">${displayNameByMode(p.name)}</span>
           ${mcnairBadge}
+          ${outBadge}
+          ${shiftBadge}
           ${lateBadge}
           ${roleBadge}
           ${callBadge}
