@@ -1366,11 +1366,16 @@ function showList(user, all, appr, admin) {
         <span style="font-size:11px;color:var(--muted);margin-left:auto;">Auto-saves every 30s · Auto-locks after 30min inactivity</span>
       </div>
       <div class="upload-section">
-        <h4>📄 OR Schedule</h4>
+        <h4>📄 Schedule Uploads</h4>
         <label class="upload-label">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          Upload Epic PDF Schedule
+          Upload Surgery Schedule
           <input type="file" id="scheduleUpload" accept=".pdf,.xlsx,.xls" onchange="handleScheduleUpload(event)" />
+        </label>
+        <label class="upload-label">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Upload Endoscopy Schedule
+          <input type="file" id="endoUpload" accept=".xlsx,.xls" onchange="handleEndoUpload(event)" />
         </label>
         <span id="uploadStatus" style="font-size:13px;color:var(--muted);"></span>
       </div>
@@ -2375,7 +2380,11 @@ function buildChecklist(activeRooms) {
     <div class="checklist-group">
       <div class="checklist-group-title">${group}</div>
       ${rooms.map(r => {
-        const checked = ["Main OR 10","Main OR 15","NIR 1","Main Endo 1","Main Endo 2","Main Endo 3"].includes(r.label) || (activeRooms ? activeRooms.has(r.label) : true);
+        // Endo rooms come from the endoscopy upload, so the surgery checklist
+        // shows their current open/closed state instead of resetting them.
+        const isEndo = r.group === "Main Endo" || r.group === "OTM Endo";
+        const checked = ["Main OR 10","Main OR 15","NIR 1","Main Endo 1","Main Endo 2","Main Endo 3"].includes(r.label)
+          || (isEndo ? !(window.closedRooms || {})[r.key] : (activeRooms ? activeRooms.has(r.label) : true));
         return `<div class="checklist-item">
           <input type="checkbox" id="chk_${r.key}" ${checked ? "checked" : ""}
             data-room-key="${r.key}" />
@@ -2794,6 +2803,107 @@ async function handleSpreadsheetSchedule(file, status) {
   buildChecklist(rooms);
 }
 // ── END SPREADSHEET SCHEDULE PARSER ─────────────────────────────
+  // ── ENDOSCOPY SCHEDULE PARSER (Epic endo appointment report .xlsx) ──
+// Columns: Visit Date | Department | Prov/Res | Procedure | Time | Appt Len.
+// "Prov/Res" is multi-line: line 1 = room ("TXBSLMC ENDO 01",
+// "TXBSLMN OQMT ENDO 09"), remaining lines = people.
+// The report does not label roles. Proceduralist = first listed person,
+// skipping anyone who appears in 3+ rooms that day (nurses/techs).
+// OTM rows reliably list the GI doc first; Main rows vary in order.
+// Touches ONLY Main Endo and OTM Endo: Main Endo 1-3 always open, OTM Endo
+// rooms open if scheduled, closed if not. Applies immediately, no checklist.
+async function handleEndoUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const status = document.getElementById("uploadStatus");
+  try {
+    if (!currentAdminDate) throw new Error("Pick a date first");
+    status.textContent = "Loading endoscopy schedule...";
+    await loadSheetJs();
+    const buf = await file.arrayBuffer();
+    const wb = window.XLSX.read(buf, { type: "array", cellDates: true });
+    const rowsRaw = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
+
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(5, rowsRaw.length); i++) {
+      const r = rowsRaw[i].map(c => String(c).trim().toLowerCase());
+      if (r.includes("prov/res") && r.includes("time")) { headerIdx = i; break; }
+    }
+    if (headerIdx === -1) throw new Error("Could not find a Prov/Res / Time header row");
+    const header = rowsRaw[headerIdx].map(c => String(c).trim().toLowerCase());
+    const cDate = header.indexOf("visit date"), cPR = header.indexOf("prov/res"),
+          cProc = header.indexOf("procedure"), cTime = header.indexOf("time"),
+          cLen = header.indexOf("appt len");
+
+    // Pass 1: parse rows, count distinct rooms per person.
+    const parsed = [], roomsOfPerson = {}, unknown = new Set(), dates = new Set();
+    for (let i = headerIdx + 1; i < rowsRaw.length; i++) {
+      const row = rowsRaw[i];
+      if (!row || !row[cPR]) continue;
+      const lines = String(row[cPR]).split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+      const roomLine = (lines[0] || "").toUpperCase();
+      if (/MOTILITY|BEDSIDE/.test(roomLine)) continue;            // non-anesthesia
+      const m = roomLine.match(/\bENDO\s*0*(\d+)\b/);
+      let label = null;
+      if (m && roomLine.includes("OQMT")) label = "OTM Endo " + parseInt(m[1], 10);
+      else if (m && roomLine.includes("BSLMC")) label = "Main Endo " + parseInt(m[1], 10);
+      if (!label || !ALL_ROOMS_FLAT.some(r => r.label === label)) { unknown.add(lines[0] || "?"); continue; }
+      const people = lines.slice(1);
+      people.forEach(n => (roomsOfPerson[n] = roomsOfPerson[n] || new Set()).add(label));
+      const d = cDate > -1 ? row[cDate] : "";
+      if (d instanceof Date && !isNaN(d))
+        dates.add(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"));
+      parsed.push({ label, people, start: _xlsxToClock(cTime > -1 ? row[cTime] : ""),
+        len: parseInt(cLen > -1 ? row[cLen] : 0, 10) || 0,
+        procedure: _xlsxCaseProcedures(cProc > -1 ? row[cProc] : "") });
+    }
+
+    // Pass 2: per-room cases + first-case summary.
+    const byRoom = {};
+    for (const c of parsed) {
+      const doc = c.people.find(n => roomsOfPerson[n].size < 3) || c.people[0] || "";
+      let end = "";
+      if (c.start && c.len) {
+        const t = parseInt(c.start.slice(0, 2), 10) * 60 + parseInt(c.start.slice(3), 10) + c.len;
+        end = String(Math.floor(t / 60) % 24).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0");
+      }
+      const surg = _xlsxSurgeonLast(doc);
+      const r = byRoom[c.label] = byRoom[c.label] || { surgeon: surg, procedure: c.procedure, time: c.start, cases: [] };
+      if (c.start && (!r.time || c.start < r.time)) { r.time = c.start; r.surgeon = surg; r.procedure = c.procedure; }
+      r.cases.push({ startTime: c.start, endTime: end, surgeon: surg, procedure: c.procedure, anesType: "" });
+    }
+    Object.values(byRoom).forEach(r => r.cases.sort((a, b) => String(a.startTime).localeCompare(String(b.startTime))));
+
+    // Apply to endo rooms only.
+    if (!window.closedRooms) window.closedRooms = {};
+    let mainN = 0, otmN = 0;
+    for (const r of ALL_ROOMS_FLAT) {
+      if ((r.group !== "Main Endo" && r.group !== "OTM Endo") || r.isFloat) continue;
+      const data = byRoom[r.label];
+      const open = !!data || r.group === "Main Endo";
+      if (open) delete window.closedRooms[r.key]; else window.closedRooms[r.key] = true;
+      if (!data) continue;
+      if (r.group === "Main Endo") mainN++; else otmN++;
+      const ex = currentAssignments[r.key] = currentAssignments[r.key] || {};
+      if (data.surgeon) ex.surgeon = data.surgeon;
+      if (data.procedure) ex.procedure = data.procedure;
+      if (data.time) ex.caseTime = data.time;
+      ex.cases = data.cases;
+    }
+    localDirty = true;
+    renderAdminDay(currentAdminDate);
+
+    const wrongDay = dates.size && !dates.has(currentAdminDate);
+    status.textContent = "✓ Endo: Main " + mainN + " scheduled (all 3 open) · OTM " + otmN + " rooms" +
+      (wrongDay ? " ⚠️ File is for " + [...dates].join(", ") + ", not " + currentAdminDate : "") +
+      (unknown.size ? " ⚠️ Unrecognized: " + [...unknown].join(", ") : "");
+  } catch (e) {
+    console.error("Endo upload error:", e);
+    status.textContent = "⚠️ Endo upload: " + e.message.slice(0, 80);
+  }
+  event.target.value = "";
+}
+// ── END ENDOSCOPY SCHEDULE PARSER ───────────────────────────────
 function loadPdfJs() {
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
