@@ -3117,7 +3117,8 @@ async function lookupAssignment() {
         const surgeon = (assignments[roomKey] && assignments[roomKey]["surgeon"]) || null;
         const procedure = (assignments[roomKey] && assignments[roomKey]["procedure"]) || null;
         const caseTime = (assignments[roomKey] && assignments[roomKey]["caseTime"]) || null;
-        foundRooms.push({ room: roomLabel, slot: slot.toUpperCase(), partner: partnerName, partnerCred, surgeon, procedure, caseTime });
+        const students = ["srna", "saa"].filter(t => slots[t] === true).map(t => t.toUpperCase());
+        foundRooms.push({ room: roomLabel, slot: slot.toUpperCase(), partner: partnerName, partnerCred, surgeon, procedure, caseTime, students });
       }
     }
   }
@@ -3153,6 +3154,7 @@ async function lookupAssignment() {
         ${foundRooms.length > 1 ? `<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:6px;">Assignment ${i+1}</div>` : `<div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Assignment</div>`}
         <div class="assignment-room" style="${r.isFloat ? "font-size:32px;" : ""}">${r.room}</div>
         ${r.isFloat ? `<div style="font-size:12px;background:rgba(122,130,160,0.12);color:var(--muted);border-radius:5px;padding:3px 10px;display:inline-block;margin-bottom:8px;font-weight:600;">FLOAT</div>` : ""}
+        ${(r.students || []).map(t => `<div title="Student in room" style="font-size:12px;background:#7c3aed;color:white;border-radius:5px;padding:3px 10px;display:inline-block;margin:0 3px 8px;font-weight:700;">${t}</div>`).join("")}
         ${r.caseTime ? `<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:6px;">⏰ First case: ${r.caseTime}</div>` : ""}
         ${r.surgeon ? `<div class="surgeon-tooltip-wrap" style="margin-bottom:8px;">
           <div style="font-size:14px;color:var(--muted);cursor:${r.procedure ? "help" : "default"};">
@@ -3834,6 +3836,9 @@ function confirmClearAssignments() {
       delete currentAssignments[rk].float;
     }
   }
+  promises.push(fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" +
+    currentAdminDate + "/__flexOff.json", {method: "DELETE"}));
+  delete currentAssignments.__flexOff;
   Promise.all(promises).then(() => {
     renderAdminDay(currentAdminDate);
   });
@@ -4171,6 +4176,77 @@ function toggleRoom(roomKey) {
   renderAdminDay(currentAdminDate);
 }
 
+// ── Flex Off ──
+function _flexList() {
+  const v = currentAssignments && currentAssignments.__flexOff;
+  if (Array.isArray(v)) return v.filter(x => typeof x === "string");
+  return v && typeof v === "object" ? Object.values(v).filter(x => typeof x === "string") : [];
+}
+function addFlexOff(name) {
+  name = String(name || "").trim();
+  if (!name || !currentAdminDate) return;
+  const staff = getORStaffForDay(currentAdminDate);
+  const hit = staff.find(p => p.name === name) || staff.find(p => p.name.toLowerCase() === name.toLowerCase());
+  if (!hit) { alert(name + " is not on today's OR staff."); renderAdminDay(currentAdminDate); return; }
+  const arr = _flexList();
+  if (!arr.includes(hit.name)) arr.push(hit.name);
+  currentAssignments.__flexOff = arr;
+  localDirty = true;
+  renderAdminDay(currentAdminDate);
+}
+function onFlexDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drop-hover");
+  if (!draggingPerson) return;
+  const n = draggingPerson.name;
+  draggingPerson = null;
+  addFlexOff(n);
+}
+function removeFlexOff(i) {
+  const arr = _flexList();
+  arr.splice(i, 1);
+  if (arr.length) currentAssignments.__flexOff = arr; else delete currentAssignments.__flexOff;
+  localDirty = true;
+  renderAdminDay(currentAdminDate);
+}
+
+// ── SRNA / SAA room toggles (stored as true on the room record) ──
+function toggleStudent(roomKey, t) {
+  if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
+  if (currentAssignments[roomKey][t]) delete currentAssignments[roomKey][t];
+  else currentAssignments[roomKey][t] = true;
+  if (!Object.keys(currentAssignments[roomKey]).length) delete currentAssignments[roomKey];
+  localDirty = true;
+  renderAdminDay(currentAdminDate);
+}
+
+// ── Room run span: first case start (left) and last case end (right) ──
+// Bar on a fixed 07:00–19:00 scale, colored by the shift length that covers
+// the room (same colors as roster shift badges): by 15:00 = 8h blue,
+// by 17:00 = 10h/L2 amber, by 19:00 = 12h/L1 red, later = text color.
+function _roomSpanRow(a) {
+  if (!a) return "";
+  const cs = Array.isArray(a.cases) ? a.cases : [];
+  const starts = cs.map(c => c && c.startTime).filter(Boolean).sort();
+  const ends = cs.map(c => c && c.endTime).filter(Boolean).sort();
+  const start = a.caseTime || starts[0] || "";
+  const end = ends.length ? ends[ends.length - 1] : "";
+  if (!end) return "";
+  const toMin = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
+  const S0 = 7 * 60, S1 = 19 * 60;
+  const sM = toMin(start), eM = toMin(end);
+  const pct = m => Math.max(0, Math.min(100, (m - S0) / (S1 - S0) * 100));
+  const left = sM == null ? 0 : pct(sM), right = eM == null ? 100 : pct(eM);
+  const col = eM <= 15 * 60 ? "#0ea5e9" : eM <= 17 * 60 ? "#f59e0b" : eM <= 19 * 60 ? "#dc2626" : "var(--text)";
+  const tip = "Runs " + start + "–" + end + (eM > 19 * 60 ? " (past 19:00)" : "");
+  return `<div title="${_escHtml(tip)}" style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--muted);margin-top:3px;padding:0 2px;">
+    <span>${_escHtml(start)}</span>
+    <div style="flex:1;position:relative;height:5px;border-radius:3px;background:var(--border);overflow:hidden;">
+      <div style="position:absolute;top:0;bottom:0;left:${left}%;width:${Math.max(2, right - left)}%;background:${col};border-radius:3px;"></div>
+    </div>
+    <span style="${eM > 15 * 60 ? "color:" + col + ";font-weight:700;" : ""}">${_escHtml(end)}</span></div>`;
+}
+
 function toggleLocationGroup(loc) {
   window.locationGroupVisible[loc] = !window.locationGroupVisible[loc];
   renderAdminDay(currentAdminDate);
@@ -4316,10 +4392,11 @@ async function renderAdminDay(dateVal) {
         const lateBadge = /Late\s*MD-?MNC/i.test(_sh)
           ? `<span title="Late start" style="font-size:9px;background:#f59e0b;color:#1a1a1a;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">LATE</span>`
           : "";
-        // Baylor McNair out-order ("1st Out-MNC", "2nd Out APP-MN").
+        // Out-order: Baylor McNair MDs/APPs ("1st Out-MNC", "2nd Out APP-MN")
+        // and Baylor Main APPs ("2nd Out").
         const _out = _sh.match(/(\d+)(?:st|nd|rd|th)\s*Out/i);
-        const outBadge = (_out && _mnLabel)
-          ? `<span title="McNair out order" style="font-size:9px;background:#334155;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">OUT ${_out[1]}</span>`
+        const outBadge = (_out && (_mnLabel || p.credential !== "MD"))
+          ? `<span title="${_mnLabel ? "McNair" : "Main"} out order" style="font-size:9px;background:#334155;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">OUT ${_out[1]}</span>`
           : "";
 
         // Carrying call or back-up on top of a day shift.
@@ -4345,6 +4422,7 @@ async function renderAdminDay(dateVal) {
           ${lateBadge}
           ${roleBadge}
           ${callBadge}
+          ${_flexList().includes(p.name) ? `<span title="Flex off" style="font-size:9px;background:#475569;color:white;border-radius:3px;padding:1px 4px;margin-left:2px;font-weight:700;letter-spacing:0.5px;">FLEX</span>` : ""}
           ${endoBadge}
           ${countBadge}
         </div>`;
@@ -4457,6 +4535,10 @@ async function renderAdminDay(dateVal) {
             </div>
             ${appPerson ? `<span class="slot-remove" onclick="removeFromSlot('${roomKey}','app')">×</span>` : ""}
           </div>
+          <div style="display:flex;gap:4px;margin:2px 0;">
+            ${["srna", "saa"].map(t => { const on = !!(currentAssignments[roomKey] && currentAssignments[roomKey][t]);
+              return `<button type="button" onclick="event.stopPropagation();toggleStudent('${roomKey}','${t}')" style="flex:1;font-size:9px;font-weight:700;padding:2px 0;border-radius:4px;cursor:pointer;border:1px solid ${on ? "#7c3aed" : "var(--border)"};background:${on ? "#7c3aed" : "none"};color:${on ? "white" : "var(--muted)"};">${t.toUpperCase()}</button>`; }).join("")}
+          </div>
           <input class="surgeon-input" placeholder="Surgeon last name..." 
             value="${surgeonVal}"
             onchange="updateSurgeon('${roomKey}', this.value)"
@@ -4472,6 +4554,7 @@ async function renderAdminDay(dateVal) {
             onchange="updateCaseTime('${roomKey}', this.value)"
             onclick="event.stopPropagation()"
             style="color:var(--muted);font-size:9px;" />
+          ${_roomSpanRow(currentAssignments[roomKey])}
         </div>`;
       }
     });
@@ -4481,6 +4564,23 @@ async function renderAdminDay(dateVal) {
 
     gridHtml += `</div></div>`;
   }
+
+  // Flex Off box — bottom of the page. Stored at assignments/{date}/__flexOff
+  // as an array of plain name strings (like __roles), so room loops skip it.
+  const _flex = _flexList();
+  gridHtml += `<div class="room-group" style="margin-top:16px;">
+    <div class="room-group-title">Flex Off</div>
+    <div class="room-cards"><div class="room-card float-room">
+      <div class="room-card-title">Flex Off</div>
+      ${_flex.map((n, i) => `<div class="room-slot slot-float"><span class="slot-name">${_escHtml(n)}</span>
+        <span class="slot-remove" onclick="removeFlexOff(${i})">×</span></div>`).join("")}
+      <div class="room-slot slot-float" ondragover="onDragOver(event)" ondrop="onFlexDrop(event)" ondragleave="onDragLeave(event)">
+        <span style="color:var(--muted);font-size:10px;">Drop here</span></div>
+      <input class="surgeon-input" list="flexStaffList" placeholder="Or type a name..." autocomplete="off"
+        onchange="addFlexOff(this.value)" onclick="event.stopPropagation()" />
+      <datalist id="flexStaffList">${staff.filter(p => !p.isCV && !_flex.includes(p.name)).map(p => `<option value="${_escHtml(p.name)}"></option>`).join("")}</datalist>
+    </div></div>
+  </div>`;
 
   roomsEl.innerHTML = gridHtml;
 }
