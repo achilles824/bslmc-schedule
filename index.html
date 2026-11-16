@@ -335,6 +335,7 @@ function showList(user, all, appr, admin) {
   };
 
   window.ctSignOut = () => signOut(auth);
+  window.ctIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.reject(new Error("Not signed in on Contacts tab"));
 
   // After a phone-code sign-in, a person who already has a password is
   // resetting it; send them to the new-password screen instead of the list.
