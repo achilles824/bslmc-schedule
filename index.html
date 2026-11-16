@@ -336,6 +336,162 @@ function showList(user, all, appr, admin) {
 
   window.ctSignOut = () => signOut(auth);
   window.ctIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.reject(new Error("Not signed in on Contacts tab"));
+  // ── SMS text directory (admin only; Admin tab panel) ────────
+  // Matching ignores quote marks, apostrophes, case, and extra spaces,
+  // so 'Ayoade "Joy" Ademuyewo' and 'Ayoade Joy Ademuyewo' are one person.
+  // Must stay identical to norm()/keyOf() in functions/api/notify.js.
+  const smsNorm = s => String(s == null ? "" : s).replace(/["'“”‘’]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const smsKey = name => smsNorm(name).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  let smsState = { rows: [] };
+  const smsReady = e => !!(e && e.phone && e.consentForm && e.active !== false);
+  const smsCell = "padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:13px;";
+
+  window.smsDirToggle = async () => {
+    const body = document.getElementById("smsDirBody");
+    const btn = document.getElementById("smsDirBtn");
+    if (body.style.display !== "none") { body.style.display = "none"; btn.textContent = "Open"; return; }
+    body.style.display = "block"; btn.textContent = "Close";
+    await smsDirLoad();
+  };
+
+  async function smsDirLoad() {
+    const body = document.getElementById("smsDirBody");
+    const user = auth.currentUser;
+    if (!user) { body.innerHTML = `<p style="color:var(--cancel);margin-top:10px;">Sign in on the Contacts tab as an admin, then reopen this panel.</p>`; return; }
+    body.innerHTML = `<p style="color:var(--muted);margin-top:10px;">Loading…</p>`;
+    try {
+      const isAdmin = (await get(ref(db, "admins/" + user.uid))).val() === true;
+      if (!isAdmin) { body.innerHTML = `<p style="color:var(--cancel);margin-top:10px;">This sign-in is not an admin.</p>`; return; }
+      const [dir, selfReg] = await Promise.all([
+        get(ref(db, "smsContacts")).then(s => s.val() || {}),
+        get(ref(db, "contacts")).then(s => s.val() || {}).catch(() => ({}))
+      ]);
+
+      // Names: roster + whoever is on the currently loaded admin day + anyone already in the directory
+      const people = new Map();
+      const addName = (name, cred) => {
+        const k = smsNorm(name);
+        if (!k) return;
+        if (!people.has(k)) people.set(k, { name: String(name).trim(), cred: cred || "" });
+        else if (cred && !people.get(k).cred) people.get(k).cred = cred;
+      };
+      (typeof SCHEDULE_DATA !== "undefined" ? SCHEDULE_DATA : []).forEach(p => p && p.name && addName(p.name, p.credential));
+      const ca = typeof currentAssignments !== "undefined" ? (currentAssignments || {}) : {};
+      Object.entries(ca).forEach(([rk, s]) => {
+        if (rk === "__closed" || !s || typeof s !== "object") return;
+        [s.md, s.app, ...(Array.isArray(s.float) ? s.float : [])].forEach(p => p && p.name && addName(p.name, p.credential));
+      });
+      Object.values(dir).forEach(c => c && c.name && addName(c.name, ""));
+
+      const dirByNorm = {};
+      Object.values(dir).forEach(c => { if (c && c.name) dirByNorm[smsNorm(c.name)] = c; });
+      const selfByNorm = {};
+      Object.values(selfReg).forEach(c => { const d = c && digits10(c.phone); if (d) selfByNorm[smsNorm(c.name)] = d; });
+
+      smsState.rows = [...people.entries()]
+        .map(([k, p]) => ({ k, name: p.name, cred: p.cred, entry: dirByNorm[k] || null, suggest: selfByNorm[k] || "" }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      body.innerHTML = `
+        <p id="smsDirSummary" style="color:var(--muted);font-size:12px;margin:10px 0 8px;"></p>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+          <input id="smsDirFilter" placeholder="Search name or credential..." oninput="smsDirFilter()" style="${inputStyle}max-width:300px;margin-top:0;">
+          <label style="font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center;"><input type="checkbox" id="smsDirNotReady" onchange="smsDirFilter()"> Not ready only</label>
+        </div>
+        <div id="smsDirRows">${smsState.rows.map(smsRowHtml).join("")}</div>`;
+      smsSummary();
+      window.smsDirFilter();
+    } catch (e) {
+      console.error("[SMS directory]", e);
+      body.innerHTML = `<p style="color:var(--cancel);margin-top:10px;">Could not load: ${esc(authMsg(e))}</p>`;
+    }
+  }
+
+  function smsSummary() {
+    const el = document.getElementById("smsDirSummary");
+    if (!el) return;
+    const rows = smsState.rows;
+    const withNum = rows.filter(r => r.entry && r.entry.phone).length;
+    const ready = rows.filter(r => smsReady(r.entry)).length;
+    el.textContent = rows.length + " names · " + withNum + " with a number · " + ready +
+      " ready (number + form date + active). Only ready people get texts.";
+  }
+
+  function smsRowHtml(r, i) {
+    const e = r.entry || {};
+    const d = digits10(e.phone);
+    const ready = smsReady(r.entry);
+    return `<div id="smsRow${i}" style="display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+      <span title="${ready ? "Ready" : "Not ready"}" style="width:10px;height:10px;border-radius:50%;flex:none;background:${ready ? "var(--day)" : "var(--border)"};"></span>
+      <span style="flex:1;min-width:170px;font-weight:600;font-size:13px;">${esc(r.name)}${r.cred ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">${esc(r.cred)}</span>` : ""}</span>
+      <input id="smsPh${i}" type="tel" value="${d ? esc(pretty(d)) : ""}" placeholder="${r.suggest ? esc(pretty(r.suggest)) + " (self-entered)" : "Cell"}" style="${smsCell}width:190px;">
+      ${r.suggest && !d ? `<a href="#" style="font-size:11px;" onclick="smsUseSuggest(${i});return false;">Use</a>` : ""}
+      <label style="font-size:11px;color:var(--muted);display:flex;gap:4px;align-items:center;">Form signed <input id="smsCf${i}" type="date" value="${esc(e.consentForm || "")}" style="${smsCell}"></label>
+      <label style="font-size:11px;color:var(--muted);display:flex;gap:4px;align-items:center;"><input id="smsAc${i}" type="checkbox" ${e.active === false ? "" : "checked"}> Active</label>
+      <button class="view-btn" style="padding:5px 12px;font-size:12px;" onclick="smsSave(${i})">Save</button>
+      ${r.entry ? `<a href="#" style="font-size:11px;color:var(--cancel);" onclick="smsDelete(${i});return false;">Delete</a>` : ""}
+      <span id="smsMsg${i}" style="font-size:11px;color:var(--muted);"></span>
+    </div>`;
+  }
+
+  // Filtering hides rows instead of redrawing, so unsaved typing is never lost.
+  window.smsDirFilter = () => {
+    const q = smsNorm(val("smsDirFilter"));
+    const nr = !!(document.getElementById("smsDirNotReady") || {}).checked;
+    smsState.rows.forEach((r, i) => {
+      const el = document.getElementById("smsRow" + i);
+      if (!el) return;
+      const hit = (!q || smsNorm(r.name + " " + r.cred).includes(q)) && (!nr || !smsReady(r.entry));
+      el.style.display = hit ? "flex" : "none";
+    });
+  };
+
+  const smsRedrawRow = i => {
+    const el = document.getElementById("smsRow" + i);
+    if (el) el.outerHTML = smsRowHtml(smsState.rows[i], i);
+    smsSummary();
+  };
+
+  window.smsUseSuggest = i => {
+    const el = document.getElementById("smsPh" + i);
+    if (el) el.value = pretty(smsState.rows[i].suggest);
+  };
+
+  window.smsSave = async i => {
+    const r = smsState.rows[i];
+    const user = auth.currentUser;
+    const msg = (t, bad) => { const m = document.getElementById("smsMsg" + i); if (m) { m.textContent = t; m.style.color = bad ? "var(--cancel)" : "var(--muted)"; } };
+    if (!user) return msg("Not signed in", true);
+    const d = digits10(val("smsPh" + i));
+    if (!d) return msg("Enter a 10-digit cell", true);
+    const entry = {
+      name: r.name,
+      phone: e164(d),
+      active: document.getElementById("smsAc" + i).checked,
+      updatedBy: user.uid,
+      updatedAt: Date.now()
+    };
+    const cf = val("smsCf" + i);
+    if (cf) entry.consentForm = cf;
+    msg("Saving…");
+    try {
+      await set(ref(db, "smsContacts/" + smsKey(r.name)), entry);
+      r.entry = entry;
+      smsRedrawRow(i);
+      const m = document.getElementById("smsMsg" + i);
+      if (m) m.textContent = smsReady(entry) ? "Saved" : "Saved — not ready until a form date is set and Active is on";
+    } catch (e) { msg("Failed: " + authMsg(e), true); }
+  };
+
+  window.smsDelete = async i => {
+    const r = smsState.rows[i];
+    if (!confirm("Delete the text number for " + r.name + "?")) return;
+    try {
+      await set(ref(db, "smsContacts/" + smsKey(r.name)), null);
+      r.entry = null;
+      smsRedrawRow(i);
+    } catch (e) { alert("Delete failed: " + authMsg(e)); }
+  };
 
   // After a phone-code sign-in, a person who already has a password is
   // resetting it; send them to the new-password screen instead of the list.
@@ -1380,6 +1536,13 @@ function showList(user, all, appr, admin) {
           <input type="file" id="endoUpload" accept=".xlsx,.xls" onchange="handleEndoUpload(event)" />
         </label>
         <span id="uploadStatus" style="font-size:13px;color:var(--muted);"></span>
+      </div>
+            <div class="upload-section" id="smsDirPanel" style="display:block;font-size:13px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <h4 style="margin:0;">📱 Text directory</h4>
+          <button id="smsDirBtn" onclick="smsDirToggle()" style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer;font-size:12px;padding:4px 10px;font-family:'DM Sans',sans-serif;">Open</button>
+        </div>
+        <div id="smsDirBody" style="display:none;"></div>
       </div>
       <div class="upload-section" id="endoTrackerPanel" style="font-size:13px;">
         <h4 style="margin:0;">📋 Endo this week</h4>
