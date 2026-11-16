@@ -1,15 +1,27 @@
-// notify v1 — Cloudflare Pages Function — PREVIEW ONLY
+// notify v2 — Cloudflare Pages Function
+// v1.1: name matching ignores quotes/apostrophes/extra spaces (matches smsNorm in index.html)
+// v1.2: approved message wording with contact line
+// v2:   send mode (Twilio), test allowlist, per-date lock, batched sends, failed-send tracking
 //
 // POST /api/notify
 //   Headers: Authorization: Bearer <Firebase ID token>
-//   Body:    { "date": "YYYY-MM-DD", "mode": "preview" }
+//   Body:    { "date": "YYYY-MM-DD", "mode": "preview" | "send", "retryFailed": false }
 //
-// Builds the assignment text each person WOULD receive for a finalized day
-// and reports who would be skipped and why. Sends nothing. Twilio is not
-// called anywhere in this version.
+// preview: builds the text each person would receive and reports skips. Sends nothing.
+// send:    sends up to BATCH texts per call and logs each to smsLog/{date}. The response
+//          includes "remaining"; the caller repeats the call until remaining is 0.
+//          (Cloudflare caps outbound requests per call, so big days take 2-3 calls.)
 //
-// Env vars used: FIREBASE_PROJECT_ID, FIREBASE_DB_URL
+// Env vars:
+//   FIREBASE_PROJECT_ID, FIREBASE_DB_URL                      (Text)
+//   TWILIO_ACCOUNT_SID, TWILIO_MESSAGING_SERVICE_SID           (Text)
+//   TWILIO_AUTH_TOKEN  — or TWILIO_API_KEY_SID + TWILIO_API_KEY_SECRET   (Secret)
+//   SMS_ENABLED        "true" to allow send mode; anything else blocks sending (kill switch)
+//   SMS_TEST_ALLOWLIST optional, comma-separated names. When set, ONLY these people are
+//                      texted; everyone else is reported under heldByAllowlist.
 
+const BATCH = 30;
+const LOCK_STALE_MS = 2 * 60 * 1000;
 const JWKS_URL = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 
 const json = (obj, status = 200) => new Response(JSON.stringify(obj, null, 2), {
@@ -32,14 +44,16 @@ export async function onRequestPost(context) {
   catch (e) { return json({ error: "Sign-in check failed: " + e.message }, 401); }
 
   // ── 2. Request body ──────────────────────────────────────────
-  let date, mode;
+  let date, mode, retryFailed;
   try {
     const body = await context.request.json();
     date = String(body.date || "");
     mode = String(body.mode || "preview");
+    retryFailed = body.retryFailed === true;
   } catch (e) { return json({ error: "Bad request body" }, 400); }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "date must be YYYY-MM-DD" }, 400);
-  if (mode !== "preview") return json({ error: "Only preview is enabled in this version." }, 403);
+  if (mode !== "preview" && mode !== "send") return json({ error: "mode must be preview or send" }, 400);
+  if (mode === "send" && env.SMS_ENABLED !== "true") return json({ error: "Sending is turned off (SMS_ENABLED is not \"true\")." }, 403);
 
   // ── 3. Admin + finalized gates ───────────────────────────────
   const fb = path => fbGet(dbUrl, path, idToken);
@@ -59,8 +73,55 @@ export async function onRequestPost(context) {
   if (!assignments || typeof assignments !== "object") return json({ error: "No assignments for " + date }, 404);
 
   // ── 4. Build plan ────────────────────────────────────────────
-  const plan = buildPlan(date, assignments, contacts || {}, log || {});
-  return json({ date, mode, ...plan });
+  const allow = String(env.SMS_TEST_ALLOWLIST || "").split(",").map(norm).filter(Boolean);
+  const plan = buildPlan(date, assignments, contacts || {}, log || {}, { retryFailed, allow });
+  if (mode === "preview") return json({ date, mode, testAllowlist: allow.length ? allow : null, ...plan });
+
+  // ── 5. Send ──────────────────────────────────────────────────
+  const tw = twilioConfig(env);
+  if (tw.error) return json({ error: tw.error }, 500);
+
+  const lockPath = "smsLocks/" + date;
+  try {
+    const got = await lockAcquire(dbUrl, lockPath, idToken, uid);
+    if (!got) return json({ error: "Another admin is sending texts for " + date + " right now. Try again in a minute." }, 409);
+  } catch (e) { return json({ error: "Could not lock: " + e.message }, 502); }
+
+  const batch = plan.toSend.slice(0, BATCH);
+  const results = [];
+  const logPatch = {};
+  try {
+    // 5 at a time; Twilio's Messaging Service queues for carrier throughput.
+    for (let i = 0; i < batch.length; i += 5) {
+      const chunk = batch.slice(i, i + 5);
+      const sent = await Promise.all(chunk.map(t => twilioSend(tw, t.phone, t.body)));
+      chunk.forEach((t, j) => {
+        const r = sent[j];
+        results.push({ name: t.name, kind: t.kind, ok: r.ok, sid: r.sid || null, error: r.error || null, code: r.code || null });
+        const entry = { body: t.body, status: r.ok ? "queued" : "failed", sentAt: Date.now(), by: uid };
+        if (r.sid) entry.sid = r.sid;
+        if (!r.ok) entry.error = String(r.code || "") + " " + String(r.error || "").slice(0, 200);
+        logPatch[keyOf(t.name)] = entry;
+      });
+    }
+  } finally {
+    let logError = null;
+    if (Object.keys(logPatch).length) {
+      try { await fbPatch(dbUrl, "smsLog/" + date, logPatch, idToken); }
+      catch (e) { logError = e.message; }
+    }
+    try { await fbDelete(dbUrl, lockPath, idToken); } catch (e) {}
+    if (logError) return json({ error: "Texts went out but the log write failed — do NOT resend until checked: " + logError, results }, 500);
+  }
+
+  const remaining = Math.max(0, plan.toSend.length - batch.length);
+  return json({
+    date, mode,
+    sent: results.filter(r => r.ok).length,
+    failed: results.filter(r => !r.ok).length,
+    remaining,
+    results
+  });
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -83,7 +144,8 @@ function dayLabel(date) {
   return wd + " " + m + "/" + d;
 }
 
-function buildPlan(date, assignments, contacts, log) {
+function buildPlan(date, assignments, contacts, log, opts = {}) {
+  const allow = opts.allow || [];
   const closed = (assignments.__closed && typeof assignments.__closed === "object") ? assignments.__closed : {};
 
   // Person -> list of { room, slot, caseTime, partner }
@@ -117,7 +179,7 @@ function buildPlan(date, assignments, contacts, log) {
   const dir = new Map();
   for (const c of Object.values(contacts)) if (c && c.name) dir.set(norm(c.name), c);
 
-  const out = { toSend: [], unchanged: [], noNumber: [], noConsent: [], inactive: [], inClosedRoom, removedSinceSent: [] };
+  const out = { toSend: [], unchanged: [], noNumber: [], noConsent: [], inactive: [], failedBefore: [], heldByAllowlist: [], inClosedRoom, removedSinceSent: [] };
 
   for (const [k, p] of people) {
     const body = buildMessage(date, p);
@@ -127,10 +189,14 @@ function buildPlan(date, assignments, contacts, log) {
     if (!c.consentForm) { out.noConsent.push(p.name); continue; }
 
     const prev = log[keyOf(p.name)];
-    if (prev && prev.body && stripUpdated(prev.body) === body && prev.status !== "failed") {
-      out.unchanged.push(p.name);
+    const sameBody = !!(prev && prev.body && stripUpdated(prev.body) === body);
+    if (sameBody && prev.status !== "failed") { out.unchanged.push(p.name); continue; }
+    // This exact text already failed once (e.g. opted out). Don't retry unless asked.
+    if (sameBody && prev.status === "failed" && !opts.retryFailed) {
+      out.failedBefore.push(p.name + " — " + (prev.error || "failed"));
       continue;
     }
+    if (allow.length && !allow.includes(k)) { out.heldByAllowlist.push(p.name); continue; }
     const isUpdate = !!(prev && prev.body && prev.status !== "failed");
     out.toSend.push({
       name: p.name,
@@ -150,7 +216,7 @@ function buildPlan(date, assignments, contacts, log) {
 
   const by = (a, b) => (a.name || a).localeCompare(b.name || b);
   out.toSend.sort(by);
-  ["unchanged", "noNumber", "noConsent", "inactive", "inClosedRoom", "removedSinceSent"].forEach(f => out[f].sort());
+  ["unchanged", "noNumber", "noConsent", "inactive", "failedBefore", "heldByAllowlist", "inClosedRoom", "removedSinceSent"].forEach(f => out[f].sort());
 
   out.counts = {
     new: out.toSend.filter(t => t.kind === "new").length,
@@ -159,6 +225,8 @@ function buildPlan(date, assignments, contacts, log) {
     noNumber: out.noNumber.length,
     noConsent: out.noConsent.length,
     inactive: out.inactive.length,
+    failedBefore: out.failedBefore.length,
+    heldByAllowlist: out.heldByAllowlist.length,
     inClosedRoom: out.inClosedRoom.length,
     removedSinceSent: out.removedSinceSent.length
   };
@@ -203,6 +271,64 @@ async function fbGet(dbUrl, path, idToken) {
     throw new Error(path + " → HTTP " + res.status + " " + t.slice(0, 200));
   }
   return res.json();
+}
+
+async function fbPatch(dbUrl, path, data, idToken) {
+  const res = await fetch(dbUrl + "/" + path + ".json?auth=" + encodeURIComponent(idToken), {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error(path + " → HTTP " + res.status + " " + (await res.text().catch(() => "")).slice(0, 200));
+}
+
+async function fbDelete(dbUrl, path, idToken) {
+  await fetch(dbUrl + "/" + path + ".json?auth=" + encodeURIComponent(idToken), { method: "DELETE" });
+}
+
+// Compare-and-set lock using Firebase REST ETags. Returns true if acquired.
+async function lockAcquire(dbUrl, path, idToken, uid) {
+  const url = dbUrl + "/" + path + ".json?auth=" + encodeURIComponent(idToken);
+  const cur = await fetch(url, { headers: { "X-Firebase-ETag": "true" } });
+  if (!cur.ok) throw new Error("lock read HTTP " + cur.status);
+  const etag = cur.headers.get("ETag");
+  const val = await cur.json();
+  if (val && val.at && Date.now() - val.at < LOCK_STALE_MS && val.uid !== uid) return false;
+  const put = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "if-match": etag },
+    body: JSON.stringify({ uid, at: Date.now() })
+  });
+  if (put.status === 412) return false;           // someone else grabbed it first
+  if (!put.ok) throw new Error("lock write HTTP " + put.status);
+  return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Twilio
+// ════════════════════════════════════════════════════════════════
+
+function twilioConfig(env) {
+  const account = env.TWILIO_ACCOUNT_SID;
+  const service = env.TWILIO_MESSAGING_SERVICE_SID;
+  const user = env.TWILIO_API_KEY_SID || account;
+  const pass = env.TWILIO_API_KEY_SID ? env.TWILIO_API_KEY_SECRET : env.TWILIO_AUTH_TOKEN;
+  if (!account || !service || !user || !pass) return { error: "Twilio variables are not all set in Cloudflare." };
+  return { account, service, basic: "Basic " + btoa(user + ":" + pass) };
+}
+
+async function twilioSend(tw, to, body) {
+  try {
+    const res = await fetch("https://api.twilio.com/2010-04-01/Accounts/" + tw.account + "/Messages.json", {
+      method: "POST",
+      headers: { Authorization: tw.basic, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ To: to, MessagingServiceSid: tw.service, Body: body }).toString()
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.sid) return { ok: true, sid: data.sid };
+    const friendly = data.code === 21610 ? "Opted out (replied STOP) — blocks all texts from this number" : (data.message || ("HTTP " + res.status));
+    return { ok: false, code: data.code || res.status, error: friendly };
+  } catch (e) {
+    return { ok: false, code: "network", error: e.message };
+  }
 }
 
 // Verifies a Firebase Auth ID token (RS256) and returns the uid.
