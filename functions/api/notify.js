@@ -167,28 +167,29 @@ function buildPlan(date, assignments, contacts, log) {
 
 const stripUpdated = s => String(s).replace(/^UPDATED: /, "");
 
-// Wording is a DRAFT pending Eric's decision (spec §9.1).
+// Wording approved by Eric 2026-11-16. Plain ASCII only (an em dash or curly
+// quote would force UCS-2 encoding and cut each segment to 70 characters).
+const CONTACT_LINE = "Call Dr. Chelliah with issues for Main assignments and Dr. Ritter for issues with McNair assignments.";
+const drName = n => /^dr\.?\s/i.test(n) ? n : "Dr. " + n;
+
 function buildMessage(date, p) {
-  const head = "BSLMC Anesthesia: " + dayLabel(date) + " assignment: ";
+  const head = "BSLMC Anesthesia - " + dayLabel(date) + ": ";
   const rooms = p.rooms;
-  // Single room as APP: room, first case, MD
-  if (rooms.length === 1 && rooms[0].slot === "app") {
-    const r = rooms[0];
-    return head + r.room +
-      (r.caseTime ? ", first case " + r.caseTime : "") +
-      (r.partner ? ", MD " + r.partner : "") + ".";
-  }
-  // Single room, MD or float
+  let core;
   if (rooms.length === 1) {
     const r = rooms[0];
-    return head + r.room + (r.caseTime ? ", first case " + r.caseTime : "") + ".";
+    core = r.room +
+      (r.slot === "app" && r.partner ? " with " + drName(r.partner) : "") + "." +
+      (r.caseTime ? " First case " + r.caseTime + "." : "");
+  } else {
+    // Multiple rooms (MD supervision): list with times, earliest first
+    core = rooms
+      .slice()
+      .sort((a, b) => String(a.caseTime || "99").localeCompare(String(b.caseTime || "99")))
+      .map(r => r.room + (r.caseTime ? " (" + r.caseTime + ")" : ""))
+      .join(", ") + ".";
   }
-  // Multiple rooms (MD supervision): list with times
-  return head + rooms
-    .slice()
-    .sort((a, b) => String(a.caseTime || "99").localeCompare(String(b.caseTime || "99")))
-    .map(r => r.room + (r.caseTime ? " (" + r.caseTime + ")" : ""))
-    .join(", ") + ".";
+  return head + core + " " + CONTACT_LINE;
 }
 
 // ════════════════════════════════════════════════════════════════
