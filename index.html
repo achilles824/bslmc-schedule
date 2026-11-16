@@ -2578,6 +2578,141 @@ function loadTesseract() {
 // same { rooms:Set, window.parsedSurgeons } shape the OCR path does,
 // then hands off to buildChecklist() — identical downstream behavior.
 
+// ── Password-protected spreadsheets ──────────────────────────────
+// SheetJS can't open encrypted .xlsx files. When it reports one, ask for
+// the password, decrypt in the browser with xlsx-populate (the file and
+// password never leave this computer), then hand the result to SheetJS.
+function loadXlsxPopulate() {
+  return new Promise((resolve, reject) => {
+    if (window.XlsxPopulate) { resolve(); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx-populate/1.21.0/xlsx-populate.min.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Could not load the spreadsheet unlock library"));
+    document.head.appendChild(s);
+  });
+}
+
+function askSpreadsheetPassword(fileName, retry) {
+  return new Promise(resolve => {
+    const ov = document.createElement("div");
+    ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;";
+    ov.innerHTML =
+      '<div style="background:var(--surface,#fff);color:inherit;border:1px solid var(--border,#ccc);border-radius:8px;padding:20px;width:320px;max-width:90vw;">' +
+        '<div style="font-weight:700;margin-bottom:6px;">🔒 Password-protected spreadsheet</div>' +
+        '<div style="font-size:12px;opacity:.75;margin-bottom:10px;word-break:break-all;"></div>' +
+        (retry ? '<div style="font-size:12px;color:var(--cancel,#c00);margin-bottom:8px;">Wrong password — try again.</div>' : '') +
+        '<input type="password" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;font-size:14px;margin-bottom:12px;" />' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+          '<button type="button" data-act="cancel" class="view-btn">Cancel</button>' +
+          '<button type="button" data-act="ok" class="view-btn">Unlock</button>' +
+        '</div></div>';
+    ov.querySelector("div div:nth-child(2)").textContent = fileName;
+    const input = ov.querySelector("input");
+    const done = val => { ov.remove(); resolve(val); };
+    ov.querySelector('[data-act="ok"]').onclick = () => done(input.value);
+    ov.querySelector('[data-act="cancel"]').onclick = () => done(null);
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") done(input.value);
+      if (e.key === "Escape") done(null);
+    });
+    document.body.appendChild(ov);
+    input.focus();
+  });
+}
+
+// Drop-in for XLSX.read(await file.arrayBuffer(), ...) that handles passwords.
+async function readWorkbook(file, status) {
+  const buf = await file.arrayBuffer();
+  try {
+    return window.XLSX.read(buf, { type: "array", cellDates: true });
+  } catch (e) {
+    if (!/password/i.test(e.message || "")) throw e;
+  }
+  await loadXlsxPopulate();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const pw = await askSpreadsheetPassword(file.name, attempt > 0);
+    if (pw === null) throw new Error("Upload cancelled — no password entered");
+    if (status) status.textContent = "Unlocking spreadsheet...";
+    try {
+      const unlocked = await window.XlsxPopulate.fromDataAsync(buf, { password: pw });
+      const out = await unlocked.outputAsync({ type: "arraybuffer" });
+      return window.XLSX.read(out, { type: "array", cellDates: true });
+    } catch (e) {
+      console.warn("Unlock failed:", e.message);
+    }
+  }
+  throw new Error("Couldn't unlock the spreadsheet — wrong password, or a protection type the portal can't open");
+}
+
+// ── Password-protected spreadsheets ──────────────────────────────
+// SheetJS can't open encrypted .xlsx files. When it reports one, ask for
+// the password, decrypt in the browser with xlsx-populate (the file and
+// password never leave this computer), then hand the result to SheetJS.
+function loadXlsxPopulate() {
+  return new Promise((resolve, reject) => {
+    if (window.XlsxPopulate) { resolve(); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx-populate/1.21.0/xlsx-populate.min.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Could not load the spreadsheet unlock library"));
+    document.head.appendChild(s);
+  });
+}
+
+function askSpreadsheetPassword(fileName, retry) {
+  return new Promise(resolve => {
+    const ov = document.createElement("div");
+    ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;";
+    ov.innerHTML =
+      '<div style="background:var(--surface,#fff);color:inherit;border:1px solid var(--border,#ccc);border-radius:8px;padding:20px;width:320px;max-width:90vw;">' +
+        '<div style="font-weight:700;margin-bottom:6px;">🔒 Password-protected spreadsheet</div>' +
+        '<div style="font-size:12px;opacity:.75;margin-bottom:10px;word-break:break-all;"></div>' +
+        (retry ? '<div style="font-size:12px;color:var(--cancel,#c00);margin-bottom:8px;">Wrong password — try again.</div>' : '') +
+        '<input type="password" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;font-size:14px;margin-bottom:12px;" />' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+          '<button type="button" data-act="cancel" class="view-btn">Cancel</button>' +
+          '<button type="button" data-act="ok" class="view-btn">Unlock</button>' +
+        '</div></div>';
+    ov.querySelector("div div:nth-child(2)").textContent = fileName;
+    const input = ov.querySelector("input");
+    const done = val => { ov.remove(); resolve(val); };
+    ov.querySelector('[data-act="ok"]').onclick = () => done(input.value);
+    ov.querySelector('[data-act="cancel"]').onclick = () => done(null);
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") done(input.value);
+      if (e.key === "Escape") done(null);
+    });
+    document.body.appendChild(ov);
+    input.focus();
+  });
+}
+
+// Drop-in for XLSX.read(await file.arrayBuffer(), ...) that handles passwords.
+async function readWorkbook(file, status) {
+  const buf = await file.arrayBuffer();
+  try {
+    return window.XLSX.read(buf, { type: "array", cellDates: true });
+  } catch (e) {
+    if (!/password/i.test(e.message || "")) throw e;
+  }
+  await loadXlsxPopulate();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const pw = await askSpreadsheetPassword(file.name, attempt > 0);
+    if (pw === null) throw new Error("Upload cancelled — no password entered");
+    if (status) status.textContent = "Unlocking spreadsheet...";
+    try {
+      const unlocked = await window.XlsxPopulate.fromDataAsync(buf, { password: pw });
+      const out = await unlocked.outputAsync({ type: "arraybuffer" });
+      return window.XLSX.read(out, { type: "array", cellDates: true });
+    } catch (e) {
+      console.warn("Unlock failed:", e.message);
+    }
+  }
+  throw new Error("Couldn't unlock the spreadsheet — wrong password, or a protection type the portal can't open");
+}
+
+function loadSheetJs() {
 function loadSheetJs() {
   return new Promise((resolve, reject) => {
     if (window.XLSX) { resolve(); return; }
@@ -2704,8 +2839,7 @@ async function handleSpreadsheetSchedule(file, status) {
   status.textContent = "Loading spreadsheet...";
   await loadSheetJs();
 
-  const buf = await file.arrayBuffer();
-  const wb = window.XLSX.read(buf, { type: "array", cellDates: true });
+  const wb = await readWorkbook(file, status);
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const rowsRaw = window.XLSX.utils.sheet_to_json(sheet, {
     header: 1, raw: true, defval: ""
@@ -2826,8 +2960,7 @@ async function handleEndoUpload(event) {
     if (!currentAdminDate) throw new Error("Pick a date first");
     status.textContent = "Loading endoscopy schedule...";
     await loadSheetJs();
-    const buf = await file.arrayBuffer();
-    const wb = window.XLSX.read(buf, { type: "array", cellDates: true });
+    const wb = await readWorkbook(file, status);
     const rowsRaw = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
 
     let headerIdx = -1;
