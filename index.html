@@ -13,7 +13,7 @@
 <meta name="apple-mobile-web-app-title" content="OR Schedule">
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+  import { getDatabase, ref, set, get, onValue, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyArS7o4H8ExdOywQFfixgNcW48C4iZLr9U",
@@ -30,6 +30,7 @@
 
   // Expose Firebase functions to global scope
   window.fbSet = (path, data) => set(ref(db, path), data);
+  window.fbUpdate = (path, updates) => update(ref(db, path), updates);
   const FB_TIMEOUT_MS = 10000;
   window.fbGet = (path) => new Promise((resolve, reject) => {
     let done = false;
@@ -3855,22 +3856,79 @@ function confirmClearDay() {
     currentAssignments = {};
     window.closedRooms = {};
     localDirty = false; // we just cleared and are about to save fresh
+    lastSynced = {};
     window.fbSet("assignments/" + currentAdminDate, null);
     renderAdminDay(currentAdminDate);
   }
 }
 
+// ── Multi-admin safe saving ──────────────────────────────────────────
+// lastSynced = what Firebase held when this tab last loaded, saved, or heard
+// a remote change. Saves write ONLY the slots that differ from it (per room,
+// per field) via update(), never the whole day, so admins working the same
+// day can't wipe each other's rooms.
+let lastSynced = {};
+function buildSaveData() {
+  const d = JSON.parse(JSON.stringify(currentAssignments || {}));
+  if (window.closedRooms && Object.keys(window.closedRooms).length > 0) d.__closed = JSON.parse(JSON.stringify(window.closedRooms));
+  else delete d.__closed;
+  return d;
+}
+function isPlainObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
+function diffAssignments(base, next) {
+  const ops = {};
+  base = base || {}; next = next || {};
+  const keys = new Set(Object.keys(base).concat(Object.keys(next)));
+  for (const k of keys) {
+    const b = base[k], n = next[k];
+    if (isPlainObj(b) || isPlainObj(n)) {
+      const bo = isPlainObj(b) ? b : {}, no = isPlainObj(n) ? n : {};
+      const sub = new Set(Object.keys(bo).concat(Object.keys(no)));
+      for (const f of sub) {
+        if (JSON.stringify(bo[f]) !== JSON.stringify(no[f])) ops[k + "/" + f] = (no[f] === undefined ? null : no[f]);
+      }
+    } else if (JSON.stringify(b) !== JSON.stringify(n)) {
+      ops[k] = (n === undefined ? null : n);
+    }
+  }
+  return ops;
+}
+function applyOps(target, ops) {
+  for (const [path, v] of Object.entries(ops)) {
+    const i = path.indexOf("/");
+    if (i < 0) { if (v === null) delete target[path]; else target[path] = v; continue; }
+    const k = path.slice(0, i), f = path.slice(i + 1);
+    if (v === null) {
+      if (isPlainObj(target[k])) { delete target[k][f]; if (!Object.keys(target[k]).length) delete target[k]; }
+    } else {
+      if (!isPlainObj(target[k])) target[k] = {};
+      target[k][f] = v;
+    }
+  }
+  return target;
+}
+async function pushAssignmentChanges() {
+  if (!currentAdminDate) return 0;
+  const date = currentAdminDate;
+  const next = buildSaveData();
+  const ops = diffAssignments(lastSynced, next);
+  const n = Object.keys(ops).length;
+  if (n > 0) await window.fbUpdate("assignments/" + date, ops);
+  if (date === currentAdminDate) {
+    lastSynced = applyOps(JSON.parse(JSON.stringify(lastSynced)), ops);
+    // Stay dirty if more edits landed while the write was in flight
+    if (JSON.stringify(buildSaveData()) === JSON.stringify(next)) localDirty = false;
+  }
+  return n;
+}
+
 function startAutoSave() {
   stopAutoSave();
   autoSaveInterval = setInterval(async () => {
-    if (!adminUnlocked || !currentAdminDate) return;
+    if (!adminUnlocked || !currentAdminDate || !localDirty) return;
     try {
-      const saveData = Object.assign({}, currentAssignments);
-      if (window.closedRooms && Object.keys(window.closedRooms).length > 0) {
-        saveData.__closed = window.closedRooms;
-      }
-      await window.fbSet("assignments/" + currentAdminDate, saveData);
-      localDirty = false; // autosave succeeded, local matches remote
+      const n = await pushAssignmentChanges();
+      if (!n) return;
       const btn = document.querySelector(".view-btn[onclick='saveAssignments()']");
       if (btn) {
         const orig = btn.textContent;
@@ -3881,7 +3939,7 @@ function startAutoSave() {
     } catch(e) {
       console.warn("Autosave failed:", e.message);
     }
-  }, 30000);
+  }, 5000);
 }
 
 function stopAutoSave() {
@@ -3943,6 +4001,7 @@ async function loadAdminDay() {
 
   currentAdminDate = dateVal;
   currentAssignments = {};
+  lastSynced = {};
   localDirty = false; // fresh load = clean state
 
   // Load saved assignments from Firebase
@@ -3952,6 +4011,7 @@ async function loadAdminDay() {
     if (stored) {
       currentAssignments = stored;
       if (stored.__closed) window.closedRooms = stored.__closed;
+      lastSynced = JSON.parse(JSON.stringify(stored));
     }
   } catch(e) {}
 
@@ -3961,14 +4021,19 @@ async function loadAdminDay() {
 
   // Listen for real-time changes from OTHER admins.
   // Skip overwrites when the local user has unsaved edits in progress.
+  // Remote changes are always taken in; this tab's unsaved edits are
+  // re-applied on top, so neither side loses work.
   assignmentsListener = window.fbListen("assignments/" + dateVal, (data) => {
-    if (localDirty) {
-      console.log("[Listener] Skipping remote update - local edits pending");
-      return;
-    }
-    if (data && JSON.stringify(data) !== JSON.stringify(currentAssignments)) {
-      console.log("[Listener] Applying remote update");
-      currentAssignments = data;
+    if (dateVal !== currentAdminDate) return;
+    const before = JSON.stringify(buildSaveData());
+    const pending = diffAssignments(lastSynced, buildSaveData());
+    const remote = data || {};
+    lastSynced = JSON.parse(JSON.stringify(remote));
+    const merged = applyOps(JSON.parse(JSON.stringify(remote)), pending);
+    window.closedRooms = isPlainObj(merged.__closed) ? merged.__closed : {};
+    currentAssignments = merged;
+    if (JSON.stringify(buildSaveData()) !== before) {
+      console.log("[Listener] Merged remote update");
       renderAdminDay(currentAdminDate);
     }
   });
@@ -4666,29 +4731,7 @@ function removeFromSlot(roomKey, slot) {
 async function saveAssignments() {
   if (!currentAdminDate) return;
   try {
-    const saveData = Object.assign({}, currentAssignments);
-    if (window.closedRooms && Object.keys(window.closedRooms).length > 0) {
-      saveData.__closed = window.closedRooms;
-    }
-    await window.fbSet("assignments/" + currentAdminDate, saveData);
-    localDirty = false; // save succeeded, local matches remote
-    const btn = document.querySelector(".view-btn[onclick='saveAssignments()']");
-    const orig = btn.textContent;
-    btn.textContent = "✓ Saved!";
-    setTimeout(() => btn.textContent = orig, 2000);
-  } catch(e) {
-    alert("Failed to save: " + e.message);
-  }
-}
-
-async function saveAssignments() {
-  if (!currentAdminDate) return;
-  try {
-    const saveData = Object.assign({}, currentAssignments);
-    if (window.closedRooms && Object.keys(window.closedRooms).length > 0) {
-      saveData.__closed = window.closedRooms;
-    }
-    await window.fbSet("assignments/" + currentAdminDate, saveData);
+    await pushAssignmentChanges();
     const btn = document.querySelector(".view-btn[onclick='saveAssignments()']");
     const orig = btn.textContent;
     btn.textContent = "✓ Saved!";
