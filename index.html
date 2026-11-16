@@ -2580,18 +2580,128 @@ function loadTesseract() {
 
 // ── Password-protected spreadsheets ──────────────────────────────
 // SheetJS can't open encrypted .xlsx files. When it reports one, ask for
-// the password, decrypt in the browser with xlsx-populate (the file and
+// the password and decrypt it right here in the browser (the file and
 // password never leave this computer), then hand the result to SheetJS.
-function loadXlsxPopulate() {
+// Handles both Office encryption styles: Agile (Excel 2010+) and Standard
+// (Excel 2007 / many report generators). Uses SheetJS's built-in CFB
+// reader for the container and CryptoJS for SHA/AES.
+function loadCryptoJs() {
   return new Promise((resolve, reject) => {
-    if (window.XlsxPopulate) { resolve(); return; }
+    if (window.CryptoJS) { resolve(); return; }
     const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx-populate/1.21.0/xlsx-populate.min.js";
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js";
     s.onload = resolve;
     s.onerror = () => reject(new Error("Could not load the spreadsheet unlock library"));
     document.head.appendChild(s);
   });
 }
+
+const OfficeDecrypt = (() => {
+  const C = () => window.CryptoJS;
+  const toWA = u8 => {
+    const w = [];
+    for (let i = 0; i < u8.length; i++) w[i >>> 2] |= u8[i] << (24 - (i % 4) * 8);
+    return C().lib.WordArray.create(w, u8.length);
+  };
+  const fromWA = wa => {
+    const u8 = new Uint8Array(wa.sigBytes);
+    for (let i = 0; i < wa.sigBytes; i++) u8[i] = (wa.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+    return u8;
+  };
+  const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
+  const le32 = n => new Uint8Array([n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255]);
+  const utf16 = s => { const o = new Uint8Array(s.length * 2); for (let i = 0; i < s.length; i++) { o[2*i] = s.charCodeAt(i) & 255; o[2*i+1] = s.charCodeAt(i) >> 8; } return o; };
+  const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  const HASHES = { SHA1: "SHA1", "SHA-1": "SHA1", SHA256: "SHA256", "SHA-256": "SHA256", SHA384: "SHA384", "SHA-384": "SHA384", SHA512: "SHA512", "SHA-512": "SHA512", MD5: "MD5" };
+  const hasher = name => {
+    const h = HASHES[String(name).toUpperCase()];
+    if (!h) throw new Error("Unsupported hash algorithm: " + name);
+    return C()[h];
+  };
+  const H = (alg, u8) => fromWA(hasher(alg)(toWA(u8)));
+  const fit = (u8, n, padByte) => { if (u8.length >= n) return u8.slice(0, n); const o = new Uint8Array(n).fill(padByte); o.set(u8); return o; };
+  const aes = (mode, key, data, iv) => fromWA(C().AES.decrypt(
+    C().lib.CipherParams.create({ ciphertext: toWA(data) }), toWA(key),
+    { mode: mode === "ECB" ? C().mode.ECB : C().mode.CBC, padding: C().pad.NoPadding, iv: iv ? toWA(iv) : undefined }));
+
+  class WrongPassword extends Error {}
+
+  function agile(info, pkg, password) {
+    const xml = new TextDecoder().decode(info.slice(8));
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const kd = doc.getElementsByTagNameNS("*", "keyData")[0];
+    // The password key: an <encryptedKey> element (any prefix) that has spinCount.
+    const ek = Array.from(doc.getElementsByTagNameNS("*", "encryptedKey")).find(e => e.getAttribute("spinCount"));
+    if (!kd || !ek) throw new Error("Unrecognized encryption details in this file");
+    const a = (el, n) => el.getAttribute(n);
+    if (a(kd, "cipherAlgorithm") !== "AES" || a(ek, "cipherAlgorithm") !== "AES") throw new Error("Unsupported cipher: " + a(ek, "cipherAlgorithm"));
+    const kAlg = a(ek, "hashAlgorithm"), kSalt = b64(a(ek, "saltValue")), spin = parseInt(a(ek, "spinCount"), 10);
+    const kBytes = parseInt(a(ek, "keyBits"), 10) / 8, kBlock = parseInt(a(ek, "blockSize"), 10) || 16;
+    const hashLen = parseInt(a(ek, "hashSize"), 10) || H(kAlg, new Uint8Array(0)).length;
+
+    let h = H(kAlg, cat(kSalt, utf16(password)));
+    const algo = hasher(kAlg);
+    let hw = toWA(h);
+    for (let i = 0; i < spin; i++) hw = algo(toWA(le32(i)).concat(hw));
+    h = fromWA(hw);
+    const keyFor = block => fit(H(kAlg, cat(h, new Uint8Array(block))), kBytes, 0x36);
+    const iv = fit(kSalt, kBlock, 0x36);
+    const vIn = aes("CBC", keyFor([0xfe,0xa7,0xd2,0x76,0x3b,0x4b,0x9e,0x79]), b64(a(ek, "encryptedVerifierHashInput")), iv);
+    const vHash = aes("CBC", keyFor([0xd7,0xaa,0x0f,0x6d,0x30,0x61,0x34,0x4e]), b64(a(ek, "encryptedVerifierHashValue")), iv);
+    const saltSize = parseInt(a(ek, "saltSize"), 10) || kSalt.length;
+    if (!eq(H(kAlg, vIn.slice(0, saltSize)).slice(0, hashLen), vHash.slice(0, hashLen))) throw new WrongPassword();
+    const secret = aes("CBC", keyFor([0x14,0x6e,0x0b,0xe7,0xab,0xac,0xd0,0xd6]), b64(a(ek, "encryptedKeyValue")), iv).slice(0, kBytes);
+
+    const pAlg = a(kd, "hashAlgorithm"), pSalt = b64(a(kd, "saltValue")), pBlock = parseInt(a(kd, "blockSize"), 10) || 16;
+    const size = new DataView(pkg.buffer, pkg.byteOffset, 8).getUint32(0, true);
+    const body = pkg.slice(8), out = new Uint8Array(body.length);
+    for (let off = 0, seg = 0; off < body.length; off += 4096, seg++) {
+      const chunk = body.slice(off, Math.min(off + 4096, body.length));
+      const segIv = fit(H(pAlg, cat(pSalt, le32(seg))), pBlock, 0x36);
+      out.set(aes("CBC", secret, chunk, segIv), off);
+    }
+    return out.slice(0, size);
+  }
+
+  function standard(info, pkg, password) {
+    const dv = new DataView(info.buffer, info.byteOffset, info.byteLength);
+    const hdrSize = dv.getUint32(8, true), hdr = 12;
+    const algId = dv.getUint32(hdr + 8, true), keyBits = dv.getUint32(hdr + 16, true);
+    if (![0x660E, 0x660F, 0x6610].includes(algId)) throw new Error("Unsupported cipher in this file (RC4/CryptoAPI)");
+    let p = hdr + hdrSize;
+    const saltSize = dv.getUint32(p, true); p += 4;
+    const salt = info.slice(p, p + saltSize); p += saltSize;
+    const encVer = info.slice(p, p + 16); p += 16;
+    const verHashSize = dv.getUint32(p, true); p += 4;
+    const encVerHash = info.slice(p, p + 32);
+
+    let hw = C().SHA1(toWA(cat(salt, utf16(password))));
+    for (let i = 0; i < 50000; i++) hw = C().SHA1(toWA(le32(i)).concat(hw));
+    const hf = H("SHA1", cat(fromWA(hw), le32(0)));
+    const x = fill => { const b = new Uint8Array(64).fill(fill); for (let i = 0; i < hf.length; i++) b[i] ^= hf[i]; return H("SHA1", b); };
+    const key = cat(x(0x36), x(0x5c)).slice(0, (keyBits || 128) / 8);
+
+    const ver = aes("ECB", key, encVer);
+    const verHash = aes("ECB", key, encVerHash).slice(0, verHashSize);
+    if (!eq(H("SHA1", ver), verHash)) throw new WrongPassword();
+    const size = new DataView(pkg.buffer, pkg.byteOffset, 8).getUint32(0, true);
+    const body = pkg.slice(8, 8 + Math.floor((pkg.length - 8) / 16) * 16);
+    return aes("ECB", key, body).slice(0, size);
+  }
+
+  function decrypt(buf, password) {
+    const cfb = window.XLSX.CFB.read(new Uint8Array(buf), { type: "array" });
+    const get = n => { const e = window.XLSX.CFB.find(cfb, n); return e && e.content ? Uint8Array.from(e.content) : null; };
+    const info = get("EncryptionInfo"), pkg = get("EncryptedPackage");
+    if (!info || !pkg) throw new Error("This is an older .xls-style protected file — save it as .xlsx first");
+    const major = info[0] | (info[1] << 8), minor = info[2] | (info[3] << 8);
+    if (major === 4 && minor === 4) return agile(info, pkg, password);
+    if ((major === 3 || major === 4) && minor === 2) return standard(info, pkg, password);
+    throw new Error("Unsupported encryption version " + major + "." + minor);
+  }
+  return { decrypt, WrongPassword };
+})();
 
 function askSpreadsheetPassword(fileName, retry) {
   return new Promise(resolve => {
@@ -2629,20 +2739,22 @@ async function readWorkbook(file, status) {
   } catch (e) {
     if (!/password/i.test(e.message || "")) throw e;
   }
-  await loadXlsxPopulate();
+  await loadCryptoJs();
   for (let attempt = 0; attempt < 5; attempt++) {
     const pw = await askSpreadsheetPassword(file.name, attempt > 0);
     if (pw === null) throw new Error("Upload cancelled — no password entered");
     if (status) status.textContent = "Unlocking spreadsheet...";
+    await new Promise(r => setTimeout(r, 30)); // let the status text paint
+    let plain;
     try {
-      const unlocked = await window.XlsxPopulate.fromDataAsync(buf, { password: pw });
-      const out = await unlocked.outputAsync({ type: "arraybuffer" });
-      return window.XLSX.read(out, { type: "array", cellDates: true });
+      plain = OfficeDecrypt.decrypt(buf, pw);
     } catch (e) {
-      console.warn("Unlock failed:", e.message);
+      if (e instanceof OfficeDecrypt.WrongPassword) continue;
+      throw new Error("Couldn't unlock the spreadsheet: " + e.message);
     }
+    return window.XLSX.read(plain, { type: "array", cellDates: true });
   }
-  throw new Error("Couldn't unlock the spreadsheet — wrong password, or a protection type the portal can't open");
+  throw new Error("Couldn't unlock the spreadsheet — too many wrong passwords");
 }
 
 
