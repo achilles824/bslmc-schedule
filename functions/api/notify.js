@@ -67,7 +67,7 @@ export async function onRequestPost(context) {
 // Plan building
 // ════════════════════════════════════════════════════════════════
 
-const norm = s => String(s || "").trim().toLowerCase();
+const norm = s => String(s || "").replace(/["'\u201C\u201D\u2018\u2019]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 const keyOf = name => norm(name).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 
 // "Main OR|12" -> "Main OR 12", "MRI|" -> "MRI", "Main OR|Float" -> "Main OR Float"
