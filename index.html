@@ -336,6 +336,124 @@ function showList(user, all, appr, admin) {
 
   window.ctSignOut = () => signOut(auth);
   window.ctIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.reject(new Error("Not signed in on Contacts tab"));
+  // ── SMS send dialog (Admin tab "Send texts" button) ─────────
+  // auto = true when opened by Finalize: stays silent if this browser
+  // isn't signed in as an admin, so other admins aren't interrupted.
+  const smsApi = async (date, mode, extra) => {
+    const token = await auth.currentUser.getIdToken();
+    const res = await fetch("/api/notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify(Object.assign({ date, mode }, extra || {}))
+    });
+    const data = await res.json().catch(() => ({ error: "Bad response (HTTP " + res.status + ")" }));
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    return data;
+  };
+
+  const smsModal = inner => {
+    let ov = document.getElementById("smsOverlay");
+    if (!ov) {
+      ov = document.createElement("div");
+      ov.id = "smsOverlay";
+      ov.className = "transfer-overlay";
+      ov.onclick = e => { if (e.target === ov && !window.__smsBusy) ov.style.display = "none"; };
+      document.body.appendChild(ov);
+    }
+    ov.innerHTML = `<div class="transfer-modal" style="max-width:560px;width:94%;max-height:86vh;overflow:auto;">${inner}</div>`;
+    ov.style.display = "flex";
+  };
+  window.smsCloseModal = () => { if (window.__smsBusy) return; const ov = document.getElementById("smsOverlay"); if (ov) ov.style.display = "none"; };
+
+  const smsList = (title, arr, color) => !arr || !arr.length ? "" :
+    `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:13px;${color ? "color:" + color + ";" : ""}">${esc(title)} (${arr.length})</summary>
+      <div style="font-size:12px;color:var(--muted);padding:4px 0 4px 14px;line-height:1.6;">${arr.map(esc).join("<br>")}</div></details>`;
+
+  let smsLast = null;
+
+  window.smsOpenPreview = async (auto) => {
+    const date = typeof currentAdminDate !== "undefined" ? currentAdminDate : "";
+    const user = auth.currentUser;
+    if (!user) {
+      if (auto) return;
+      return alert("To send texts, sign in on the Contacts tab as an admin.");
+    }
+    if (!date) { if (!auto) alert("Pick an assignment date first."); return; }
+    if (typeof isFinalized !== "undefined" && !isFinalized) { if (!auto) alert("Finalize the day before sending texts."); return; }
+
+    smsModal(`<h4>Assignment texts</h4><p style="color:var(--muted);">Building preview for ${esc(date)}…</p>`);
+    let p;
+    try { p = await smsApi(date, "preview"); }
+    catch (e) {
+      if (auto && /not an admin/i.test(e.message)) { window.smsCloseModal(); return; }
+      return smsModal(`<h4>Assignment texts</h4><p style="color:var(--cancel);">${esc(e.message)}</p>
+        <button class="view-btn" style="margin-top:12px;" onclick="smsCloseModal()">Close</button>`);
+    }
+    smsLast = p;
+    const c = p.counts || {};
+    const n = (p.toSend || []).length;
+    const example = n ? p.toSend[0].body : "";
+    smsModal(`
+      <h4>Assignment texts — ${esc(date)}</h4>
+      ${p.testAllowlist ? `<p style="background:rgba(234,179,8,0.15);border:1px solid #eab308;border-radius:6px;padding:6px 10px;font-size:12px;margin:8px 0;">TEST MODE: only names on the Cloudflare test list will be texted.</p>` : ""}
+      <p style="font-size:14px;margin:10px 0 4px;"><b>${c.new || 0}</b> new · <b>${c.updated || 0}</b> updated · ${c.unchanged || 0} already sent</p>
+      ${example ? `<div style="font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:8px 0;">${esc(example)}</div>` : ""}
+      ${smsList("Will be texted", (p.toSend || []).map(t => t.name + (t.kind === "updated" ? " (updated)" : "")))}
+      ${smsList("Held by test list", p.heldByAllowlist)}
+      ${smsList("No number on file", p.noNumber, "var(--cancel)")}
+      ${smsList("Number but no form date", p.noConsent, "var(--cancel)")}
+      ${smsList("Paused (Active off)", p.inactive)}
+      ${smsList("Failed before (not retried)", p.failedBefore, "var(--cancel)")}
+      ${smsList("Assigned to a closed room (not texted)", p.inClosedRoom)}
+      ${smsList("Texted earlier but no longer assigned", p.removedSinceSent, "var(--cancel)")}
+      ${(p.failedBefore || []).length ? `<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-top:10px;"><input type="checkbox" id="smsRetry" onchange="smsRetryToggle()"> Also retry previous failures</label>` : ""}
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+        <button id="smsSendBtn" class="view-btn" ${n ? "" : "disabled style=\"opacity:0.4;cursor:not-allowed;\""} onclick="smsSendAll()">${n ? "Send " + n + " text" + (n === 1 ? "" : "s") : "Nothing to send"}</button>
+        <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="smsCloseModal()">Cancel</button>
+      </div>`);
+  };
+
+  window.smsRetryToggle = async () => {
+    const box = document.getElementById("smsRetry");
+    const btn = document.getElementById("smsSendBtn");
+    if (!box || !btn || !smsLast) return;
+    btn.disabled = true; btn.textContent = "Checking…";
+    try {
+      const p = await smsApi(smsLast.date, "preview", { retryFailed: box.checked });
+      const n = (p.toSend || []).length;
+      btn.disabled = !n; btn.style.opacity = n ? "1" : "0.4";
+      btn.textContent = n ? "Send " + n + " text" + (n === 1 ? "" : "s") : "Nothing to send";
+    } catch (e) { btn.textContent = "Error: " + e.message; }
+  };
+
+  window.smsSendAll = async () => {
+    if (!smsLast) return;
+    const date = smsLast.date;
+    const retryFailed = !!(document.getElementById("smsRetry") || {}).checked;
+    window.__smsBusy = true;
+    const all = [];
+    let round = 0, err = null;
+    try {
+      while (round < 10) {
+        round++;
+        smsModal(`<h4>Sending texts — ${esc(date)}</h4><p style="color:var(--muted);">${all.length} processed so far… keep this window open.</p>`);
+        const r = await smsApi(date, "send", { retryFailed });
+        (r.results || []).forEach(x => all.push(x));
+        if (!r.remaining || !(r.results || []).length) break;
+      }
+    } catch (e) { err = e.message; }
+    window.__smsBusy = false;
+    const ok = all.filter(x => x.ok);
+    const bad = all.filter(x => !x.ok);
+    smsModal(`
+      <h4>Texts — ${esc(date)}</h4>
+      <p style="font-size:14px;margin:10px 0;"><b style="color:var(--day);">${ok.length} sent</b>${bad.length ? ` · <b style="color:var(--cancel);">${bad.length} failed</b>` : ""}</p>
+      ${err ? `<p style="color:var(--cancel);font-size:13px;">Stopped: ${esc(err)}</p>` : ""}
+      ${smsList("Failed", bad.map(x => x.name + " — " + (x.error || x.code)), "var(--cancel)")}
+      ${smsList("Sent", ok.map(x => x.name + (x.kind === "updated" ? " (updated)" : "")))}
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;">"Sent" means Twilio accepted it. Delivery to the phone usually follows within a minute.</p>
+      <button class="view-btn" style="margin-top:12px;" onclick="smsCloseModal()">Close</button>`);
+  };
   // ── SMS text directory (admin only; Admin tab panel) ────────
   // Matching ignores quote marks, apostrophes, case, and extra spaces,
   // so 'Ayoade "Joy" Ademuyewo' and 'Ayoade Joy Ademuyewo' are one person.
@@ -1518,6 +1636,7 @@ function showList(user, all, appr, admin) {
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearDay()">Clear Day</button>
         <button class="view-btn" style="background:none;border:1px solid var(--cancel);color:var(--cancel);" onclick="confirmClearAssignments()">Clear Assignments</button>
         <button id="finalizeBtn" class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="toggleFinalize()">✓ Finalize</button>
+                <button id="smsSendTextsBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--text);" onclick="smsOpenPreview(false)">📱 Send texts</button>
 <button id="exportPdfBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentPdf()" disabled>⬇ Export PDF</button>
 <button id="exportXlsxBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentXlsx()" disabled>⬇ Export Excel</button>
 <button id="exportCsvBtn" class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);opacity:0.4;cursor:not-allowed;" onclick="exportAssignmentCsv()" disabled>⬇ Export CSV</button>
@@ -4142,6 +4261,7 @@ function toggleFinalize() {
   // Save finalized state to Firebase
   if (currentAdminDate) {
     window.fbSet("finalized/" + currentAdminDate, isFinalized);
+    if (isFinalized && window.smsOpenPreview) setTimeout(() => window.smsOpenPreview(true), 400);
     // Endo tracker: write on finalize, clear on unfinalize
    if (isFinalized) {
       writeEndoTrackerForDate(currentAdminDate, currentAssignments).then(() => {
