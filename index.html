@@ -64,6 +64,13 @@
   const area = () => document.getElementById(document.body.classList.contains("gated") ? "gateArea" : "contactsArea");
   const GATE_KEY = "bslmcGateUid";   // last uid confirmed approved on this device (offline fallback only; rules are the real gate)
   const setGated = on => document.body.classList.toggle("gated", on);
+  // Header name + Sign out: null hides it, any string shows it.
+  const setWho = name => {
+    const box = document.getElementById("whoBox");
+    if (!box) return;
+    box.style.display = name === null ? "none" : "flex";
+    document.getElementById("whoName").textContent = name || "";
+  };
   const withTimeout = (p, ms = 10000) => Promise.race([p, new Promise((_, rej) =>
     setTimeout(() => rej(new Error("Timed out. The network may be blocking sign-in. Try your phone's hotspot.")), ms))]);
   // Soft launch: while false, the gate offers "Not now" so staff keep access
@@ -216,11 +223,13 @@ function showList(user, all, appr, admin) {
   }
 
   async function route(user) {
-    if (!user) { window.__ctIsAdmin = false; gate(true); showSignIn(); return; }
+    if (!user) { window.__ctIsAdmin = false; setWho(null); gate(true); showSignIn(); return; }
+    setWho("");
     area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
     try {
       const hasPassword = user.providerData.some(p => p.providerId === "password");
       const me = (await withTimeout(get(ref(db, "contacts/" + user.uid)))).val();
+      setWho(me && me.name ? me.name : "");
       if (!me || !hasPassword) { gate(true); showProfile(user, false, me); return; }
       const [ok, admin] = await withTimeout(Promise.all([
         get(ref(db, "approved/" + user.uid)).then(s => s.val() === true),
@@ -711,6 +720,7 @@ function showList(user, all, appr, admin) {
   body.gated .tab-bar, body.gated main { display: none !important; }
   body:not(.gated) #authGate { display: none; }
   #authGate { padding: 24px 16px; display: flex; justify-content: center; }
+  @media (max-width: 600px) { #whoName { display: none; } }
   :root {
     --bg: #0f1117;
     --surface: #181c27;
@@ -1519,6 +1529,10 @@ function showList(user, all, appr, admin) {
   <div>
     <h1>Staff Schedule Portal</h1>
     <p>Baylor College of Medicine — Anesthesiology</p>
+  </div>
+  <div id="whoBox" style="margin-left:auto;display:none;align-items:center;gap:10px;">
+    <span id="whoName" style="font-size:13px;color:rgba(255,255,255,0.85);max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+    <button onclick="ctSignOut()" style="flex-shrink:0;background:none;border:1px solid rgba(255,255,255,0.4);border-radius:20px;color:white;cursor:pointer;font-size:13px;padding:5px 12px;">Sign out</button>
   </div>
 </header>
 
