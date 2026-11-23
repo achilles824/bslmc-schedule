@@ -3241,7 +3241,6 @@ async function handleSpreadsheetSchedule(file, status) {
   }
 
   console.log("Spreadsheet extracted rooms:", [...rooms]);
-  console.log("Spreadsheet surgeons:", surgeons);
   if (dropped) console.log("Spreadsheet rows dropped (waitlist/motility/unmapped location):", dropped);
 
   window.parsedSurgeons = surgeons;
@@ -4271,17 +4270,14 @@ function confirmClearAssignments() {
   // Walk every room in currentAssignments and remove md, app, float fields
   // while preserving caseTime, surgeon, procedure, and notes.
   const roomKeys = Object.keys(currentAssignments || {});
-  const promises = [];
+  const ops = {};
   for (const rk of roomKeys) {
-    if (rk === "__closed") continue;
-    const enc = encodeURIComponent(rk);
-    const base = "https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" +
-                 currentAdminDate + "/" + enc;
-    // Send DELETE for the three assignment fields. Firebase ignores deletes
-    // on missing paths, so this is safe whether or not the field exists.
-    promises.push(fetch(base + "/md.json", {method: "DELETE"}));
-    promises.push(fetch(base + "/app.json", {method: "DELETE"}));
-    promises.push(fetch(base + "/float.json", {method: "DELETE"}));
+    if (rk.startsWith("__")) continue;
+    // Null out the three assignment fields. Firebase ignores nulls on
+    // missing paths, so this is safe whether or not the field exists.
+    ops[rk + "/md"] = null;
+    ops[rk + "/app"] = null;
+    ops[rk + "/float"] = null;
     // Also clear the in-memory mirror
     if (currentAssignments[rk]) {
       delete currentAssignments[rk].md;
@@ -4289,11 +4285,15 @@ function confirmClearAssignments() {
       delete currentAssignments[rk].float;
     }
   }
-  promises.push(fetch("https://bslmc-schedule-default-rtdb.firebaseio.com/assignments/" +
-    currentAdminDate + "/__flexOff.json", {method: "DELETE"}));
+  ops["__flexOff"] = null;
   delete currentAssignments.__flexOff;
-  Promise.all(promises).then(() => {
+  // One SDK update (carries the admin's sign-in once rules require it)
+  window.fbUpdate("assignments/" + currentAdminDate, ops).then(() => {
+    lastSynced = applyOps(JSON.parse(JSON.stringify(lastSynced)), ops);
     renderAdminDay(currentAdminDate);
+  }).catch(e => {
+    console.error("Clear assignments failed:", e);
+    alert("Could not clear assignments: " + e.message);
   });
 }
 function confirmClearDay() {
