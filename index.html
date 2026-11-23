@@ -211,6 +211,7 @@ function showList(user, all, appr, admin) {
     const pendingHtml = pending.length ? `<div class="search-section" style="border:1px solid var(--special);">
         <h2 style="font-size:16px;">Waiting for approval <span style="font-size:13px;color:var(--muted);font-weight:400;">${pending.length}</span></h2>
         <p style="color:var(--muted);font-size:12px;margin:4px 0 8px;">Approve only people you recognize. Rejecting deletes their entry; they can sign up again.</p>
+        <button class="view-btn" style="padding:6px 12px;margin-bottom:6px;" onclick="ctBulkApprove()">Approve everyone whose number is in the text directory</button>
         ${pending.map(([u, c]) => `<div style="${rowStyle}">
           ${nameCell(c)}
           ${phoneLinks(c)}
@@ -366,6 +367,29 @@ function showList(user, all, appr, admin) {
   window.ctApprove = async uid => {
     try { await set(ref(db, "approved/" + uid), true); refresh(); }
     catch (e) { alert("Approve failed: " + authMsg(e)); }
+  };
+  // Approve every pending sign-up whose verified phone matches a number an
+  // admin already entered in the text directory (smsContacts). Shows the list
+  // and asks first; anyone without a match stays pending.
+  window.ctBulkApprove = async () => {
+    try {
+      const [dir, all, appr] = await withTimeout(Promise.all([
+        get(ref(db, "smsContacts")).then(s => s.val() || {}),
+        get(ref(db, "contacts")).then(s => s.val() || {}),
+        get(ref(db, "approved")).then(s => s.val() || {})
+      ]));
+      const known = new Set(Object.values(dir).map(e => digits10(e && e.phone)).filter(Boolean));
+      const hits = Object.entries(all).filter(([u, c]) => c && c.name && appr[u] !== true && known.has(digits10(c.phone)));
+      if (!hits.length) { alert("No pending sign-ups match a number in the text directory."); return; }
+      if (!confirm("Approve " + hits.length + " sign-up" + (hits.length === 1 ? "" : "s") + " whose number is in the text directory?\n\n" +
+                   hits.map(([u, c]) => "- " + c.name + "  " + c.phone).join("\n"))) return;
+      let ok = 0; const failed = [];
+      for (const [u, c] of hits) {
+        try { await set(ref(db, "approved/" + u), true); ok++; } catch (e) { failed.push(c.name); }
+      }
+      alert("Approved " + ok + "." + (failed.length ? "\nFailed: " + failed.join(", ") : ""));
+      refresh();
+    } catch (e) { alert("Bulk approve failed: " + authMsg(e)); }
   };
   window.ctReject = async uid => {
     if (!confirm("Reject " + nameOf(uid) + "?\n\nTheir entry is deleted. They can sign up again.")) return;
