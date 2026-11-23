@@ -247,6 +247,7 @@ function showList(user, all, appr, admin) {
       if (admin && !ok) await set(ref(db, "approved/" + user.uid), true);
       try { localStorage.setItem(GATE_KEY, user.uid); } catch (e) {}
       setGated(false);
+      if (typeof prefillMyName === "function") prefillMyName(me.name);
       smsAfterSignIn(admin);
       area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
       const [all, appr] = await withTimeout(Promise.all([
@@ -1899,6 +1900,24 @@ assignmentSearchInput.addEventListener("input", () => {
   assignmentAutocompleteList.classList.add("open");
 });
 document.addEventListener("click", e => { if (!e.target.closest(".search-wrap")) assignmentAutocompleteList.classList.remove("open"); });
+
+// Signed-in staff: fill My Assignment and My Schedule with their own roster
+// name. Only replaces an empty box or one the browser autofilled with a phone
+// number, so anything a person typed is left alone.
+function prefillMyName(name) {
+  if (!name) return;
+  const replaceable = v => !v.trim() || /^[\d\s()+.-]+$/.test(v.trim());
+  if (replaceable(assignmentSearchInput.value)) {
+    assignmentSearchInput.value = name;
+    if (document.getElementById("assignmentDate").value) lookupAssignment();
+  }
+  const ns = document.getElementById("nameSearch");
+  if (ns && replaceable(ns.value)) {
+    ns.value = name;
+    const p = dataLoaded && SCHEDULE_DATA.find(x => x.name === name);
+    if (p) showProvider(p);
+  }
+}
 
 async function loadData() {
   try {
