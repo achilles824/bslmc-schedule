@@ -230,7 +230,11 @@ function showList(user, all, appr, admin) {
   }
 
   async function route(user) {
-    if (!user) { window.__ctIsAdmin = false; setWho(null); gate(true); showSignIn(); return; }
+    if (!user) {
+      window.__ctIsAdmin = false;
+      if (typeof adminUnlocked !== "undefined" && adminUnlocked) lockAdmin();
+      setWho(null); gate(true); showSignIn(); return;
+    }
     setWho("");
     area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
     try {
@@ -248,6 +252,7 @@ function showList(user, all, appr, admin) {
       try { localStorage.setItem(GATE_KEY, user.uid); } catch (e) {}
       setGated(false);
       if (typeof prefillMyName === "function") prefillMyName(me.name);
+      if (admin && typeof unlockAdmin === "function") unlockAdmin(true);
       smsAfterSignIn(admin);
       area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
       const [all, appr] = await withTimeout(Promise.all([
@@ -376,7 +381,14 @@ function showList(user, all, appr, admin) {
     } catch (e) { alert("Remove failed: " + authMsg(e)); }
   };
 
-  window.ctSignOut = () => { try { localStorage.removeItem(GATE_KEY); } catch (e) {} return signOut(auth); };
+  window.ctSignOut = async () => {
+    // Save any unsaved Admin edits first, while still signed in.
+    if (typeof adminUnlocked !== "undefined" && adminUnlocked && typeof pushAssignmentChanges === "function") {
+      try { await withTimeout(pushAssignmentChanges(), 5000); } catch (e) { console.warn("[SignOut] save before sign-out failed:", e); }
+    }
+    try { localStorage.removeItem(GATE_KEY); } catch (e) {}
+    return signOut(auth);
+  };
   window.ctRetry = () => route(auth.currentUser);
   window.ctSkipGate = () => { try { sessionStorage.setItem(SKIP_KEY, "1"); } catch (e) {} route(auth.currentUser); };
   window.ctIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.reject(new Error("Not signed in on Contacts tab"));
@@ -1952,6 +1964,7 @@ async function loadData() {
   }
 }
 let adminUnlocked = false;
+let adminViaSignIn = false;   // true when an admins/{uid} sign-in opened the Admin tab (no PIN, no auto-lock)
   
 function switchTab(tab) {
   if (tab === 'admin' && !adminUnlocked) {
@@ -3860,12 +3873,7 @@ pinInputs.forEach((input, idx) => {
 function checkPin() {
   const pin = pinInputs.map(i => i.value).join("");
   if (pin === ADMIN_PIN) {
-    adminUnlocked = true;
-    document.getElementById("adminLock").style.display = "none";
-    document.getElementById("adminContent").classList.add("unlocked");
-    loadAdminDay();
-    startAutoSave();
-    startAutoLock();
+    unlockAdmin(false);
   } else {
     document.getElementById("pinError").textContent = "Incorrect PIN. Try again.";
     pinInputs.forEach(i => i.value = "");
@@ -3874,8 +3882,22 @@ function checkPin() {
   }
 }
 
+// Opens the Admin tab. viaSignIn = true for an admins/{uid} sign-in: no PIN
+// and no inactivity lock (signing out is the lock). false = PIN fallback.
+function unlockAdmin(viaSignIn) {
+  if (adminUnlocked) return;
+  adminUnlocked = true;
+  adminViaSignIn = !!viaSignIn;
+  document.getElementById("adminLock").style.display = "none";
+  document.getElementById("adminContent").classList.add("unlocked");
+  loadAdminDay();
+  startAutoSave();
+  if (!adminViaSignIn) startAutoLock();
+}
+
 function lockAdmin() {
   adminUnlocked = false;
+  adminViaSignIn = false;
   pinInputs.forEach(i => i.value = "");
   document.getElementById("adminLock").style.display = "block";
   document.getElementById("adminContent").classList.remove("unlocked");
@@ -4473,7 +4495,7 @@ function stopAutoSave() {
 }
 
 function resetAutoLock() {
-  if (!adminUnlocked) return;
+  if (!adminUnlocked || adminViaSignIn) return;
   stopAutoLock();
   startAutoLock();
 }
