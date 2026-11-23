@@ -61,7 +61,19 @@
 
   const auth = getAuth(getApp());
   const db = getDatabase(getApp());
-  const area = () => document.getElementById("contactsArea");
+  const area = () => document.getElementById(document.body.classList.contains("gated") ? "gateArea" : "contactsArea");
+  const GATE_KEY = "bslmcGateUid";   // last uid confirmed approved on this device (offline fallback only; rules are the real gate)
+  const setGated = on => document.body.classList.toggle("gated", on);
+  const withTimeout = (p, ms = 10000) => Promise.race([p, new Promise((_, rej) =>
+    setTimeout(() => rej(new Error("Timed out. The network may be blocking sign-in. Try your phone's hotspot.")), ms))]);
+  // Soft launch: while false, the gate offers "Not now" so staff keep access
+  // during the sign-up window. Flip to true when reads are locked (spec step 7).
+  const GATE_ENFORCED = false;
+  const SKIP_KEY = "bslmcGateSkip";
+  const canSkip = () => { if (GATE_ENFORCED) return false; try { return sessionStorage.getItem(SKIP_KEY) === "1"; } catch (e) { return false; } };
+  const gate = on => setGated(on && !canSkip());
+  const skipLink = () => GATE_ENFORCED ? "" : `<div style="margin-top:14px;font-size:12px;text-align:center;">
+      <a href="#" onclick="ctSkipGate();return false;" style="color:var(--muted);">Not now, continue without signing in</a></div>`;
 
   let confirmation = null;   // pending SMS verification
   let verifier = null;
@@ -109,8 +121,8 @@
   // ── screens ─────────────────────────────────────────────────
   function showSignIn() {
     area().innerHTML = card(`
-      <h2>Staff Contacts</h2>
-      <p style="color:var(--muted);font-size:13px;margin:6px 0 14px;">Sign in with your cell number and password.</p>
+      <h2>Sign in</h2>
+      <p style="color:var(--muted);font-size:13px;margin:6px 0 14px;">Sign in with your cell number and password. New here? Create an account, then an administrator approves it.</p>
       <label style="font-size:13px;">Cell number<input id="ctPhone" type="tel" autocomplete="tel" style="${inputStyle}"></label>
       <label style="font-size:13px;display:block;margin-top:10px;">Password<input id="ctPw" type="password" autocomplete="current-password" style="${inputStyle}"></label>
       ${sharedBox}
@@ -118,7 +130,7 @@
       <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:13px;">
         <a href="#" onclick="ctShowVerify('create');return false;">Create account</a>
         <a href="#" onclick="ctShowVerify('reset');return false;">Forgot password</a>
-      </div>`);
+      </div>${skipLink()}`);
   }
 
   function showVerify(mode) {
@@ -153,9 +165,9 @@
   function showPending(user, me) {
     area().innerHTML = card(`
       <h2>Waiting for approval</h2>
-      <p style="font-size:14px;margin:10px 0;">Thanks${me && me.name ? ", " + esc(me.name) : ""}. An administrator has to approve your account before the contact list appears. Check back later.</p>
+      <p style="font-size:14px;margin:10px 0;">Thanks${me && me.name ? ", " + esc(me.name) : ""}. An administrator has to approve your account before the portal opens. Check back later.</p>
       <p style="color:var(--muted);font-size:12px;margin-top:14px;">Account ID: <code style="user-select:all;">${esc(user.uid)}</code></p>
-      <button class="view-btn" style="margin-top:14px;" onclick="ctSignOut()">Sign out</button>`);
+      <button class="view-btn" style="margin-top:14px;" onclick="ctSignOut()">Sign out</button>${skipLink()}`);
   }
 
 function showList(user, all, appr, admin) {
@@ -204,30 +216,41 @@ function showList(user, all, appr, admin) {
   }
 
   async function route(user) {
-    if (!user) { window.__ctIsAdmin = false; showSignIn(); return; }
+    if (!user) { window.__ctIsAdmin = false; gate(true); showSignIn(); return; }
     area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
     try {
       const hasPassword = user.providerData.some(p => p.providerId === "password");
-      const me = (await get(ref(db, "contacts/" + user.uid))).val();
-      if (!me || !hasPassword) { showProfile(user, false, me); return; }
-      const [ok, admin] = await Promise.all([
+      const me = (await withTimeout(get(ref(db, "contacts/" + user.uid)))).val();
+      if (!me || !hasPassword) { gate(true); showProfile(user, false, me); return; }
+      const [ok, admin] = await withTimeout(Promise.all([
         get(ref(db, "approved/" + user.uid)).then(s => s.val() === true),
         get(ref(db, "admins/" + user.uid)).then(s => s.val() === true)
-      ]);
+      ]));
       window.__ctIsAdmin = admin;
-      smsAfterSignIn(admin);
-      if (!ok && !admin) { showPending(user, me); return; }
+      if (!ok && !admin) { gate(true); showPending(user, me); return; }
       if (admin && !ok) await set(ref(db, "approved/" + user.uid), true);
-      const [all, appr] = await Promise.all([
+      try { localStorage.setItem(GATE_KEY, user.uid); } catch (e) {}
+      setGated(false);
+      smsAfterSignIn(admin);
+      area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
+      const [all, appr] = await withTimeout(Promise.all([
         get(ref(db, "contacts")).then(s => s.val() || {}),
         get(ref(db, "approved")).then(s => s.val() || {})
-      ]);
+      ]));
       if (admin) appr[user.uid] = true;
       showList(user, all, appr, admin);
     } catch (e) {
       console.error("[Contacts]", e);
-      area().innerHTML = card(`<p style="color:var(--cancel);">Could not load contacts: ${esc(authMsg(e))}</p>
-        <button class="view-btn" style="margin-top:12px;" onclick="ctSignOut()">Sign out</button>`);
+      // Offline or network-blocked: a person already approved on this device
+      // keeps the portal (cached data); everyone else stays at the gate.
+      let known = false;
+      try { known = localStorage.getItem(GATE_KEY) === user.uid; } catch (x) {}
+      if (known) setGated(false);
+      area().innerHTML = card(`<p style="color:var(--cancel);">${known ? "Could not load contacts" : "Could not finish signing in"}: ${esc(authMsg(e))}</p>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="view-btn" onclick="ctRetry()">Try again</button>
+          <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="ctSignOut()">Sign out</button>
+        </div>`);
     }
   }
 
@@ -336,7 +359,9 @@ function showList(user, all, appr, admin) {
     } catch (e) { alert("Remove failed: " + authMsg(e)); }
   };
 
-  window.ctSignOut = () => signOut(auth);
+  window.ctSignOut = () => { try { localStorage.removeItem(GATE_KEY); } catch (e) {} return signOut(auth); };
+  window.ctRetry = () => route(auth.currentUser);
+  window.ctSkipGate = () => { try { sessionStorage.setItem(SKIP_KEY, "1"); } catch (e) {} route(auth.currentUser); };
   window.ctIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.reject(new Error("Not signed in on Contacts tab"));
 
   // ── Finalize sign-in gate ───────────────────────────────────
@@ -682,6 +707,10 @@ function showList(user, all, appr, admin) {
   });
 </script>
 <style>
+  /* Sign-in gate: hide the portal until an approved user is signed in */
+  body.gated .tab-bar, body.gated main { display: none !important; }
+  body:not(.gated) #authGate { display: none; }
+  #authGate { padding: 24px 16px; display: flex; justify-content: center; }
   :root {
     --bg: #0f1117;
     --surface: #181c27;
@@ -1483,7 +1512,7 @@ function showList(user, all, appr, admin) {
   }
 </style>
 </head>
-<body>
+<body class="gated">
 
 <header>
   <div class="logo">🏥</div>
@@ -1536,6 +1565,11 @@ function showList(user, all, appr, admin) {
     color:var(--muted);cursor:pointer;font-size:14px;padding:4px 10px;transition:all 0.2s;">🌙</button>
   </div>
 </div>
+
+<div id="authGate"><div id="gateArea" style="width:100%;max-width:440px;">
+  <div class="search-section"><p style="color:var(--muted);">Loading… If this doesn't finish, the network may be blocking sign-in. Try your phone's hotspot.</p></div>
+</div></div>
+<div id="ctRecaptcha"></div>
 
 <main>
   <!-- TAB 1: MY SCHEDULE -->
@@ -1656,7 +1690,6 @@ function showList(user, all, appr, admin) {
   <!-- TAB: CONTACTS (sign-in required) -->
   <div class="tab-content" id="tab-contacts">
     <div id="contactsArea"></div>
-    <div id="ctRecaptcha"></div>
   </div>
 
   
