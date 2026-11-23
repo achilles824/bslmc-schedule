@@ -1706,7 +1706,7 @@ function showList(user, all, appr, admin) {
         <label class="upload-label">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           Upload Surgery Schedule
-          <input type="file" id="scheduleUpload" accept=".pdf,.xlsx,.xls" onchange="handleScheduleUpload(event)" />
+          <input type="file" id="scheduleUpload" accept=".xlsx,.xls" onchange="handleScheduleUpload(event)" />
         </label>
         <label class="upload-label">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -2802,7 +2802,7 @@ async function handleScheduleUpload(event) {
 
   // ── File-type router ──────────────────────────────────────────
   // .xlsx/.xls → fast, reliable, client-side spreadsheet path.
-  // .pdf       → existing OCR path (fallback, unchanged below).
+  // .pdf → rejected
   const lname = (file.name || "").toLowerCase();
   const isSpreadsheet =
     lname.endsWith(".xlsx") || lname.endsWith(".xls") ||
@@ -2820,89 +2820,8 @@ async function handleScheduleUpload(event) {
     event.target.value = "";
     return;
   }
-  // ── End router. PDF path continues unchanged below. ───────────
-
-  status.textContent = "Loading PDF...";
-
-  try {
-    // Load PDF.js
-    if (!window.pdfjsLib) await loadPdfJs();
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-    // Render all pages as images
-    const pageImages = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      status.textContent = `Rendering page ${i} of ${pdf.numPages}...`;
-      const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 1.2 });
-      const canvas = document.createElement("canvas");
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-      pageImages.push(canvas.toDataURL("image/jpeg", 0.65).split(",")[1]);
-    }
-
-    // Send in batches of 3 pages — each call stays well under Netlify timeout
-    const BATCH = 3;
-    const allRoomsRaw = {};
-    const totalBatches = Math.ceil(pageImages.length / BATCH);
-
-    for (let b = 0; b < pageImages.length; b += BATCH) {
-      const batchNum = Math.floor(b / BATCH) + 1;
-      status.textContent = `Analyzing batch ${batchNum} of ${totalBatches}...`;
-      const batchPages = pageImages.slice(b, b + BATCH);
-
-      try {
-        const response = await fetch("/api/parse-schedule", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pages: batchPages, batchIndex: batchNum })
-        });
-        if (!response.ok) { console.warn("Batch " + batchNum + " failed: " + response.status); continue; }
-        const parsed = await response.json();
-        if (parsed.error) { console.warn("Batch " + batchNum + " error: " + parsed.error); continue; }
-        // Merge results — first occurrence wins
-        for (const [room, data] of Object.entries(parsed.rooms || {})) {
-          if (!allRoomsRaw[room]) allRoomsRaw[room] = data;
-        }
-      } catch(e) {
-        console.warn("Batch " + batchNum + " exception:", e.message);
-      }
-    }
-
-    const roomsRaw = allRoomsRaw;
-    const rooms = new Set();
-    const surgeons = {};
-
-    for (const [roomLabel, data] of Object.entries(roomsRaw)) {
-      const normalized = normalizeRoomName(roomLabel);
-      const key = normalized || roomLabel;
-      rooms.add(key);
-      if (!surgeons[key]) {
-        surgeons[key] = typeof data === "string" ? { surgeon: data, procedure: "" } : data;
-      }
-    }
-
-
-    console.log("AI extracted rooms:", [...rooms]);
-    console.log("Surgeons:", surgeons);
-
-    if (rooms.size > 0) {
-      status.textContent = `✓ Found ${rooms.size} active rooms`;
-      window.parsedSurgeons = surgeons;
-      buildChecklist(rooms);
-    } else {
-      status.textContent = "⚠️ No rooms detected — please select manually";
-      buildChecklist(null);
-    }
-
-  } catch(e) {
-    console.error("Schedule read error:", e);
-    status.textContent = "⚠️ " + e.message.slice(0, 60) + " — showing manual checklist";
-    buildChecklist(null);
-  }
-
+  // ── End router. PDF upload removed 2026-11-23 (it sent page images off-site). ──
+  status.textContent = "⚠️ Upload the Epic .xlsx export. PDF is no longer supported.";
   event.target.value = "";
 }
 
