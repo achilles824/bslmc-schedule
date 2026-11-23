@@ -204,7 +204,7 @@ function showList(user, all, appr, admin) {
   }
 
   async function route(user) {
-    if (!user) { showSignIn(); return; }
+    if (!user) { window.__ctIsAdmin = false; showSignIn(); return; }
     area().innerHTML = card(`<p style="color:var(--muted);">Loading…</p>`);
     try {
       const hasPassword = user.providerData.some(p => p.providerId === "password");
@@ -214,6 +214,8 @@ function showList(user, all, appr, admin) {
         get(ref(db, "approved/" + user.uid)).then(s => s.val() === true),
         get(ref(db, "admins/" + user.uid)).then(s => s.val() === true)
       ]);
+      window.__ctIsAdmin = admin;
+      smsAfterSignIn(admin);
       if (!ok && !admin) { showPending(user, me); return; }
       if (admin && !ok) await set(ref(db, "approved/" + user.uid), true);
       const [all, appr] = await Promise.all([
@@ -336,6 +338,63 @@ function showList(user, all, appr, admin) {
 
   window.ctSignOut = () => signOut(auth);
   window.ctIdToken = () => auth.currentUser ? auth.currentUser.getIdToken() : Promise.reject(new Error("Not signed in on Contacts tab"));
+
+  // ── Finalize sign-in gate ───────────────────────────────────
+  // toggleFinalize() calls smsFinalizeGate() when this browser isn't signed
+  // in as an admin. "Sign in" jumps to Contacts; once route() confirms an
+  // admin sign-in, smsAfterSignIn() jumps back to Admin and finishes the
+  // finalize, which opens the text preview.
+  window.smsSignedInAdmin = () => !!(auth.currentUser && window.__ctIsAdmin === true);
+
+  window.smsFinalizeGate = () => {
+    const signedIn = !!auth.currentUser;
+    smsModal(`
+      <h4>Send assignment texts?</h4>
+      <p style="font-size:13px;margin:10px 0;">${signedIn
+        ? "This browser is signed in on the Contacts tab, but not as an admin, so texts can't be sent."
+        : "To text staff their assignments, sign in on the Contacts tab as an admin."}
+        After you sign in, you'll come back here and the finalize will finish on its own.</p>
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+        <button class="view-btn" onclick="smsGateSignIn()">${signedIn ? "Switch account" : "Sign in"}</button>
+        <button class="view-btn" style="background:none;border:1px solid var(--day);color:var(--day);" onclick="smsGateSkip()">Finalize without texts</button>
+        <button class="view-btn" style="background:none;border:1px solid var(--border);color:var(--muted);" onclick="smsCloseModal()">Cancel</button>
+      </div>`);
+  };
+
+  window.smsGateSignIn = async () => {
+    window.__smsPendingFinalize = { date: currentAdminDate };
+    window.smsCloseModal();
+    if (auth.currentUser) { try { await signOut(auth); } catch (e) {} }
+    switchTab("contacts");
+  };
+
+  const smsResumeFinalize = () => {
+    window.__finalizeResume = true;
+    try { toggleFinalize(); } finally { window.__finalizeResume = false; }
+  };
+
+  window.smsGateSkip = () => { window.smsCloseModal(); smsResumeFinalize(); };
+
+  function smsAfterSignIn(admin) {
+    const p = window.__smsPendingFinalize;
+    if (!p) return;
+    window.__smsPendingFinalize = null;
+    if (!admin) {
+      alert("You're signed in, but this account isn't an admin, so texts can't be sent.\n\nGo back to Admin and finalize without texts, or sign in with an admin account.");
+      return;
+    }
+    switchTab("admin");
+    if (typeof adminUnlocked !== "undefined" && !adminUnlocked) {
+      alert("Admin locked while you were signing in. Enter the PIN, then click Finalize again.");
+      return;
+    }
+    if (currentAdminDate !== p.date) {
+      alert("The Admin date changed while you were signing in. Click Finalize again.");
+      return;
+    }
+    if (isFinalized) { window.smsOpenPreview(false); return; }   // someone else finalized meanwhile
+    smsResumeFinalize();
+  }
   // ── SMS send dialog (Admin tab "Send texts" button) ─────────
   // auto = true when opened by Finalize: stays silent if this browser
   // isn't signed in as an admin, so other admins aren't interrupted.
@@ -4058,6 +4117,7 @@ function exportAssignmentPdf() {
     <thead><tr><th>Room</th><th>First Case</th><th>MD</th><th>Shift</th><th>APP</th><th>Shift</th><th>Notes</th><th>Surgeon</th></tr></thead>
     <tbody>${rowsHtml}</tbody>
   </table>
+  ${(() => { const s = _sickPrintList(_sickList()); return s.length ? `<h3 style="font-size:13px;margin:16px 0 4px;color:#b91c1c;">Sick / Call in (${s.length})</h3><p style="color:#111;font-size:11px;">${s.map(p => _escHtml(p.name) + (p.cred ? " (" + _escHtml(p.cred) + ")" : "")).join(" &nbsp;·&nbsp; ")}</p>` : ""; })()}
   </body></html>`;
 
   const win = window.open("", "_blank");
@@ -4186,7 +4246,7 @@ function toggleFinalize() {
   // The check only fires on the YES->Finalize transition. Unfinalizing
   // never blocks.
   // ─────────────────────────────────────────────────────────────
-  if (!isFinalized) {
+  if (!isFinalized && !window.__finalizeResume) {
     const MANDATORY_ROOMS_FINALIZE = new Set([
       "Main OR|10", "Main OR|15",
       "Main Endo|1", "Main Endo|2", "Main Endo|3",
@@ -4236,6 +4296,13 @@ function toggleFinalize() {
       console.log("[Finalize] User overrode incomplete-rooms warning:",
         incompleteRooms.map(r => r.room + " (missing " + r.missing.join("+") + ")"));
     }
+  }
+
+  // Not signed in as an admin on the Contacts tab: offer to sign in so the
+  // assignment texts can go out, or finalize without them.
+  if (!isFinalized && !window.__finalizeResume && window.smsSignedInAdmin && !window.smsSignedInAdmin()) {
+    window.smsFinalizeGate();
+    return;
   }
 
   // Original toggleFinalize behavior follows
@@ -4580,6 +4647,7 @@ function executeManualEntry() {
   localDirty = true;
 
   // Check if person is scheduled to work that day
+  if (_isSick(name)) { alert(name + " is in Sick / Call in. Remove them from that box first."); return; }
   const orStaff = getORStaffForDay(currentAdminDate);
   const isWorking = /^CV( MD| APP)?$/i.test(name) ||
     orStaff.some(p => p.name.toLowerCase() === name.toLowerCase());
@@ -4741,6 +4809,83 @@ function removeFlexOff(i) {
   renderAdminDay(currentAdminDate);
 }
 
+// ── Sick / Call in ──
+// Stored at assignments/{date}/__sick as an array of plain name strings
+// (like __flexOff). Unlike Flex Off, these people leave the staff pool
+// entirely and can't be placed in a room until removed from the box.
+function _sickNamesOf(a) {
+  const v = a && a.__sick;
+  if (Array.isArray(v)) return v.filter(x => typeof x === "string");
+  return v && typeof v === "object" ? Object.values(v).filter(x => typeof x === "string") : [];
+}
+function _sickList() { return _sickNamesOf(currentAssignments); }
+function _isSick(name) {
+  const n = String(name || "").trim().toLowerCase();
+  return !!n && _sickList().some(x => x.toLowerCase() === n);
+}
+function addSick(name) {
+  name = String(name || "").trim();
+  if (!name || !currentAdminDate) return;
+  const staff = getORStaffForDay(currentAdminDate);
+  const hit = staff.find(p => p.name === name) || staff.find(p => p.name.toLowerCase() === name.toLowerCase());
+  if (!hit) { alert(name + " is not on today's OR staff."); renderAdminDay(currentAdminDate); return; }
+
+  // Already in a room? Confirm, then take them out of it.
+  const held = [];
+  for (const [rk, s] of Object.entries(currentAssignments)) {
+    if (rk.indexOf("|") === -1 || !s || typeof s !== "object") continue;
+    if (s.md && s.md.name === hit.name) held.push([rk, "md"]);
+    if (s.app && s.app.name === hit.name) held.push([rk, "app"]);
+    if (Array.isArray(s.float) && s.float.some(f => f && f.name === hit.name)) held.push([rk, "float"]);
+  }
+  if (held.length) {
+    const where = [...new Set(held.map(h => h[0].replace("|", " ")))].join(", ");
+    if (!confirm(hit.name + " is assigned to " + where + ".\n\nTake them out of " +
+        (held.length > 1 ? "those rooms" : "that room") + " and mark them Sick / Call in?")) {
+      renderAdminDay(currentAdminDate); return;
+    }
+    held.forEach(([rk, slot]) => {
+      const s = currentAssignments[rk];
+      if (slot === "float") {
+        s.float = s.float.filter(f => !(f && f.name === hit.name));
+        if (!s.float.length) delete s.float;
+      } else delete s[slot];
+      if (!Object.keys(s).length) delete currentAssignments[rk];
+    });
+  }
+  // Sick replaces Flex Off
+  const flex = _flexList().filter(n => n !== hit.name);
+  if (flex.length) currentAssignments.__flexOff = flex; else delete currentAssignments.__flexOff;
+
+  const arr = _sickList();
+  if (!arr.includes(hit.name)) arr.push(hit.name);
+  currentAssignments.__sick = arr;
+  localDirty = true;
+  renderAdminDay(currentAdminDate);
+}
+function onSickDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drop-hover");
+  if (!draggingPerson) return;
+  const n = draggingPerson.name;
+  draggingPerson = null;
+  addSick(n);
+}
+function removeSick(i) {
+  const arr = _sickList();
+  arr.splice(i, 1);
+  if (arr.length) currentAssignments.__sick = arr; else delete currentAssignments.__sick;
+  localDirty = true;
+  renderAdminDay(currentAdminDate);
+}
+// Printouts: "Name (CRNA), Name (MD)" with credentials from the roster
+function _sickPrintList(names) {
+  return (names || []).map(n => {
+    const p = (SCHEDULE_DATA || []).find(x => x.name === n);
+    return { name: n, cred: p && p.credential ? p.credential : "" };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // ── SRNA / SAA room toggles (stored as true on the room record) ──
 function toggleStudent(roomKey, t) {
   if (!currentAssignments[roomKey]) currentAssignments[roomKey] = {};
@@ -4822,7 +4967,7 @@ async function renderAdminDay(dateVal) {
   // CV team placeholders: always in the pool, never counted. Added here only,
   // NOT in getORStaffForDay, so OR Staffing, Who's Working, and the Endo
   // tracker/generator never see them.
-  const staff = getORStaffForDay(dateVal).concat([
+  const staff = getORStaffForDay(dateVal).filter(p => !_isSick(p.name)).concat([
     { name: "CV MD",  credential: "MD",   agency: "CV", shift: "", isCV: true },
     { name: "CV APP", credential: "CRNA", agency: "CV", shift: "", isCV: true }
   ]);
@@ -5110,6 +5255,23 @@ async function renderAdminDay(dateVal) {
       <input class="surgeon-input" list="flexStaffList" placeholder="Or type a name..." autocomplete="off"
         onchange="addFlexOff(this.value)" onclick="event.stopPropagation()" />
       <datalist id="flexStaffList">${staff.filter(p => !p.isCV && !_flex.includes(p.name)).map(p => `<option value="${_escHtml(p.name)}"></option>`).join("")}</datalist>
+    </div></div>
+  </div>`;
+
+  // Sick / Call in box — very bottom. Stored at assignments/{date}/__sick.
+  // These names are already filtered out of the staff pool above.
+  const _sick = _sickList();
+  gridHtml += `<div class="room-group" style="margin-top:16px;">
+    <div class="room-group-title">Sick / Call in</div>
+    <div class="room-cards"><div class="room-card float-room" style="border-color:var(--cancel);">
+      <div class="room-card-title" style="color:var(--cancel);">Sick / Call in</div>
+      ${_sick.map((n, i) => `<div class="room-slot slot-float"><span class="slot-name">${_escHtml(n)}</span>
+        <span class="slot-remove" onclick="removeSick(${i})">×</span></div>`).join("")}
+      <div class="room-slot slot-float" ondragover="onDragOver(event)" ondrop="onSickDrop(event)" ondragleave="onDragLeave(event)">
+        <span style="color:var(--muted);font-size:10px;">Drop here</span></div>
+      <input class="surgeon-input" list="sickStaffList" placeholder="Or type a name..." autocomplete="off"
+        onchange="addSick(this.value)" onclick="event.stopPropagation()" />
+      <datalist id="sickStaffList">${getORStaffForDay(dateVal).filter(p => !_sick.includes(p.name)).map(p => `<option value="${_escHtml(p.name)}"></option>`).join("")}</datalist>
     </div></div>
   </div>`;
 
@@ -6960,6 +7122,10 @@ async function deleteEndoEntry(date, safeName) {
     // rooms
     const fb = await fbGetT("assignments/" + iso);
     if (!fb) throw new Error("No assignments saved for " + iso);
+    // Sick / Call in: not working, so not supply, break-givers, or releases
+    const sickKeys = new Set(_sickNamesOf(fb).map(nkey));
+    for (let i = staff.length - 1; i >= 0; i--) if (sickKeys.has(nkey(staff[i].name))) staff.splice(i, 1);
+    sickKeys.forEach(k => idx.delete(k));
     const closedFlag = fb.__closed || {};
     const rooms = [], unmatched = [];
 
@@ -7862,6 +8028,7 @@ async function deleteEndoEntry(date, safeName) {
     const fb = await fbGetT("assignments/" + iso);
     if (!fb) throw new Error("No assignments saved for " + iso);
     const closed = fb.__closed || {};
+    const sickSet = new Set(_sickNamesOf(fb).map(n => n.toLowerCase()));
 
     // name -> rooms held today
     const rooms = new Map();
@@ -7887,8 +8054,9 @@ async function deleteEndoEntry(date, safeName) {
       if (p.agency === "CV") continue;
       const label = shiftFor(p, iso);
       const held = rooms.get(p.name) || [];
-      if (label === undefined && !held.length) continue;
-      if (!held.length && classifyShift(String(label)) !== "day") continue;
+      const sick = sickSet.has(p.name.toLowerCase());
+      if (!sick && label === undefined && !held.length) continue;
+      if (!sick && !held.length && classifyShift(String(label)) !== "day") continue;
 
       const baylor = p.agency === "Baylor";
       let campus;
@@ -7911,6 +8079,7 @@ async function deleteEndoEntry(date, safeName) {
         rooms: held.filter(r => !r.isFloat).map(r => r.label),
         isFloat: held.some(r => r.isFloat),
         floatArea: (held.find(r => r.isFloat) || {}).key,
+        sick,
         out: outOrderOf(label), mdHrs: mdHoursOf(label), locHrs: locumHrsOf(label),
         tags: tagsOf(label).concat(rolesFor(p.name, fb.__roles || {}))
       });
@@ -7983,7 +8152,16 @@ async function deleteEndoEntry(date, safeName) {
 
 
   function page(campus, people, dateLabel, unplaced) {
-    const mine = people.filter(p => p.campus === campus);
+    const all = people.filter(p => p.campus === campus);
+    const mine = all.filter(p => !p.sick);
+    // Sick / Call in for this campus; unplaced sick locums go on the Main page
+    const sick = people.filter(p => p.sick && (p.campus === campus || (!p.campus && campus === "Main")))
+      .sort(byName);
+    const sickHtml = sick.length
+      ? '<div class="grp" style="margin-top:10px"><div class="gt" style="color:#b91c1c;border-color:#b91c1c">Sick / Call in <span class="ct">(' +
+        sick.length + ")</span></div><table>" + sick.map(p => '<tr><td class="nm">' + esc(p.name) +
+        '</td><td class="cr">' + esc(p.cred) + "</td></tr>").join("") + "</table></div>"
+      : "";
     const bay = mine.filter(p => p.baylor), loc = mine.filter(p => !p.baylor);
     const cnt = l => l.filter(p => p.cred === "MD").length + " MD · " + l.filter(p => p.cred !== "MD").length + " APP";
     let locHtml = locumColumn(loc);
@@ -7993,7 +8171,7 @@ async function deleteEndoEntry(date, safeName) {
       '<div class="dt">' + esc(dateLabel) + "</div></div>" +
       '<div class="cols"><div class="col"><h2>Baylor <span class="ct">' + cnt(bay) + "</span></h2>" +
       baylorColumn(bay, campus) + '</div><div class="col"><h2>Locums <span class="ct">' + cnt(loc) +
-      "</span></h2>" + locHtml + "</div></div>" +
+      "</span></h2>" + locHtml + "</div></div>" + sickHtml +
       '<div class="tot">Total MDs: <b>' + mine.filter(p => p.cred === "MD").length + "</b>" +
       " &nbsp;·&nbsp; Total APPs: <b>" + mine.filter(p => p.cred !== "MD").length + "</b>" +
       " &nbsp;<span>(Baylor + locums)</span></div></section>";
@@ -8012,7 +8190,7 @@ async function deleteEndoEntry(date, safeName) {
       const people = await build(iso);
       const dt = parseDate(iso);
       const dateLabel = DAYS[dt.getDay()] + ", " + MONTHS[dt.getMonth()] + " " + dt.getDate() + ", " + dt.getFullYear();
-      const unplaced = people.filter(p => !p.campus);
+      const unplaced = people.filter(p => !p.campus && !p.sick);
       const html = '<!DOCTYPE html><html><head><title>Staff by Campus — ' + esc(dateLabel) + "</title><style>" +
         "@page{size:letter portrait;margin:0.4in}" +
         "body{font-family:Arial,sans-serif;font-size:10px;color:#111;margin:0}" +
