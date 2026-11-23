@@ -105,6 +105,21 @@
   // Password logins need an email-shaped ID. It is never emailed.
   const loginId = d => "p" + d + "@bslmc-schedule.firebaseapp.com";
   const val = id => (document.getElementById(id) || {}).value || "";
+  // ── roster name matching (QGenda roster in SCHEDULE_DATA) ──
+  const normName = s => String(s || "").toLowerCase().replace(/["'().,-]/g, " ").replace(/\s+/g, " ").trim();
+  const rosterNames = () => [...new Set((typeof SCHEDULE_DATA !== "undefined" ? SCHEDULE_DATA : [])
+    .map(p => p && p.name).filter(Boolean))];
+  const rosterExact = n => rosterNames().find(r => normName(r) === normName(n)) || "";
+  // Up to 5 roster names sharing a first or last name with what was typed, best first.
+  const rosterSuggest = typed => {
+    const words = normName(typed).split(" ").filter(w => w.length >= 2);
+    if (!words.length) return [];
+    return rosterNames().map(r => {
+      const rw = normName(r).split(" ");
+      const score = words.filter(w => rw.includes(w)).length * 2 + words.filter(w => rw.some(x => x.startsWith(w))).length;
+      return [r, score];
+    }).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 5).map(x => x[0]);
+  };
   const say = (msg, bad) => {
     const el = document.getElementById("ctMsg");
     if (el) { el.textContent = msg || ""; el.style.color = bad ? "var(--cancel)" : "var(--muted)"; }
@@ -170,6 +185,7 @@
       ${hasPassword ? "" : `
         <label style="font-size:13px;">Your name (pick from the list)<input id="ctName" list="ctNames" value="${esc(existing && existing.name)}" style="${inputStyle}"></label>
         <datalist id="ctNames">${names.map(n => `<option value="${esc(n)}">`).join("")}</datalist>
+        <div id="ctNamePick"></div>
         <label style="font-size:13px;display:block;margin-top:10px;">Email (optional)<input id="ctEmail" type="email" value="${esc(existing && existing.email)}" style="${inputStyle}"></label>`}
       <label style="font-size:13px;display:block;margin-top:10px;">Password (8+ characters)<input id="ctPw" type="password" autocomplete="new-password" style="${inputStyle}"></label>
       <label style="font-size:13px;display:block;margin-top:10px;">Confirm password<input id="ctPw2" type="password" autocomplete="new-password" style="${inputStyle}"></label>
@@ -198,7 +214,8 @@ function showList(user, all, appr, admin) {
                   <a href="sms:${e164(d)}" style="font-size:12px;color:var(--muted);">Text</a>` : "";
     };
     const nameCell = c => `<span style="flex:1;min-width:160px;font-weight:600;">${esc(c.name)}
-        ${cred[c.name] ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">${esc(cred[c.name])}</span>` : ""}</span>`;
+        ${cred[c.name] ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">${esc(cred[c.name])}</span>` : ""}
+        ${admin && rosterNames().length && !rosterExact(c.name) ? `<span style="font-size:10px;color:var(--special);margin-left:6px;">not on roster</span>` : ""}</span>`;
     const rowStyle = "display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border);flex-wrap:wrap;";
     window.__ctRows = listed.map(([u, c]) => ({
       key: (c.name + " " + (cred[c.name] || "")).toLowerCase(), html: `
@@ -206,6 +223,7 @@ function showList(user, all, appr, admin) {
           ${nameCell(c)}
           ${phoneLinks(c)}
           ${c.email ? `<a href="mailto:${esc(c.email)}" style="font-size:12px;color:var(--muted);">Email</a>` : ""}
+          ${admin ? `<a href="#" onclick="ctEditName('${u}');return false;" style="font-size:12px;color:var(--muted);">Edit name</a>` : ""}
           ${admin && u !== user.uid ? `<a href="#" onclick="ctRemove('${u}');return false;" style="font-size:12px;color:var(--cancel);">Remove</a>` : ""}
         </div>` }));
     const pendingHtml = pending.length ? `<div class="search-section" style="border:1px solid var(--special);">
@@ -215,6 +233,7 @@ function showList(user, all, appr, admin) {
         ${pending.map(([u, c]) => `<div style="${rowStyle}">
           ${nameCell(c)}
           ${phoneLinks(c)}
+          <a href="#" onclick="ctEditName('${u}');return false;" style="font-size:12px;color:var(--muted);">Edit name</a>
           <button class="view-btn" style="padding:6px 12px;" onclick="ctApprove('${u}')">Approve</button>
           <button class="view-btn" style="padding:6px 12px;background:var(--cancel);" onclick="ctReject('${u}')">Reject</button>
         </div>`).join("")}
@@ -343,8 +362,21 @@ function showList(user, all, appr, admin) {
       if (hasPassword) {
         await updatePassword(user, pw);
       } else {
-        const name = val("ctName").trim();
+        let name = val("ctName").trim();
         if (!name) return say("Enter your name.", true);
+        const exact = rosterExact(name);
+        if (exact) name = exact;                       // fixes capitalization/spacing
+        else if (rosterNames().length && window.__ctNameOk !== name) {
+          // Not on the roster: suggest close matches, or let them keep it (admin reviews).
+          window.__ctSug = rosterSuggest(name);
+          document.getElementById("ctNamePick").innerHTML = `
+            <div style="margin-top:8px;padding:10px;border:1px solid var(--special);border-radius:8px;font-size:13px;">
+              <div style="margin-bottom:6px;">"${esc(name)}" isn't on the staff roster.${window.__ctSug.length ? " Did you mean:" : ""}</div>
+              ${window.__ctSug.map((n, i) => `<button class="view-btn" style="padding:5px 10px;margin:0 6px 6px 0;" onclick="ctPickName(${i})">${esc(n)}</button>`).join("")}
+              <div style="margin-top:4px;"><a href="#" onclick="ctKeepName();return false;">I'm not on the roster. Keep "${esc(name)}"</a></div>
+            </div>`;
+          return say("Pick your name from the roster, or keep what you typed.", true);
+        }
         const entry = { name, phone: pretty(d) };
         const email = val("ctEmail").trim();
         if (email) entry.email = email;
@@ -391,6 +423,30 @@ function showList(user, all, appr, admin) {
       refresh();
     } catch (e) { alert("Bulk approve failed: " + authMsg(e)); }
   };
+  window.ctPickName = i => {
+    const n = (window.__ctSug || [])[i];
+    if (!n) return;
+    document.getElementById("ctName").value = n;
+    ctSaveProfile(false);
+  };
+  window.ctKeepName = () => { window.__ctNameOk = val("ctName").trim(); ctSaveProfile(false); };
+  // Admin: rename a contact. Snaps to the roster spelling; warns if not on the roster.
+  window.ctEditName = async uid => {
+    const cur = ((window.__ctAll || {})[uid] || {}).name || "";
+    let n = prompt("Name for this contact. It must match the roster exactly for My Assignment to find them.", cur);
+    if (n === null) return;
+    n = n.trim();
+    if (!n || n === cur) return;
+    const exact = rosterExact(n);
+    if (exact) n = exact;
+    else {
+      const sug = rosterSuggest(n);
+      if (!confirm('"' + n + '" is not on the roster.' + (sug.length ? "\n\nClosest roster names:\n- " + sug.join("\n- ") : "") + "\n\nSave it anyway?")) return;
+    }
+    try { await set(ref(db, "contacts/" + uid + "/name"), n); refresh(); }
+    catch (e) { alert("Could not save the name: " + authMsg(e)); }
+  };
+
   window.ctReject = async uid => {
     if (!confirm("Reject " + nameOf(uid) + "?\n\nTheir entry is deleted. They can sign up again.")) return;
     try { await set(ref(db, "contacts/" + uid), null); refresh(); }
