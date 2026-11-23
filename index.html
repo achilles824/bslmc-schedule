@@ -63,7 +63,12 @@
   const db = getDatabase(getApp());
   const area = () => document.getElementById(document.body.classList.contains("gated") ? "gateArea" : "contactsArea");
   const GATE_KEY = "bslmcGateUid";   // last uid confirmed approved on this device (offline fallback only; rules are the real gate)
-  const setGated = on => document.body.classList.toggle("gated", on);
+  const setGated = on => {
+    document.body.classList.toggle("gated", on);
+    // Leaving the gate: remove the hidden sign-in fields so the browser's
+    // password manager can't attach the saved login to other inputs.
+    if (!on) { const g = document.getElementById("gateArea"); if (g) g.innerHTML = ""; }
+  };
   // Header name + Sign out: null hides it, any string shows it.
   const setWho = name => {
     const box = document.getElementById("whoBox");
@@ -130,10 +135,12 @@
     area().innerHTML = card(`
       <h2>Sign in</h2>
       <p style="color:var(--muted);font-size:13px;margin:6px 0 14px;">Sign in with your cell number and password. New here? Create an account, then an administrator approves it.</p>
-      <label style="font-size:13px;">Cell number<input id="ctPhone" type="tel" autocomplete="tel" style="${inputStyle}"></label>
-      <label style="font-size:13px;display:block;margin-top:10px;">Password<input id="ctPw" type="password" autocomplete="current-password" style="${inputStyle}"></label>
+      <form onsubmit="ctSignIn();return false;" autocomplete="on">
+      <label style="font-size:13px;">Cell number<input id="ctPhone" name="username" type="tel" autocomplete="username" style="${inputStyle}"></label>
+      <label style="font-size:13px;display:block;margin-top:10px;">Password<input id="ctPw" name="password" type="password" autocomplete="current-password" style="${inputStyle}"></label>
       ${sharedBox}
-      <button class="view-btn" style="margin-top:14px;width:100%;" onclick="ctSignIn()">Sign in</button>
+      <button type="submit" class="view-btn" style="margin-top:14px;width:100%;">Sign in</button>
+      </form>
       <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:13px;">
         <a href="#" onclick="ctShowVerify('create');return false;">Create account</a>
         <a href="#" onclick="ctShowVerify('reset');return false;">Forgot password</a>
@@ -721,6 +728,11 @@ function showList(user, all, appr, admin) {
   body:not(.gated) #authGate { display: none; }
   #authGate { padding: 24px 16px; display: flex; justify-content: center; }
   @media (max-width: 600px) { #whoName { display: none; } }
+  /* Phones: tabs wrap to a second line instead of side-scrolling; Admin stays top right */
+  @media (max-width: 768px) {
+    .tab-bar { align-items: flex-start !important; }
+    .tab-bar > div:first-child { flex-wrap: wrap; overflow-x: visible !important; }
+  }
   :root {
     --bg: #0f1117;
     --surface: #181c27;
